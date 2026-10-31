@@ -65,7 +65,7 @@ def test_erase_removes_the_patient_and_everything_linked_but_not_others(admin, c
         assert db.scalar(select(func.count()).select_from(CallLog).where(CallLog.followup_id == fid)) == 0
         assert db.scalar(select(func.count()).select_from(Comment).where(Comment.followup_id == fid)) == 0
         assert db.scalar(select(func.count()).select_from(CallCard).where(CallCard.followup_id == fid)) == 0
-        assert db.scalar(select(func.count()).select_from(Notification).where(Notification.link == f"/followups/{fid}")) == 0
+        assert db.scalar(select(func.count()).select_from(Notification).where(Notification.link == f"/followups/view?id={fid}")) == 0
         assert not [n for n in db.scalars(select(Notification.text)) if "Asha" in n]
         assert count(db, Patient) == 1 and db.get(Patient, other_pid).name == "Bimal Das"  # the other person is untouched
         assert count(db, Order) == before_other["Order"] - 1 and count(db, Followup) == before_other["Followup"] - 1

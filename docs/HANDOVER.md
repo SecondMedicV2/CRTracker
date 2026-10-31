@@ -8,15 +8,15 @@ Questions still waiting for an answer: `OPEN_QUESTIONS.md`.
 ## 1. What is in the box
 | Part | What it is |
 |---|---|
-| `backend/` | Python (FastAPI) service: the API, plus the background worker. SQLAlchemy + Alembic. 121 automated tests. |
+| `backend/` | Python (FastAPI) service: the API, plus the background worker. SQLAlchemy + Alembic. 128 automated tests (also run on PostgreSQL). |
 | `frontend/` | Next.js website (admin, caller and doctor screens). Talks to the API through the same address (`/api`). |
 | `docs/` | This guide and the decision, security, acceptance and question logs. |
 | `backend/scripts/loadtest.py` | Load test (500 / 2,000 orders). |
 | `backend/app/privacy.py` | Export or erase one patient's data on request. |
 
-Nothing is deployed. No hosting has been chosen.
+Hosting plan (free plans only): website + cron on Cloudflare, API on Render, database on Supabase: see `DEPLOY_FREE.md`.
 
-## 2. First run on a computer
+## 2. First run on a computer (for the free cloud setup see DEPLOY_FREE.md)
 ```bash
 # 1. backend
 cd backend

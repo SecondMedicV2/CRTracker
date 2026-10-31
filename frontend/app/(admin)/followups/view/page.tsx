@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -8,8 +9,8 @@ import Trends from "@/components/Trends";
 import CallCard from "./CallCard";
 import DoctorActions from "./DoctorActions";
 
-export default function FollowupView() {
-  const { id } = useParams<{ id: string }>();
+function FollowupViewInner() {
+  const id = useSearchParams().get("id") ?? "";
   const { data: f, error, reload } = useApi<any>(`/followups/${id}`);
   const doctors = useApi<any[]>("/doctors");
   const me = useApi<any>("/auth/me");
@@ -23,7 +24,7 @@ export default function FollowupView() {
       <h1 className="text-xl font-semibold">{f.patient_name}</h1>
       <div className="text-sm">
         Due {new Date(f.due_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })} · report {f.report_age_days} days old ·
-        stage {f.stage} · <Link className="underline" href={`/reports/${f.report_id}`}>see report</Link>
+        stage {f.stage} · <Link className="underline" href={`/reports/view?id=${f.report_id}`}>see report</Link>
       </div>
       {f.parked && <div className="rounded border border-slate-300 bg-slate-100 p-2 text-sm">Parked: low retest potential. Not in the callers' queue.</div>}
       {f.suppressed_reason && <div className="rounded border border-amber-400 bg-amber-50 p-2 text-sm">Not needed: {f.suppressed_reason}</div>}
@@ -56,4 +57,9 @@ export default function FollowupView() {
       </section>
     </div>
   );
+}
+
+
+export default function FollowupView() {
+  return <Suspense><FollowupViewInner /></Suspense>;
 }

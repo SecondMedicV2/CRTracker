@@ -8,6 +8,7 @@ what the doctor should say and what the caller should say.
 | Read this | To learn |
 |---|---|
 | [docs/HANDOVER.md](docs/HANDOVER.md) | Run it, operate it, what must happen before real patients |
+| [docs/DEPLOY_FREE.md](docs/DEPLOY_FREE.md) | Free hosting on Cloudflare + Supabase + Render: what runs where and the setup steps |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | Each of the 20 acceptance criteria: met or not, with evidence |
 | [docs/SECURITY.md](docs/SECURITY.md) | Security review, what was fixed, accepted risks, pre-launch checklist |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Why things work the way they do (per phase) |
@@ -25,7 +26,7 @@ cp ../.env.example .env                  # edit it; make FILE_ENCRYPTION_KEY wit
 
 cd ../frontend && npm install && npm run build && npm run start   # http://localhost:3000
 ```
-Tests: `cd backend && .venv/Scripts/python -m pytest` (121 tests). Load test: `python -m scripts.loadtest 500`.
+Tests: `cd backend && .venv/Scripts/python -m pytest` (128 tests). Load test: `python -m scripts.loadtest 500`.
 
-**Status:** nothing is deployed and no hosting is chosen. The Thyrocare connection and PDF reading are not finished
+**Status:** hosting plan chosen (all free plans, see DEPLOY_FREE.md); the Cloudflare site/Worker is `frontend/` (`npm run cf:deploy`), the API is described by `render.yaml`. The Thyrocare connection and PDF reading are not finished
 (waiting on documents and a provider decision); the app runs on a built-in mock lab and structured test reports.

@@ -1,12 +1,13 @@
 "use client";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { api } from "@/lib/api";
 import Trends from "@/components/Trends";
 import { useApi } from "@/lib/useApi";
 
-export default function Patient() {
-  const { id } = useParams<{ id: string }>();
+function PatientInner() {
+  const id = useSearchParams().get("id") ?? "";
   const { data: p, error, reload } = useApi<any>(`/patients/${id}`);
   if (error) return <p role="alert">{error}</p>;
   if (!p) return null;
@@ -25,14 +26,14 @@ export default function Patient() {
       </div>
       {p.household.length > 0 && (
         <div className="text-sm">Same household (shared mobile): {p.household.map((h: any) => (
-          <Link key={h.id} className="mr-2 underline" href={`/patients/${h.id}`}>{h.name}</Link>
+          <Link key={h.id} className="mr-2 underline" href={`/patients/view?id=${h.id}`}>{h.name}</Link>
         ))}</div>
       )}
       <table className="w-full bg-white text-left text-sm shadow">
         <thead><tr><th className="p-2">Order</th><th>Collected</th><th>Status</th><th>Result</th></tr></thead>
         <tbody>{p.reports.map((r: any) => (
           <tr key={r.order_id} className="border-t">
-            <td className="p-2 font-mono">{r.report_id ? <Link className="underline" href={`/reports/${r.report_id}`}>{r.order_id}</Link> : r.order_id}</td>
+            <td className="p-2 font-mono">{r.report_id ? <Link className="underline" href={`/reports/view?id=${r.report_id}`}>{r.order_id}</Link> : r.order_id}</td>
             <td>{r.collected_on ? new Date(r.collected_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : ""}</td>
             <td>{r.status}</td><td className={r.classification === "ABNORMAL" ? "text-red-700" : ""}>{r.classification}</td>
           </tr>
@@ -41,4 +42,9 @@ export default function Patient() {
       <Trends patientId={id} />
     </div>
   );
+}
+
+
+export default function Patient() {
+  return <Suspense><PatientInner /></Suspense>;
 }

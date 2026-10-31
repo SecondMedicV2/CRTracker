@@ -104,6 +104,21 @@ def maybe_scheduled_pull(db: Session, now: datetime | None = None) -> bool:
     return True
 
 
+def run_once(budget: float = 20.0) -> dict:
+    """One round of everything the loop does, repeated until idle or out of time. Called by the Cloudflare cron
+    through /api/internal/tick, so a free host that sleeps between requests still gets its background work done."""
+    start, total = time.monotonic(), {"fetched": 0, "extracted": 0, "cards": 0, "reassigned": 0, "rounds": 0}
+    while True:
+        with SessionLocal() as db:
+            maybe_scheduled_pull(db)
+            n = (tick(db), extract_tick(db), callcard_tick(db), assign.cascade_tick(db))
+        for key, v in zip(("fetched", "extracted", "cards", "reassigned"), n):
+            total[key] += v
+        total["rounds"] += 1
+        if sum(n[:3]) == 0 or time.monotonic() - start > budget:
+            return total
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     while True:

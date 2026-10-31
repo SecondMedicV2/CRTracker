@@ -17,7 +17,7 @@ export default function Reports() {
         <thead><tr><th className="p-2">Order</th><th>Patient</th><th>Result</th><th>Abnormal values</th><th>Confidence</th><th>Status</th></tr></thead>
         <tbody>{data?.map((r) => (
           <tr key={r.id} className="border-t">
-            <td className="p-2"><Link className="font-mono underline" href={`/reports/${r.id}`}>{r.order_id}</Link></td>
+            <td className="p-2"><Link className="font-mono underline" href={`/reports/view?id=${r.id}`}>{r.order_id}</Link></td>
             <td>{r.patient_name}</td>
             <td className={r.classification === "ABNORMAL" ? "font-medium text-red-700" : ""}>{r.classification}</td>
             <td>{r.abnormal_count}</td><td>{r.confidence}%</td><td>{r.needs_review ? "Needs review" : r.status}</td>

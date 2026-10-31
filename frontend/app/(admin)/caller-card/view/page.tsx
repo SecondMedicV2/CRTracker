@@ -1,5 +1,6 @@
 "use client";
-import { useParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { useApi } from "@/lib/useApi";
 import Actions from "./Actions";
 
@@ -8,8 +9,8 @@ const STEPS: [string, string][] = [
   ["consent_request", "4. Ask for consent"], ["slot_offer", "5. Offer a time"], ["closing", "6. Close"],
 ];
 
-export default function CallerCard() {
-  const { id } = useParams<{ id: string }>();
+function CallerCardInner() {
+  const id = useSearchParams().get("id") ?? "";
   const { data: c, error } = useApi<any>(`/followups/${id}/caller-card`);
   if (error) return <p role="alert" className="text-sm">{error}</p>;
   if (!c) return null;
@@ -32,4 +33,9 @@ export default function CallerCard() {
       <Actions fid={id} />
     </div>
   );
+}
+
+
+export default function CallerCard() {
+  return <Suspense><CallerCardInner /></Suspense>;
 }

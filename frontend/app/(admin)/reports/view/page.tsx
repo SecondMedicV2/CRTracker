@@ -1,11 +1,12 @@
 "use client";
-import { useParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
-export default function ReportView() {
-  const { id } = useParams<{ id: string }>();
+function ReportViewInner() {
+  const id = useSearchParams().get("id") ?? "";
   const { data: r, error, reload } = useApi<any>(`/reports/${id}`);
   const [msg, setMsg] = useState("");
   if (error) return <p role="alert">{error}</p>;
@@ -54,4 +55,9 @@ export default function ReportView() {
       <p className="text-xs text-slate-500">The original PDF viewer arrives once real Thyrocare PDFs are available.</p>
     </div>
   );
+}
+
+
+export default function ReportView() {
+  return <Suspense><ReportViewInner /></Suspense>;
 }

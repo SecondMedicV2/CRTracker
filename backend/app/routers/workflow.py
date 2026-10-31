@@ -117,7 +117,7 @@ def log_call(fid: int, body: CallIn, request: Request, db: Session = Depends(get
         if f.assigned_doctor_id != doc.id:
             f.assigned_doctor_id, f.assigned_at, f.accepted_at, f.tried_doctor_ids = doc.id, now, None, []
         f.stage = "BOOKED"
-        assign.notify(db, assign.doctor_users(db, doc.id), "New booking for you", f"/followups/{fid}")
+        assign.notify(db, assign.doctor_users(db, doc.id), "New booking for you", f"/followups/view?id={fid}")
     elif body.outcome == "CALL_LATER":
         if not body.call_later_at or utc(body.call_later_at) <= now:
             raise HTTPException(422, "Pick a time in the future to call back")
@@ -161,7 +161,7 @@ def add_comment(fid: int, body: CommentIn, request: Request, db: Session = Depen
     db.add(c)
     if me.role != "DOCTOR":
         assign.notify(db, assign.doctor_users(db, f.assigned_doctor_id), "Urgent: escalation requested" if urgent else "New comment from caller",
-                      f"/followups/{fid}", urgent=urgent)
+                      f"/followups/view?id={fid}", urgent=urgent)
     db.commit()
     audit(db, request, me.id, "escalation_request" if body.request_escalation else "comment", "followup", fid)
     return {"id": c.id, "priority": f.priority}
@@ -190,7 +190,7 @@ def connect_doctor(fid: int, request: Request, db: Session = Depends(get_db), me
     doc = db.get(Doctor, f.assigned_doctor_id) if f.assigned_doctor_id else assign.pick(db, p.language or "en")
     if not doc:
         raise HTTPException(409, "No doctor available right now")
-    assign.notify(db, assign.doctor_users(db, doc.id), f"{me.name} wants to connect you with {p.name} now", f"/followups/{fid}", urgent=True)
+    assign.notify(db, assign.doctor_users(db, doc.id), f"{me.name} wants to connect you with {p.name} now", f"/followups/view?id={fid}", urgent=True)
     db.commit()
     audit(db, request, me.id, "connect_doctor", "followup", fid)
     return {"doctor": doc.name, "dial": get_dialer().dial_info(doc)}

@@ -66,7 +66,7 @@ export default function TrendChart({ s }: { s: any }) {
         <polyline fill="none" stroke="#64748b" strokeWidth="1.5" points={pts.map((p: any) => `${x(p.date)},${y(p.value)}`).join(" ")} />
         {pts.map((p: any, i: number) => {
           const out = p.flag === "LOW" || p.flag === "HIGH";
-          const open = () => router.push(`/reports/${p.report_id}`);
+          const open = () => router.push(`/reports/view?id=${p.report_id}`);
           return (
             <circle key={i} cx={x(p.date)} cy={y(p.value)} r="6" fill={out ? OUT : OK} stroke="#fff" strokeWidth="1.5" tabIndex={0}
               role="link" style={{ cursor: "pointer" }} onClick={open} onKeyDown={(e) => e.key === "Enter" && open()}>

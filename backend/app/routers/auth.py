@@ -7,7 +7,7 @@ from ..config import env
 from ..db import get_db
 from ..models import User
 from ..security import (COOKIE, audit, check_login_rate, clear_login_fails, current_user, make_token,
-                        record_login_fail, verify_password, dummy_hash)
+                        record_login_fail, verify_password, dummy_hash, client_ip)
 from ..settings_store import get_setting
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -25,7 +25,7 @@ def public(u: User):
 @router.post("/login")
 def login(body: Login, request: Request, response: Response, db: Session = Depends(get_db)):
     email = body.email.strip().lower()
-    key = f"{email}|{request.client.host if request.client else ''}"
+    key = f"{email}|{client_ip(request)}"
     check_login_rate(key)
     user = db.scalar(select(User).where(User.email == email))
     # always do one password hash so an unknown email takes as long as a wrong password

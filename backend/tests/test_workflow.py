@@ -200,7 +200,10 @@ def test_ac15_unaccepted_case_cascades_after_timeout_and_is_logged(admin, caller
     routine, esc = new_fu(name="R", mobile="9444400001"), new_fu(params=(PSA,), days_ago=0, name="E", mobile="9444400002")
     for f in (routine, esc):
         caller.post(f"{API}/followups/{f}/consent")
-    owner = lambda f: dbmod.SessionLocal().get(Followup, f).assigned_doctor_id
+    def owner(f):
+        with dbmod.SessionLocal() as db:  # always close: PostgreSQL keeps an open session's locks
+            return db.get(Followup, f).assigned_doctor_id
+
     assert owner(routine) == owner(esc) == d1
     age_assignment(routine, 5)
     age_assignment(esc, 5)

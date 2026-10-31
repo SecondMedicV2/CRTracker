@@ -37,6 +37,12 @@ it has **not** been reviewed against Indian data-protection law (DPDP Act 2023):
   **API:** nosniff, DENY, no-referrer, `Cache-Control: no-store`.
 - **Spreadsheet exports** escape cells that start with `= + - @`.
 
+## Added for the Cloudflare / free-hosting setup
+- The API can be locked so that only the Cloudflare Worker may call it (`EDGE_SECRET`, compared in constant time). Anyone who finds the backend's own address gets "Direct access refused".
+- The background-work endpoint `/api/internal/tick` is hidden (404) unless that lock is on, and needs the secret.
+- The two secrets (`EDGE_SECRET`, `FILE_ENCRYPTION_KEY`) were generated into `C:/Users/DELL/Documents/CRTracker-secrets.txt`, outside the repository. Set them on Cloudflare with `wrangler secret` and on the backend host as environment variables.
+- Free plans have no uptime promise, no backups you control, and shared infrastructure. **Do not load real patient data until you are on paid, backed-up hosting and the legal review is done.**
+
 ## Known limits and accepted risks (read before going live)
 1. **Logout does not cancel the session token** - it only removes the cookie in that browser. A stolen cookie works until it expires (30 minutes). Disabling a user does cut access at once.
 2. **Login rate limit is in memory** per server process. With several server processes or restarts it resets. Behind a proxy it sees the proxy's address unless the proxy forwards the real one. Put rate limiting at the proxy too.

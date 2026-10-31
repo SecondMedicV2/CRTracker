@@ -18,6 +18,11 @@ class Env(BaseSettings):
     llm_provider: str = "template"  # template (no AI, no key) | anthropic
     llm_model: str = "claude-sonnet-5-5"
     anthropic_api_key: str = ""
+    # Shared secret the Cloudflare Worker adds to every request. When set, the backend refuses anything without it,
+    # so nobody can bypass the Worker (and the client address it reports can be trusted). Empty = local development.
+    edge_secret: str = ""
+    # disk = encrypted files in STORAGE_DIR (local). db = encrypted files inside the database (free hosts have no disk).
+    storage_backend: str = "disk"
     # browsers allowed to make state-changing requests; add the real site origin when hosting
     allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 

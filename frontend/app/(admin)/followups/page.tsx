@@ -48,7 +48,7 @@ export default function Followups() {
         <thead><tr><th className="p-2">Patient</th><th>Due</th><th>Report age</th><th>Priority</th><th>Stage</th>{full && <><th>Buckets</th><th>Potential</th></>}</tr></thead>
         <tbody>{data?.map((f) => (
           <tr key={f.id} className="border-t">
-            <td className="p-2"><Link className="underline" href={full ? `/followups/${f.id}` : `/caller-card/${f.id}`}>{f.patient_name}</Link></td>
+            <td className="p-2"><Link className="underline" href={full ? `/followups/view?id=${f.id}` : `/caller-card/view?id=${f.id}`}>{f.patient_name}</Link></td>
             <td>{new Date(f.due_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
             <td>{f.report_age_days != null ? `${f.report_age_days} days` : ""}</td>
             <td className={f.priority === "ESCALATION" ? "font-medium text-red-700" : ""}>{f.priority}</td><td>{f.stage}</td>

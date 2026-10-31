@@ -14,7 +14,7 @@ export default function DoctorQueue() {
         <thead><tr><th className="p-2">Patient</th><th>Priority</th><th>Potential</th><th>Stage</th><th>Booked slot</th><th>Comments</th><th>Accepted</th></tr></thead>
         <tbody>{data?.map((f) => (
           <tr key={f.id} className={`border-t ${f.priority === "ESCALATION" ? "bg-red-50" : ""}`}>
-            <td className="p-2"><Link className="underline" href={`/followups/${f.id}`}>{f.patient_name}</Link></td>
+            <td className="p-2"><Link className="underline" href={`/followups/view?id=${f.id}`}>{f.patient_name}</Link></td>
             <td className={f.priority === "ESCALATION" ? "font-medium text-red-700" : ""}>{f.priority}</td>
             <td>{f.retest_tier} ({f.retest_score})</td><td>{f.stage}</td>
             <td>{f.slot_start ? new Date(f.slot_start).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) : ""}</td>

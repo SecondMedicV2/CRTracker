@@ -54,7 +54,7 @@ def assign(db: Session, fu: Followup) -> Doctor | None:
     d = pick(db, lang)
     if d:
         fu.assigned_doctor_id, fu.assigned_at, fu.tried_doctor_ids = d.id, datetime.now(timezone.utc), []
-        notify(db, doctor_users(db, d.id), "New follow-up assigned to you", f"/followups/{fu.id}",
+        notify(db, doctor_users(db, d.id), "New follow-up assigned to you", f"/followups/view?id={fu.id}",
                urgent=fu.priority == "ESCALATION")
     return d
 
@@ -74,7 +74,7 @@ def reassign(db: Session, fu: Followup, now: datetime) -> bool:
     if not nxt:
         return False  # only one eligible doctor
     fu.tried_doctor_ids, fu.assigned_doctor_id, fu.assigned_at, fu.accepted_at = sorted(tried), nxt.id, now, None
-    notify(db, doctor_users(db, nxt.id), "A follow-up was reassigned to you", f"/followups/{fu.id}",
+    notify(db, doctor_users(db, nxt.id), "A follow-up was reassigned to you", f"/followups/view?id={fu.id}",
            urgent=fu.priority == "ESCALATION")
     audit(db, None, None, "reassign", "followup", f"{fu.id}:{old}->{nxt.id}")
     return True

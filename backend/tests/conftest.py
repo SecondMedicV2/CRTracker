@@ -23,7 +23,10 @@ dbmod.engine.dispose()
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-dbmod.engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+# Default: SQLite in memory. To run the same tests on PostgreSQL:  TEST_DATABASE_URL=postgresql+psycopg://user@host/db
+TEST_DB = os.environ.get("TEST_DATABASE_URL")
+dbmod.engine = (create_engine(TEST_DB, pool_pre_ping=True) if TEST_DB
+                else create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool))
 dbmod.SessionLocal = sessionmaker(dbmod.engine, expire_on_commit=False)
 
 from app.main import app  # noqa: E402

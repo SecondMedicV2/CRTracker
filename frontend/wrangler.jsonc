@@ -1,0 +1,19 @@
+{
+  // Cloudflare project "crtracker" (free plan): static site + a small Worker.
+  "name": "crtracker",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "assets": {
+    "directory": "./out",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*"]
+  },
+  "vars": {
+    // Set to the real backend address once it is hosted (no trailing slash).
+    "BACKEND_URL": ""
+  },
+  // Every 2 minutes: wake the backend and let it do its background work. (Free plan allows cron triggers.)
+  "triggers": { "crons": ["*/2 * * * *"] }
+}

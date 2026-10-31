@@ -1,8 +1,8 @@
 # Acceptance criteria (Part 16.3), checked on 31 Oct 2026
 
 **Result: 19 of 20 met or met with a stated limit. AC17 is NOT met.**
-"Test" means an automated test in `backend/tests/` that passes (`python -m pytest`, 121 tests). Everything was tested with the
-**mock lab** and **synthetic reports**: no real Thyrocare data, no real PDFs, no Postgres.
+"Test" means an automated test in `backend/tests/` that passes (`python -m pytest`, 128 tests; the same suite also passes on PostgreSQL 18). Everything was tested with the
+**mock lab** and **synthetic reports**: no real Thyrocare data, no real PDFs.
 
 | AC | Status | Evidence | Limit to know about |
 |---|---|---|---|

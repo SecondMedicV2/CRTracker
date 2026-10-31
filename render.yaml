@@ -1,0 +1,37 @@
+# Render "Blueprint" for the CRTracker backend (FREE web service). In Render: New > Blueprint > pick this repository.
+# Only the Python API runs here. The website and the 2-minute background trigger run on Cloudflare (see docs/DEPLOY_FREE.md).
+services:
+  - type: web
+    name: crtracker-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # Creates/updates the tables, makes the first admin if there is none, then starts the API.
+    startCommand: python -m alembic upgrade head && python -m app.seed && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: DATABASE_URL          # Supabase "Session pooler" string, with +psycopg: see docs/DEPLOY_FREE.md
+        sync: false
+      - key: SECRET_KEY            # Render makes a long random value once and keeps it
+        generateValue: true
+      - key: FILE_ENCRYPTION_KEY   # paste from your secrets file (python -m app.storage makes one)
+        sync: false
+      - key: EDGE_SECRET           # same value as the Cloudflare Worker's EDGE_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS       # the Cloudflare site address, e.g. https://crtracker.<name>.workers.dev
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: STORAGE_BACKEND       # free hosts have no permanent disk: keep encrypted reports in the database
+        value: db
+      - key: LAB_PROVIDER
+        value: mock
+      - key: LLM_PROVIDER
+        value: template

@@ -79,7 +79,7 @@ def test_ac4_retry_then_failed_with_reason_then_manual_retry(admin):
     admin.post(f"{API}/imports/manual", json={"text": "FAIL9"})
     run_worker()
     o = orders()[0]
-    assert (o.status, o.attempts) == (status.QUEUED, 1) and o.next_attempt_at > datetime.now(timezone.utc).replace(tzinfo=None)
+    assert (o.status, o.attempts) == (status.QUEUED, 1) and (o.next_attempt_at if o.next_attempt_at.tzinfo else o.next_attempt_at.replace(tzinfo=timezone.utc)) > datetime.now(timezone.utc)
     with dbmod.SessionLocal() as db:  # make the backoff elapse
         db.get(Order, o.id).next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
         db.commit()

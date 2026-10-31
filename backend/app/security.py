@@ -85,7 +85,14 @@ def require(*roles: str):
     return dep
 
 
+def client_ip(request: Request | None) -> str:
+    """The real visitor address: reported by our Cloudflare Worker (only trusted once the edge secret has been checked)."""
+    if request is None:
+        return ""
+    return getattr(request.state, "client_ip", None) or (request.client.host if request.client else "")
+
+
 def audit(db: Session, request: Request | None, user_id: int | None, action: str, entity: str, entity_id="") -> None:
-    ip = request.client.host if request and request.client else ""
+    ip = client_ip(request)
     db.add(AuditLog(user_id=user_id, action=action, entity=entity, entity_id=str(entity_id), ip=ip))
     db.commit()

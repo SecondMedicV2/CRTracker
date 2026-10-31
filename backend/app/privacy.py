@@ -7,7 +7,6 @@ Both work on the person as a whole: the patient and any duplicate records merged
 line saying the erasure happened (ids and counts only, no patient data)."""
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -70,9 +69,8 @@ def erase_patient(db: Session, pid: int) -> dict:
         counts[name] = db.execute(stmt).rowcount
 
     for o in x["orders"]:  # the stored (encrypted) lab report files
-        if o.report_path:
-            Path(env.storage_dir, os.path.basename(o.report_path)).unlink(missing_ok=True)
-    links = [f"/followups/{f}" for f in fids]
+        storage.delete(o.report_path)
+    links = [f"/followups/view?id={f}" for f in fids]
     if links:  # notification texts name the patient
         wipe("notifications", delete(Notification).where(Notification.link.in_(links)))
     if fids:

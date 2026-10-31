@@ -4,6 +4,29 @@
 //  3. every few minutes (cron) tells the backend to do its background work (fetch, read, follow-ups, call cards).
 // Settings: BACKEND_URL (a normal variable) and EDGE_SECRET (a secret, set with `wrangler secret put EDGE_SECRET`).
 
+import demo from "./demo-data.json";
+
+// Demo mode: while no backend is connected, the Worker answers /api/v1 from recorded sample data (made-up mock-lab
+// patients, see backend/scripts/capture_demo.py). Any email/password signs in; nothing is saved; no real data involved.
+const DEMO_COOKIE = "crt_demo=1";
+function demoApi(request, url) {
+  const path = url.pathname.replace(/^\/api\/v1/, "").replace(/\/$/, "");
+  const signedIn = (request.headers.get("cookie") || "").includes(DEMO_COOKIE);
+  const reply = (status, body, cookie) => {
+    const headers = { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Demo": "1" };
+    if (cookie) headers["Set-Cookie"] = cookie;
+    return new Response(JSON.stringify(body), { status, headers });
+  };
+  if (url.pathname === "/api/health") return reply(200, { ok: true, demo: true });
+  if (path === "/auth/login" && request.method === "POST")
+    return reply(200, demo["/auth/me"], DEMO_COOKIE + "; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600");
+  if (path === "/auth/logout") return reply(200, { ok: true }, DEMO_COOKIE.split("=")[0] + "=; Path=/; Max-Age=0");
+  if (!signedIn) return reply(401, { detail: "Not signed in" });
+  if (request.method !== "GET") return reply(403, { detail: "Demo mode: changes are not saved." });
+  const hit = demo[path];
+  return hit === undefined ? reply(404, { detail: "Not part of the demo data" }) : reply(200, hit);
+}
+
 const json = (status, detail) =>
   new Response(JSON.stringify({ detail }), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
 
@@ -11,7 +34,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
-    if (!env.BACKEND_URL || !env.EDGE_SECRET) return json(503, "The server behind this site is not connected yet.");
+    if (!env.BACKEND_URL || !env.EDGE_SECRET) return demoApi(request, url);
 
     const upstream = new Request(new URL(url.pathname + url.search, env.BACKEND_URL), request);
     upstream.headers.set("X-Edge-Secret", env.EDGE_SECRET);

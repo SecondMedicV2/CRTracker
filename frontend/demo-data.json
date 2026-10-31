@@ -1,0 +1,1789 @@
+{
+"/auth/me": {
+"id": 1,
+"name": "Demo Admin (sample data)",
+"email": "demo@example.test",
+"role": "ADMIN",
+"active": true
+},
+"/dashboard": {
+"from": "2026-10-02",
+"to": "2026-10-31",
+"orders": {
+"imported": 8,
+"by_status": {
+"FAILED_EXTRACT": 1,
+"NEEDS_REVIEW": 1,
+"QUEUED": 2,
+"READY": 4
+},
+"reports_ready": 4,
+"failed": 1
+},
+"results": {
+"normal": 1,
+"abnormal": 4
+},
+"patients_per_bucket": {
+"DIABETES": 1
+},
+"followups_due": {
+"today": 0,
+"this_week": 0,
+"overdue": 1,
+"parked": 0
+},
+"calls": {
+"made": 1,
+"by_outcome": {
+"BOOKED": 1
+},
+"bookings": 1,
+"consent_rate_pct": 100,
+"doctor_calls_done": 0
+},
+"retests": {
+"recommended": 0,
+"ordered": 0
+},
+"funnel": [
+{
+"step": "Follow-ups created",
+"count": 2
+},
+{
+"step": "Called",
+"count": 1
+},
+{
+"step": "Consent given",
+"count": 1
+},
+{
+"step": "Booked",
+"count": 1
+},
+{
+"step": "Doctor call done",
+"count": 0
+},
+{
+"step": "Retest recommended",
+"count": 0
+},
+{
+"step": "Retest ordered",
+"count": 0
+}
+],
+"doctors": [
+{
+"id": 1,
+"name": "Dr Smoke",
+"in_pilot": false,
+"open_cases": 1,
+"escalations": 0,
+"not_accepted": 1,
+"upcoming_bookings": 1,
+"calls_done": 0
+}
+],
+"needs_attention": {
+"failed_fetch": 0,
+"failed_extract": 1,
+"needs_review": 1,
+"pending_identity": 0
+}
+},
+"/notifications": {
+"unread": 0,
+"items": []
+},
+"/orders": [
+{
+"id": 8,
+"order_id": "X",
+"batch_id": 3,
+"status": "QUEUED",
+"error": "",
+"attempts": 0,
+"updated_at": "2026-10-31T06:36:09.650326"
+},
+{
+"id": 7,
+"order_id": "P4-A2",
+"batch_id": 2,
+"status": "READY",
+"error": "",
+"attempts": 0,
+"updated_at": "2026-10-31T04:50:08.971202"
+},
+{
+"id": 6,
+"order_id": "P4-A1",
+"batch_id": 2,
+"status": "READY",
+"error": "",
+"attempts": 0,
+"updated_at": "2026-10-31T04:50:08.939622"
+},
+{
+"id": 5,
+"order_id": "SMOKE-FAIL-5",
+"batch_id": 1,
+"status": "QUEUED",
+"error": "Mock lab: report not available",
+"attempts": 2,
+"updated_at": "2026-10-31T04:50:08.830755"
+},
+{
+"id": 4,
+"order_id": "SMOKE-PDF-4",
+"batch_id": 1,
+"status": "FAILED_EXTRACT",
+"error": "PDF extraction needs an LLM/OCR provider, which is not configured yet",
+"attempts": 0,
+"updated_at": "2026-10-31T04:44:10.717360"
+},
+{
+"id": 3,
+"order_id": "SMOKE-REVIEW-3",
+"batch_id": 1,
+"status": "NEEDS_REVIEW",
+"error": "",
+"attempts": 0,
+"updated_at": "2026-10-31T04:44:10.700938"
+},
+{
+"id": 2,
+"order_id": "SMOKE-NORMAL-2",
+"batch_id": 1,
+"status": "READY",
+"error": "",
+"attempts": 0,
+"updated_at": "2026-10-31T04:44:10.681213"
+},
+{
+"id": 1,
+"order_id": "SMOKE-A1",
+"batch_id": 1,
+"status": "READY",
+"error": "",
+"attempts": 0,
+"updated_at": "2026-10-31T04:44:10.656144"
+}
+],
+"/followups/summary": {
+"queue": 1,
+"due_tomorrow": 0,
+"due_this_week": 0,
+"next_30_days": 0,
+"overdue": 1,
+"escalations": 0,
+"low_potential": 0,
+"done": 0,
+"_buckets": {
+"DIABETES": 1
+}
+},
+"/doctors": [
+{
+"id": 1,
+"user_id": null,
+"name": "Dr Smoke",
+"speciality": "",
+"languages": [],
+"priority_order": 100,
+"active": true,
+"phone": "",
+"in_pilot": false
+}
+],
+"/users": [
+{
+"id": 1,
+"name": "Admin",
+"email": "admin@crtracker.local",
+"role": "ADMIN",
+"active": true
+}
+],
+"/reports": [
+{
+"id": 5,
+"order_id": "P4-A2",
+"order_pk": 7,
+"status": "READY",
+"patient_name": "Test Patient",
+"age": 45,
+"gender": "M",
+"collected_on": "2026-07-28T04:50:08.868243",
+"reported_on": "2026-07-29T04:50:08.868243",
+"lab": "mock",
+"confidence": 90,
+"needs_review": false,
+"review_reasons": [
+"1 test name(s) not recognised"
+],
+"classification": "ABNORMAL",
+"abnormal_count": 1
+},
+{
+"id": 4,
+"order_id": "P4-A1",
+"order_pk": 6,
+"status": "READY",
+"patient_name": "Test Patient",
+"age": 45,
+"gender": "M",
+"collected_on": "2026-07-28T04:50:08.835558",
+"reported_on": "2026-07-29T04:50:08.835558",
+"lab": "mock",
+"confidence": 90,
+"needs_review": false,
+"review_reasons": [
+"1 test name(s) not recognised"
+],
+"classification": "ABNORMAL",
+"abnormal_count": 1
+},
+{
+"id": 3,
+"order_id": "SMOKE-REVIEW-3",
+"order_pk": 3,
+"status": "NEEDS_REVIEW",
+"patient_name": "Test Patient",
+"age": 45,
+"gender": "",
+"collected_on": "2026-07-28T04:44:10.605169",
+"reported_on": "2026-07-29T04:44:10.605169",
+"lab": "mock",
+"confidence": 60,
+"needs_review": true,
+"review_reasons": [
+"Gender missing",
+"1 test name(s) not recognised"
+],
+"classification": "ABNORMAL",
+"abnormal_count": 1
+},
+{
+"id": 2,
+"order_id": "SMOKE-NORMAL-2",
+"order_pk": 2,
+"status": "READY",
+"patient_name": "Test Patient",
+"age": 45,
+"gender": "M",
+"collected_on": "2026-07-28T04:44:10.593403",
+"reported_on": "2026-07-29T04:44:10.593403",
+"lab": "mock",
+"confidence": 90,
+"needs_review": false,
+"review_reasons": [
+"1 test name(s) not recognised"
+],
+"classification": "NORMAL",
+"abnormal_count": 0
+},
+{
+"id": 1,
+"order_id": "SMOKE-A1",
+"order_pk": 1,
+"status": "READY",
+"patient_name": "Test Patient",
+"age": 45,
+"gender": "M",
+"collected_on": "2026-07-28T04:44:10.566024",
+"reported_on": "2026-07-29T04:44:10.566024",
+"lab": "mock",
+"confidence": 90,
+"needs_review": false,
+"review_reasons": [
+"1 test name(s) not recognised"
+],
+"classification": "ABNORMAL",
+"abnormal_count": 1
+}
+],
+"/patients": [
+{
+"id": 1,
+"name": "Test Patient",
+"gender": "M",
+"age": 45,
+"mobile": "9000000000",
+"household_tag": "",
+"language": "",
+"do_not_call": false
+}
+],
+"/rules": [
+{
+"key": "aliases",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true
+},
+{
+"key": "buckets",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true
+},
+{
+"key": "caller_script_forbidden",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true
+},
+{
+"key": "critical_values",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true
+},
+{
+"key": "reference_ranges",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true
+},
+{
+"key": "score_weights",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true
+},
+{
+"key": "script_templates",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true
+},
+{
+"key": "severity",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true
+},
+{
+"key": "test_catalogue",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true
+}
+],
+"/settings": {
+"caller_can_view_results": false,
+"pull_time_ist": "07:00",
+"default_interval_days": 90,
+"max_call_attempts": 3,
+"attempt_window_days": 7,
+"timeout_escalation_hours": 4,
+"timeout_routine_hours": 24,
+"pilot_mode": false,
+"default_language": "en",
+"session_minutes": 30,
+"yearly_reengagement": false,
+"fetch_max_attempts": 3,
+"extraction_min_confidence_pct": 80,
+"identity_name_similarity_pct": 85,
+"company_name": "our health team",
+"caller_script_requires_approval": false,
+"callcard_lead_days": 14
+},
+"/identity-reviews": [],
+"/audit": [
+{
+"id": 47,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T09:30:26.786261",
+"ip": "127.0.0.1"
+},
+{
+"id": 46,
+"user_id": 1,
+"action": "view",
+"entity": "patient",
+"entity_id": "1",
+"at": "2026-10-31T09:30:11.010543",
+"ip": "127.0.0.1"
+},
+{
+"id": 45,
+"user_id": 1,
+"action": "view",
+"entity": "report",
+"entity_id": "1",
+"at": "2026-10-31T09:30:10.994282",
+"ip": "127.0.0.1"
+},
+{
+"id": 44,
+"user_id": 1,
+"action": "view",
+"entity": "report",
+"entity_id": "2",
+"at": "2026-10-31T09:30:10.976163",
+"ip": "127.0.0.1"
+},
+{
+"id": 43,
+"user_id": 1,
+"action": "view",
+"entity": "report",
+"entity_id": "3",
+"at": "2026-10-31T09:30:10.951870",
+"ip": "127.0.0.1"
+},
+{
+"id": 42,
+"user_id": 1,
+"action": "view",
+"entity": "report",
+"entity_id": "4",
+"at": "2026-10-31T09:30:10.932156",
+"ip": "127.0.0.1"
+},
+{
+"id": 41,
+"user_id": 1,
+"action": "view",
+"entity": "report",
+"entity_id": "5",
+"at": "2026-10-31T09:30:10.909831",
+"ip": "127.0.0.1"
+},
+{
+"id": 40,
+"user_id": 1,
+"action": "view",
+"entity": "call_card",
+"entity_id": "1",
+"at": "2026-10-31T09:30:10.885547",
+"ip": "127.0.0.1"
+},
+{
+"id": 39,
+"user_id": 1,
+"action": "view",
+"entity": "followup",
+"entity_id": "2",
+"at": "2026-10-31T09:30:10.819010",
+"ip": "127.0.0.1"
+},
+{
+"id": 38,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T09:30:10.416425",
+"ip": "127.0.0.1"
+},
+{
+"id": 37,
+"user_id": 1,
+"action": "view",
+"entity": "report",
+"entity_id": "4",
+"at": "2026-10-31T06:39:54.505208",
+"ip": "127.0.0.1"
+},
+{
+"id": 36,
+"user_id": 1,
+"action": "view",
+"entity": "trend",
+"entity_id": "1",
+"at": "2026-10-31T06:39:36.315569",
+"ip": "127.0.0.1"
+},
+{
+"id": 35,
+"user_id": 1,
+"action": "view",
+"entity": "patient",
+"entity_id": "1",
+"at": "2026-10-31T06:39:36.261496",
+"ip": "127.0.0.1"
+},
+{
+"id": 34,
+"user_id": 1,
+"action": "view",
+"entity": "trend",
+"entity_id": "1",
+"at": "2026-10-31T06:39:32.191793",
+"ip": "127.0.0.1"
+},
+{
+"id": 33,
+"user_id": 1,
+"action": "view",
+"entity": "call_card",
+"entity_id": "1",
+"at": "2026-10-31T06:39:32.171020",
+"ip": "127.0.0.1"
+},
+{
+"id": 32,
+"user_id": 1,
+"action": "view",
+"entity": "followup",
+"entity_id": "2",
+"at": "2026-10-31T06:39:32.107987",
+"ip": "127.0.0.1"
+},
+{
+"id": 31,
+"user_id": 1,
+"action": "view",
+"entity": "report",
+"entity_id": "4",
+"at": "2026-10-31T06:37:12.887218",
+"ip": "127.0.0.1"
+},
+{
+"id": 30,
+"user_id": 1,
+"action": "view",
+"entity": "trend",
+"entity_id": "1",
+"at": "2026-10-31T06:37:09.491627",
+"ip": "127.0.0.1"
+},
+{
+"id": 29,
+"user_id": 1,
+"action": "view",
+"entity": "patient",
+"entity_id": "1",
+"at": "2026-10-31T06:37:09.442724",
+"ip": "127.0.0.1"
+},
+{
+"id": 28,
+"user_id": 1,
+"action": "view",
+"entity": "caller_card",
+"entity_id": "2",
+"at": "2026-10-31T06:36:30.046499",
+"ip": "127.0.0.1"
+},
+{
+"id": 27,
+"user_id": 1,
+"action": "view",
+"entity": "trend",
+"entity_id": "1",
+"at": "2026-10-31T06:36:26.199206",
+"ip": "127.0.0.1"
+},
+{
+"id": 26,
+"user_id": 1,
+"action": "view",
+"entity": "call_card",
+"entity_id": "1",
+"at": "2026-10-31T06:36:26.149448",
+"ip": "127.0.0.1"
+},
+{
+"id": 25,
+"user_id": 1,
+"action": "view",
+"entity": "followup",
+"entity_id": "2",
+"at": "2026-10-31T06:36:26.109160",
+"ip": "127.0.0.1"
+},
+{
+"id": 24,
+"user_id": 1,
+"action": "import",
+"entity": "import_batch",
+"entity_id": "3",
+"at": "2026-10-31T06:36:09.655348",
+"ip": "127.0.0.1"
+},
+{
+"id": 23,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T06:36:09.589955",
+"ip": "127.0.0.1"
+},
+{
+"id": 22,
+"user_id": 1,
+"action": "view",
+"entity": "report",
+"entity_id": "4",
+"at": "2026-10-31T06:06:10.857394",
+"ip": "127.0.0.1"
+},
+{
+"id": 21,
+"user_id": 1,
+"action": "view",
+"entity": "trend",
+"entity_id": "1",
+"at": "2026-10-31T06:05:57.142598",
+"ip": "127.0.0.1"
+},
+{
+"id": 20,
+"user_id": 1,
+"action": "view",
+"entity": "patient",
+"entity_id": "1",
+"at": "2026-10-31T06:05:55.730538",
+"ip": "127.0.0.1"
+},
+{
+"id": 19,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T06:05:54.891867",
+"ip": "127.0.0.1"
+},
+{
+"id": 18,
+"user_id": 1,
+"action": "export",
+"entity": "followups",
+"entity_id": "queue:1",
+"at": "2026-10-31T06:05:22.449910",
+"ip": "127.0.0.1"
+},
+{
+"id": 17,
+"user_id": 1,
+"action": "view",
+"entity": "trend",
+"entity_id": "1",
+"at": "2026-10-31T06:05:21.862295",
+"ip": "127.0.0.1"
+},
+{
+"id": 16,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T06:05:21.518239",
+"ip": "127.0.0.1"
+},
+{
+"id": 15,
+"user_id": 1,
+"action": "call",
+"entity": "followup",
+"entity_id": "2:BOOKED",
+"at": "2026-10-31T05:33:12.995706",
+"ip": "127.0.0.1"
+},
+{
+"id": 14,
+"user_id": 1,
+"action": "consent",
+"entity": "followup",
+"entity_id": "2",
+"at": "2026-10-31T05:33:12.633588",
+"ip": "127.0.0.1"
+},
+{
+"id": 13,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T05:33:11.431386",
+"ip": "127.0.0.1"
+},
+{
+"id": 12,
+"user_id": 1,
+"action": "create",
+"entity": "doctor",
+"entity_id": "1",
+"at": "2026-10-31T05:31:01.980145",
+"ip": "127.0.0.1"
+},
+{
+"id": 11,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T05:31:01.356435",
+"ip": "127.0.0.1"
+},
+{
+"id": 10,
+"user_id": 1,
+"action": "view",
+"entity": "caller_card",
+"entity_id": "2",
+"at": "2026-10-31T05:13:18.927277",
+"ip": "127.0.0.1"
+},
+{
+"id": 9,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T05:13:17.959948",
+"ip": "127.0.0.1"
+},
+{
+"id": 8,
+"user_id": 1,
+"action": "recompute",
+"entity": "followup",
+"entity_id": "2",
+"at": "2026-10-31T05:01:14.569981",
+"ip": "127.0.0.1"
+},
+{
+"id": 7,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T05:01:14.178168",
+"ip": "127.0.0.1"
+},
+{
+"id": 6,
+"user_id": 1,
+"action": "import",
+"entity": "import_batch",
+"entity_id": "2",
+"at": "2026-10-31T04:50:07.425458",
+"ip": "127.0.0.1"
+},
+{
+"id": 5,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T04:50:07.103692",
+"ip": "127.0.0.1"
+},
+{
+"id": 4,
+"user_id": 1,
+"action": "import",
+"entity": "import_batch",
+"entity_id": "1",
+"at": "2026-10-31T04:44:08.402331",
+"ip": "127.0.0.1"
+},
+{
+"id": 3,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-31T04:44:08.011397",
+"ip": "127.0.0.1"
+},
+{
+"id": 2,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-30T12:30:26.113353",
+"ip": "127.0.0.1"
+},
+{
+"id": 1,
+"user_id": 1,
+"action": "login",
+"entity": "user",
+"entity_id": "1",
+"at": "2026-10-30T12:30:05.881161",
+"ip": "127.0.0.1"
+}
+],
+"/followups": [
+{
+"id": 2,
+"patient_id": 1,
+"patient_name": "Test Patient",
+"mobile": "9000000000",
+"language": "",
+"due_on": "2026-10-26",
+"stage": "BOOKED",
+"priority": "ROUTINE",
+"attempts": 1,
+"report_age_days": 95,
+"buckets": [
+"DIABETES"
+],
+"retest_score": 45,
+"retest_tier": "MEDIUM",
+"assigned_doctor_id": 1
+}
+],
+"/followups/2": {
+"id": 2,
+"patient_id": 1,
+"patient_name": "Test Patient",
+"mobile": "9000000000",
+"language": "",
+"due_on": "2026-10-26",
+"stage": "BOOKED",
+"priority": "ROUTINE",
+"attempts": 1,
+"report_age_days": 95,
+"buckets": [
+"DIABETES"
+],
+"retest_score": 45,
+"retest_tier": "MEDIUM",
+"assigned_doctor_id": 1,
+"report_id": 5,
+"score_breakdown": [
+{
+"factor": "Severity of worst abnormal value",
+"detail": "mild",
+"points": 10
+},
+{
+"factor": "Time since test vs follow-up interval",
+"detail": "95 of 90 days",
+"points": 20
+},
+{
+"factor": "Trend vs previous report",
+"detail": "stable_abnormal",
+"points": 10
+},
+{
+"factor": "Number of abnormal buckets",
+"detail": "1",
+"points": 5
+},
+{
+"factor": "Has ordered retests before",
+"detail": "no",
+"points": 0
+}
+],
+"suppressed_reason": "",
+"buckets_detail": [
+{
+"code": "DIABETES",
+"severity": "mild",
+"reason": "Glycosylated Hemoglobin high (mild)"
+}
+],
+"parked": false
+},
+"/followups/2/comments": [],
+"/followups/2/workflow": {
+"stage": "BOOKED",
+"attempts": 1,
+"suppressed_reason": "",
+"call_later_at": null,
+"consent": {
+"given_at": "2026-10-31T05:33:12.626109",
+"channel": "caller_call"
+},
+"appointment": {
+"slot_start": "2026-11-02T04:30:00",
+"slot_end": "2026-11-02T04:45:00",
+"doctor_id": 1,
+"status": "BOOKED"
+},
+"calls": [
+{
+"outcome": "BOOKED",
+"role": "ADMIN",
+"notes": "",
+"at": "2026-10-31T05:33:12.988971"
+}
+],
+"accepted_at": null,
+"next_followup_on": null,
+"recommendations": []
+},
+"/followups/2/call-card": {
+"id": 1,
+"followup_id": 2,
+"version": 1,
+"language": "en",
+"content": {
+"schema_version": "1.0",
+"language": "en",
+"summary": {
+"headline": "Follow-up due: HbA1c, Fasting Blood Sugar, Post-Prandial Blood Sugar",
+"report_date": "2026-07-28",
+"report_age_days": 95,
+"lab": "mock"
+},
+"abnormal_findings": [
+{
+"param_code": "HBA1C",
+"name": "Glycosylated Hemoglobin",
+"value": 6.1,
+"unit": "%",
+"ref_range": "<5.7",
+"direction": "high",
+"severity": "mild",
+"trend_vs_previous": "stable"
+}
+],
+"retest": {
+"tier": "MEDIUM",
+"score": 45,
+"score_breakdown": [
+{
+"factor": "Severity of worst abnormal value",
+"detail": "mild",
+"points": 10
+},
+{
+"factor": "Time since test vs follow-up interval",
+"detail": "95 of 90 days",
+"points": 20
+},
+{
+"factor": "Trend vs previous report",
+"detail": "stable_abnormal",
+"points": 10
+},
+{
+"factor": "Number of abnormal buckets",
+"detail": "1",
+"points": 5
+},
+{
+"factor": "Has ordered retests before",
+"detail": "no",
+"points": 0
+}
+],
+"reasons": [
+"Glycosylated Hemoglobin high (mild)"
+],
+"recommended_tests": [
+{
+"test_code": "HBA1C",
+"name": "HbA1c",
+"priority": 1,
+"rationale": "Follows up the Diabetes / Prediabetes finding from the report dated 2026-07-28; repeat about 90 days after the original test."
+},
+{
+"test_code": "FBS",
+"name": "Fasting Blood Sugar",
+"priority": 2,
+"rationale": "Follows up the Diabetes / Prediabetes finding from the report dated 2026-07-28; repeat about 90 days after the original test."
+},
+{
+"test_code": "PPBS",
+"name": "Post-Prandial Blood Sugar",
+"priority": 3,
+"rationale": "Follows up the Diabetes / Prediabetes finding from the report dated 2026-07-28; repeat about 90 days after the original test."
+}
+],
+"not_needed": [],
+"ideal_window": {
+"from": "2026-10-31",
+"to": "2026-11-30"
+},
+"confidence": "medium"
+},
+"doctor_script": {
+"opening": "This is a follow-up call for a 45-year-old patient whose mock report is 3 months 5 days old. Review the findings below before speaking to the patient.",
+"discussion_points": [
+"Confirm identity and ask how the patient has been since the last test.",
+"Discuss the findings listed above and any lifestyle or treatment changes since then.",
+"Explain why a repeat test is suggested and when it should be done."
+],
+"scientific_talking_points": [
+"Glycosylated Hemoglobin: 6.1 % against the reference range <5.7 (high, mild; trend since the previous report: stable)."
+],
+"questions_to_ask": [
+"Any new symptoms since the last report?",
+"Are you taking any regular medicines or supplements?",
+"Any change in diet, exercise or weight?"
+],
+"counselling_points": [
+"Explain the findings in simple terms and what they mean for daily habits.",
+"Stress the importance of repeating the tests on time."
+],
+"tests_to_suggest": [
+"HbA1c: Follows up the Diabetes / Prediabetes finding from the report dated 2026-07-28; repeat about 90 days after the original test.",
+"Fasting Blood Sugar: Follows up the Diabetes / Prediabetes finding from the report dated 2026-07-28; repeat about 90 days after the original test.",
+"Post-Prandial Blood Sugar: Follows up the Diabetes / Prediabetes finding from the report dated 2026-07-28; repeat about 90 days after the original test."
+],
+"red_flags": [
+"Chest pain, breathlessness, fainting, confusion or severe weakness: advise emergency care immediately."
+],
+"closing": "Thank the patient, confirm the plan for repeat testing and the next follow-up.",
+"next_followup_suggestion": "Repeat the suggested tests and review again in 90 days."
+},
+"caller_script": {
+"opening": "Hello, may I speak with {patient_name}? This is {caller_name} calling from {company}.",
+"identity_check": "Before we continue, could you please confirm your date of birth or the area where you live?",
+"free_followup_pitch": "As part of our service you are eligible for a free follow-up call with one of our doctors after your recent HbA1c, Fasting Blood Sugar, Post-Prandial Blood Sugar. There is no charge for this call.",
+"consent_request": "May I have your permission to arrange this call and to share your earlier report with the doctor?",
+"slot_offer": "Which time suits you better, morning or evening? I will book the next available slot for you.",
+"objection_handling": [
+{
+"objection": "I am busy right now.",
+"reply": "It is a short call and we can fix a time that suits you."
+},
+{
+"objection": "Is it really free?",
+"reply": "Yes, the follow-up call with the doctor is free as part of our service."
+},
+{
+"objection": "I feel fine.",
+"reply": "That is good to hear. The doctor will simply go over your earlier report and advise whether anything further is needed."
+},
+{
+"objection": "What is wrong with my report?",
+"reply": "I am not able to discuss the report. The doctor will explain everything on the call."
+}
+],
+"do_not_say": [
+"Do not explain, interpret or comment on any test result.",
+"Do not name any disease, condition or medicine.",
+"Do not promise any treatment or outcome."
+],
+"urgent_symptom_protocol": "If the patient mentions chest pain, difficulty breathing, fainting, severe weakness or any other urgent symptom, advise them to seek emergency care immediately and notify the doctor straight away using the Request escalation button.",
+"closing": "Thank you for your time. The doctor will speak with you at the booked time. Take care."
+},
+"needs_doctor_review": true
+},
+"model": "template-v1",
+"prompt_version": "v1",
+"validation_status": "VALID",
+"validation_errors": [],
+"notice": "",
+"approved": false,
+"approved_at": null,
+"label": "AI-generated draft, doctor to confirm",
+"versions": [
+{
+"id": 1,
+"version": 1,
+"validation_status": "VALID",
+"edited_by": null,
+"approved": false,
+"created_at": "2026-10-31T05:13:07.692380"
+}
+]
+},
+"/reports/5": {
+"id": 5,
+"order_id": "P4-A2",
+"order_pk": 7,
+"status": "READY",
+"patient_name": "Test Patient",
+"age": 45,
+"gender": "M",
+"collected_on": "2026-07-28T04:50:08.868243",
+"reported_on": "2026-07-29T04:50:08.868243",
+"lab": "mock",
+"confidence": 90,
+"needs_review": false,
+"review_reasons": [
+"1 test name(s) not recognised"
+],
+"classification": "ABNORMAL",
+"parameters": [
+{
+"id": 13,
+"param_code": "HBA1C",
+"param_name_raw": "Glycosylated Hemoglobin",
+"value_num": 6.1,
+"value_text": "6.1",
+"unit": "%",
+"ref_low": null,
+"ref_high": 5.7,
+"ref_text": "<5.7",
+"lab_flag": "",
+"system_flag": "HIGH",
+"severity": "mild",
+"deviation_pct": 7.0,
+"ref_source": "report"
+},
+{
+"id": 14,
+"param_code": "HEMOGLOBIN",
+"param_name_raw": "Haemoglobin",
+"value_num": 14.5,
+"value_text": "14.5",
+"unit": "g/dL",
+"ref_low": 13.0,
+"ref_high": 17.0,
+"ref_text": "13 - 17",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+},
+{
+"id": 15,
+"param_code": "",
+"param_name_raw": "TSH",
+"value_num": 2.1,
+"value_text": "2.1",
+"unit": "\u00b5IU/mL",
+"ref_low": 0.4,
+"ref_high": 4.2,
+"ref_text": "0.4 - 4.2",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+}
+]
+},
+"/reports/4": {
+"id": 4,
+"order_id": "P4-A1",
+"order_pk": 6,
+"status": "READY",
+"patient_name": "Test Patient",
+"age": 45,
+"gender": "M",
+"collected_on": "2026-07-28T04:50:08.835558",
+"reported_on": "2026-07-29T04:50:08.835558",
+"lab": "mock",
+"confidence": 90,
+"needs_review": false,
+"review_reasons": [
+"1 test name(s) not recognised"
+],
+"classification": "ABNORMAL",
+"parameters": [
+{
+"id": 10,
+"param_code": "HBA1C",
+"param_name_raw": "Glycosylated Hemoglobin",
+"value_num": 6.1,
+"value_text": "6.1",
+"unit": "%",
+"ref_low": null,
+"ref_high": 5.7,
+"ref_text": "<5.7",
+"lab_flag": "",
+"system_flag": "HIGH",
+"severity": "mild",
+"deviation_pct": 7.0,
+"ref_source": "report"
+},
+{
+"id": 11,
+"param_code": "HEMOGLOBIN",
+"param_name_raw": "Haemoglobin",
+"value_num": 14.5,
+"value_text": "14.5",
+"unit": "g/dL",
+"ref_low": 13.0,
+"ref_high": 17.0,
+"ref_text": "13 - 17",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+},
+{
+"id": 12,
+"param_code": "",
+"param_name_raw": "TSH",
+"value_num": 2.1,
+"value_text": "2.1",
+"unit": "\u00b5IU/mL",
+"ref_low": 0.4,
+"ref_high": 4.2,
+"ref_text": "0.4 - 4.2",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+}
+]
+},
+"/reports/3": {
+"id": 3,
+"order_id": "SMOKE-REVIEW-3",
+"order_pk": 3,
+"status": "NEEDS_REVIEW",
+"patient_name": "Test Patient",
+"age": 45,
+"gender": "",
+"collected_on": "2026-07-28T04:44:10.605169",
+"reported_on": "2026-07-29T04:44:10.605169",
+"lab": "mock",
+"confidence": 60,
+"needs_review": true,
+"review_reasons": [
+"Gender missing",
+"1 test name(s) not recognised"
+],
+"classification": "ABNORMAL",
+"parameters": [
+{
+"id": 7,
+"param_code": "HBA1C",
+"param_name_raw": "Glycosylated Hemoglobin",
+"value_num": 6.1,
+"value_text": "6.1",
+"unit": "%",
+"ref_low": null,
+"ref_high": 5.7,
+"ref_text": "<5.7",
+"lab_flag": "",
+"system_flag": "HIGH",
+"severity": "mild",
+"deviation_pct": 7.0,
+"ref_source": "report"
+},
+{
+"id": 8,
+"param_code": "HEMOGLOBIN",
+"param_name_raw": "Haemoglobin",
+"value_num": 14.5,
+"value_text": "14.5",
+"unit": "g/dL",
+"ref_low": 13.0,
+"ref_high": 17.0,
+"ref_text": "13 - 17",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+},
+{
+"id": 9,
+"param_code": "",
+"param_name_raw": "TSH",
+"value_num": 2.1,
+"value_text": "2.1",
+"unit": "\u00b5IU/mL",
+"ref_low": 0.4,
+"ref_high": 4.2,
+"ref_text": "0.4 - 4.2",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+}
+]
+},
+"/reports/2": {
+"id": 2,
+"order_id": "SMOKE-NORMAL-2",
+"order_pk": 2,
+"status": "READY",
+"patient_name": "Test Patient",
+"age": 45,
+"gender": "M",
+"collected_on": "2026-07-28T04:44:10.593403",
+"reported_on": "2026-07-29T04:44:10.593403",
+"lab": "mock",
+"confidence": 90,
+"needs_review": false,
+"review_reasons": [
+"1 test name(s) not recognised"
+],
+"classification": "NORMAL",
+"parameters": [
+{
+"id": 4,
+"param_code": "HBA1C",
+"param_name_raw": "Glycosylated Hemoglobin",
+"value_num": 5.2,
+"value_text": "5.2",
+"unit": "%",
+"ref_low": null,
+"ref_high": 5.7,
+"ref_text": "<5.7",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+},
+{
+"id": 5,
+"param_code": "HEMOGLOBIN",
+"param_name_raw": "Haemoglobin",
+"value_num": 14.5,
+"value_text": "14.5",
+"unit": "g/dL",
+"ref_low": 13.0,
+"ref_high": 17.0,
+"ref_text": "13 - 17",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+},
+{
+"id": 6,
+"param_code": "",
+"param_name_raw": "TSH",
+"value_num": 2.1,
+"value_text": "2.1",
+"unit": "\u00b5IU/mL",
+"ref_low": 0.4,
+"ref_high": 4.2,
+"ref_text": "0.4 - 4.2",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+}
+]
+},
+"/reports/1": {
+"id": 1,
+"order_id": "SMOKE-A1",
+"order_pk": 1,
+"status": "READY",
+"patient_name": "Test Patient",
+"age": 45,
+"gender": "M",
+"collected_on": "2026-07-28T04:44:10.566024",
+"reported_on": "2026-07-29T04:44:10.566024",
+"lab": "mock",
+"confidence": 90,
+"needs_review": false,
+"review_reasons": [
+"1 test name(s) not recognised"
+],
+"classification": "ABNORMAL",
+"parameters": [
+{
+"id": 1,
+"param_code": "HBA1C",
+"param_name_raw": "Glycosylated Hemoglobin",
+"value_num": 6.1,
+"value_text": "6.1",
+"unit": "%",
+"ref_low": null,
+"ref_high": 5.7,
+"ref_text": "<5.7",
+"lab_flag": "",
+"system_flag": "HIGH",
+"severity": "mild",
+"deviation_pct": 7.0,
+"ref_source": "report"
+},
+{
+"id": 2,
+"param_code": "HEMOGLOBIN",
+"param_name_raw": "Haemoglobin",
+"value_num": 14.5,
+"value_text": "14.5",
+"unit": "g/dL",
+"ref_low": 13.0,
+"ref_high": 17.0,
+"ref_text": "13 - 17",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+},
+{
+"id": 3,
+"param_code": "",
+"param_name_raw": "TSH",
+"value_num": 2.1,
+"value_text": "2.1",
+"unit": "\u00b5IU/mL",
+"ref_low": 0.4,
+"ref_high": 4.2,
+"ref_text": "0.4 - 4.2",
+"lab_flag": "",
+"system_flag": "NORMAL",
+"severity": "",
+"deviation_pct": null,
+"ref_source": "report"
+}
+]
+},
+"/patients/1": {
+"id": 1,
+"name": "Test Patient",
+"gender": "M",
+"age": 45,
+"mobile": "9000000000",
+"household_tag": "",
+"language": "",
+"do_not_call": false,
+"household": [],
+"reports": [
+{
+"order_id": "P4-A2",
+"status": "READY",
+"collected_on": "2026-07-28T04:50:08.868243",
+"report_id": 5,
+"classification": "ABNORMAL"
+},
+{
+"order_id": "P4-A1",
+"status": "READY",
+"collected_on": "2026-07-28T04:50:08.835558",
+"report_id": 4,
+"classification": "ABNORMAL"
+}
+]
+},
+"/trends/1/parameters": [
+{
+"code": "HBA1C",
+"name": "Glycosylated Hemoglobin",
+"unit": "%",
+"count": 2,
+"abnormal": 2
+},
+{
+"code": "HEMOGLOBIN",
+"name": "Haemoglobin",
+"unit": "g/dL",
+"count": 2,
+"abnormal": 0
+}
+],
+"/trends/1": {
+"patient_id": 1,
+"range": "all",
+"series": [
+{
+"code": "HBA1C",
+"name": "Glycosylated Hemoglobin",
+"unit": "%",
+"points": [
+{
+"date": "2026-07-28",
+"value": 6.1,
+"flag": "HIGH",
+"severity": "mild",
+"order_id": "P4-A1",
+"report_id": 4,
+"ref_text": "<5.7"
+},
+{
+"date": "2026-07-28",
+"value": 6.1,
+"flag": "HIGH",
+"severity": "mild",
+"order_id": "P4-A2",
+"report_id": 5,
+"ref_text": "<5.7"
+}
+],
+"band": {
+"low": null,
+"high": 5.7
+},
+"band_source": "report"
+},
+{
+"code": "HEMOGLOBIN",
+"name": "Haemoglobin",
+"unit": "g/dL",
+"points": [
+{
+"date": "2026-07-28",
+"value": 14.5,
+"flag": "NORMAL",
+"severity": "",
+"order_id": "P4-A1",
+"report_id": 4,
+"ref_text": "13 - 17"
+},
+{
+"date": "2026-07-28",
+"value": 14.5,
+"flag": "NORMAL",
+"severity": "",
+"order_id": "P4-A2",
+"report_id": 5,
+"ref_text": "13 - 17"
+}
+],
+"band": {
+"low": 13.0,
+"high": 17.0
+},
+"band_source": "report"
+}
+],
+"history_starts": "2026-07-28"
+},
+"/rules/test_catalogue": {
+"key": "test_catalogue",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true,
+"data": [
+{
+"code": "HBA1C",
+"name": "HbA1c"
+},
+{
+"code": "FBS",
+"name": "Fasting Blood Sugar"
+},
+{
+"code": "PPBS",
+"name": "Post-Prandial Blood Sugar"
+},
+{
+"code": "LIPID",
+"name": "Lipid Profile"
+},
+{
+"code": "THYROID",
+"name": "Thyroid Profile"
+},
+{
+"code": "CBC",
+"name": "Complete Blood Count"
+},
+{
+"code": "IRON",
+"name": "Iron Studies"
+},
+{
+"code": "VITD",
+"name": "Vitamin D"
+},
+{
+"code": "B12",
+"name": "Vitamin B12"
+},
+{
+"code": "KFT",
+"name": "Kidney Function Test"
+},
+{
+"code": "LFT",
+"name": "Liver Function Test"
+}
+]
+},
+"/rules/buckets": {
+"key": "buckets",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true,
+"data": [
+{
+"code": "DIABETES",
+"name": "Diabetes / Prediabetes",
+"params": [
+"HBA1C",
+"GLUCOSE_FASTING",
+"GLUCOSE_PP"
+],
+"interval_days": 90,
+"priority": "ROUTINE",
+"retest": [
+"HBA1C",
+"FBS",
+"PPBS"
+]
+},
+{
+"code": "LIPID",
+"name": "Lipid / Cardio risk",
+"params": [
+"TRIGLYCERIDES",
+"LDL",
+"HDL",
+"CHOL_TOTAL"
+],
+"interval_days": 90,
+"priority": "ROUTINE",
+"retest": [
+"LIPID"
+]
+},
+{
+"code": "THYROID",
+"name": "Thyroid",
+"params": [
+"TSH",
+"FT3",
+"FT4"
+],
+"interval_days": 90,
+"priority": "ROUTINE",
+"retest": [
+"THYROID"
+]
+},
+{
+"code": "ANAEMIA",
+"name": "Anaemia / Iron",
+"params": [
+"HEMOGLOBIN",
+"FERRITIN",
+"IRON",
+"TIBC"
+],
+"interval_days": 90,
+"priority": "ROUTINE",
+"retest": [
+"CBC",
+"IRON"
+]
+},
+{
+"code": "VIT_D_B12",
+"name": "Vitamin D / B12",
+"params": [
+"VITAMIN_D",
+"B12"
+],
+"interval_days": 90,
+"priority": "ROUTINE",
+"retest": [
+"VITD",
+"B12"
+]
+},
+{
+"code": "KIDNEY",
+"name": "Kidney",
+"params": [
+"CREATININE",
+"UREA",
+"EGFR",
+"URIC_ACID"
+],
+"interval_days": 90,
+"priority": "ROUTINE",
+"retest": [
+"KFT"
+]
+},
+{
+"code": "LIVER",
+"name": "Liver",
+"params": [
+"SGOT",
+"SGPT",
+"ALP",
+"BILIRUBIN"
+],
+"interval_days": 90,
+"priority": "ROUTINE",
+"retest": [
+"LFT"
+]
+},
+{
+"code": "CANCER_MARKER",
+"name": "Cancer markers",
+"params": [
+"PSA",
+"CA125",
+"CEA"
+],
+"interval_days": 0,
+"priority": "ESCALATION",
+"retest": []
+},
+{
+"code": "OTHER",
+"name": "Other abnormal",
+"params": [],
+"interval_days": 90,
+"priority": "ROUTINE",
+"retest": []
+}
+]
+},
+"/rules/score_weights": {
+"key": "score_weights",
+"version": 1,
+"signed_off_by": null,
+"signed_off_at": null,
+"pending_signoff": true,
+"data": {
+"severity": {
+"mild": 10,
+"moderate": 20,
+"severe": 30
+},
+"time_ratio": [
+[
+0.8,
+0
+],
+[
+1.0,
+10
+],
+[
+1.5,
+20
+],
+[
+null,
+25
+]
+],
+"trend": {
+"worsening": 20,
+"stable_abnormal": 10,
+"improving": 5,
+"none": 0
+},
+"buckets": {
+"1": 5,
+"2": 10,
+"3+": 15
+},
+"engagement_bonus": 10,
+"tiers": {
+"HIGH": 65,
+"MEDIUM": 40
+}
+}
+}
+}

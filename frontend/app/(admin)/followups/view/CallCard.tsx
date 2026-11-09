@@ -1,4 +1,5 @@
 "use client";
+import { TableFrame } from "@/components/TableFrame";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -48,10 +49,12 @@ export default function CallCard({ fid, role }: { fid: string; role: string }) {
 
       <div>
         <h3 className="font-medium">Retest scope · {b.retest.tier} ({b.retest.score}) · confidence {b.retest.confidence}</h3>
-        <table className="mt-1 w-full text-left">
-          <thead><tr><th className="p-1">Test</th><th>Why</th></tr></thead>
-          <tbody>{b.retest.recommended_tests.map((t: any) => <tr key={t.test_code} className="border-t"><td className="p-1">{t.name}</td><td>{t.rationale}</td></tr>)}</tbody>
-        </table>
+        <TableFrame label="Call card results">
+          <table className="mt-1 w-full text-left">
+            <thead><tr><th className="p-1">Test</th><th>Why</th></tr></thead>
+            <tbody>{b.retest.recommended_tests.map((t: any) => <tr key={t.test_code} className="border-t"><td className="p-1">{t.name}</td><td>{t.rationale}</td></tr>)}</tbody>
+          </table>
+        </TableFrame>
         <div className="mt-1 text-slate-600">Ideal window: {b.retest.ideal_window.from} to {b.retest.ideal_window.to}</div>
       </div>
 

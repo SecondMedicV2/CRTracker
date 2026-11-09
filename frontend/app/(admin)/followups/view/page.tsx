@@ -1,4 +1,6 @@
 "use client";
+import { RequestState } from "@/components/RequestState";
+import { TableFrame } from "@/components/TableFrame";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
@@ -9,14 +11,12 @@ import Trends from "@/components/Trends";
 import CallCard from "./CallCard";
 import DoctorActions from "./DoctorActions";
 
-function FollowupViewInner() {
-  const id = useSearchParams().get("id") ?? "";
+function FollowupViewInner({ id }: { id: string }) {
   const { data: f, error, reload } = useApi<any>(`/followups/${id}`);
   const doctors = useApi<any[]>("/doctors");
   const me = useApi<any>("/auth/me");
   const [msg, setMsg] = useState("");
-  if (error) return <p role="alert">{error}</p>;
-  if (!f) return null;
+  if (error || !f) return <RequestState loading={!f} error={error} retry={reload} />;
   const patch = (body: object) => api(`/followups/${id}`, { method: "PATCH", body }).then(() => { setMsg(""); reload(); }).catch((e) => setMsg(e.message));
 
   return (
@@ -50,16 +50,28 @@ function FollowupViewInner() {
       </section>
       <section>
         <h2 className="mb-1 font-medium">Why this score: {f.retest_score} ({f.retest_tier})</h2>
-        <table className="w-full bg-white text-left text-sm shadow">
-          <thead><tr><th className="p-2">Factor</th><th>Detail</th><th>Points</th></tr></thead>
-          <tbody>{f.score_breakdown.map((s: any) => <tr key={s.factor} className="border-t"><td className="p-2">{s.factor}</td><td>{s.detail}</td><td>{s.points}</td></tr>)}</tbody>
-        </table>
+        <TableFrame label="Retest score breakdown">
+          <table className="w-full bg-white text-left text-sm shadow">
+            <thead><tr><th className="p-2">Factor</th><th>Detail</th><th>Points</th></tr></thead>
+            <tbody>{f.score_breakdown.map((s: any) => <tr key={s.factor} className="border-t"><td className="p-2">{s.factor}</td><td>{s.detail}</td><td>{s.points}</td></tr>)}</tbody>
+          </table>
+        </TableFrame>
       </section>
     </div>
   );
 }
 
 
+function Detail() {
+  const id = useSearchParams().get("id");
+  return (
+    <div className="space-y-4">
+      <Link className="inline-block text-sm font-medium text-teal-800 underline" href="/followups">Back to Follow-ups</Link>
+      {id && /^\d+$/.test(id) ? <FollowupViewInner key={id} id={id} /> : <p role="alert">Open a record from Follow-ups.</p>}
+    </div>
+  );
+}
+
 export default function FollowupView() {
-  return <Suspense><FollowupViewInner /></Suspense>;
+  return <Suspense fallback={<p role="status">Loading…</p>}><Detail /></Suspense>;
 }

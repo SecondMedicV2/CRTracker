@@ -1,4 +1,6 @@
 "use client";
+import { TableFrame } from "@/components/TableFrame";
+import { RequestState } from "@/components/RequestState";
 import Link from "next/link";
 import { useState } from "react";
 import { api } from "@/lib/api";
@@ -28,9 +30,23 @@ export default function Import() {
   const [preview, setPreview] = useState<any>(null);
   const [column, setColumn] = useState("");
   const [range, setRange] = useState({ start: "", end: "" });
+  const [pending, setPending] = useState(false);
 
   const done = (b: any) => { setSummary(b); setError(""); history.reload(); };
   const fail = (e: any) => setError(e.message);
+
+  async function runImport(request: () => Promise<any>, onSuccess?: () => void) {
+    setPending(true);
+    setError("");
+    try {
+      done(await request());
+      onSuccess?.();
+    } catch (err) {
+      fail(err);
+    } finally {
+      setPending(false);
+    }
+  }
 
   async function upload(path: string, extra?: Record<string, string>) {
     const fd = new FormData();
@@ -51,8 +67,8 @@ export default function Import() {
       <section className="space-y-2 rounded bg-white p-4 shadow">
         <h2 className="font-medium">1. Type or paste order IDs</h2>
         <textarea aria-label="Order IDs" className="h-28 w-full rounded border p-2 font-mono text-sm" placeholder="One per line, or comma separated" value={text} onChange={(e) => setText(e.target.value)} />
-        <button className="rounded bg-slate-900 px-3 py-1 text-white" disabled={!text.trim()}
-          onClick={() => api("/imports/manual", { method: "POST", body: { text } }).then((b) => { done(b); setText(""); }).catch(fail)}>Import</button>
+        <button className="rounded bg-slate-900 px-3 py-1 text-white" disabled={pending || !text.trim()}
+          onClick={() => runImport(() => api("/imports/manual", { method: "POST", body: { text } }), () => setText(""))}>Import order IDs</button>
       </section>
 
       <section className="space-y-2 rounded bg-white p-4 shadow">
@@ -73,7 +89,7 @@ export default function Import() {
               </select>
             </label>
             <div className="text-slate-600">{preview.rows} rows. First rows: {preview.sample.map((r: string[]) => r.join(" | ")).join(" ; ")}</div>
-            <button className="rounded bg-slate-900 px-3 py-1 text-white" onClick={() => upload("/imports/file", { column }).then(done).catch(fail)}>Import file</button>
+            <button className="rounded bg-slate-900 px-3 py-1 text-white" disabled={pending || !column} onClick={() => runImport(() => upload("/imports/file", { column }))}>Import file</button>
           </div>
         )}
       </section>
@@ -84,21 +100,26 @@ export default function Import() {
           <input type="date" aria-label="From date" className="rounded border p-1" value={range.start} onChange={(e) => setRange({ ...range, start: e.target.value })} />
           <span>to</span>
           <input type="date" aria-label="To date" className="rounded border p-1" value={range.end} onChange={(e) => setRange({ ...range, end: e.target.value })} />
-          <button className="rounded bg-slate-900 px-3 py-1 text-white" disabled={!range.start || !range.end}
-            onClick={() => api("/imports/pull", { method: "POST", body: range }).then(done).catch(fail)}>Pull now</button>
+          <button className="rounded bg-slate-900 px-3 py-1 text-white" disabled={pending || !range.start || !range.end || range.end < range.start}
+            onClick={() => runImport(() => api("/imports/pull", { method: "POST", body: range }))}>Pull now</button>
         </div>
+        {range.start && range.end && range.end < range.start && <p role="alert" className="text-sm text-red-700">The end date must be on or after the start date.</p>}
       </section>
 
       <section>
         <h2 className="mb-2 font-medium">Recent batches</h2>
-        <table className="w-full bg-white text-left text-sm shadow">
-          <thead><tr><th className="p-2">#</th><th>Source</th><th>Total</th><th>New</th><th>Dup</th><th>Failed</th><th>When</th></tr></thead>
-          <tbody>{history.data?.map((b) => (
-            <tr key={b.id} className="border-t"><td className="p-2"><Link className="underline" href={`/orders?batch_id=${b.id}`}>{b.id}</Link></td>
-              <td>{b.source}</td><td>{b.total}</td><td>{b.new}</td><td>{b.duplicate}</td><td>{b.failed}</td>
-              <td>{new Date(b.created_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}</td></tr>
-          ))}</tbody>
-        </table>
+        {pending && <p role="status" className="mb-2 text-sm text-slate-600">Importing orders…</p>}
+        <RequestState loading={!history.data} error={history.error} retry={history.reload} empty={history.data?.length === 0 ? "No batches imported yet." : undefined} />
+        {!history.error && !!history.data?.length && <TableFrame label="Recent batches">
+          <table className="w-full bg-white text-left text-sm shadow">
+            <thead><tr><th className="p-2">#</th><th>Source</th><th>Total</th><th>New</th><th>Dup</th><th>Failed</th><th>When</th></tr></thead>
+            <tbody>{history.data?.map((b) => (
+              <tr key={b.id} className="border-t"><td className="p-2"><Link className="underline" href={`/orders?batch_id=${b.id}`}>{b.id}</Link></td>
+                <td>{b.source}</td><td>{b.total}</td><td>{b.new}</td><td>{b.duplicate}</td><td>{b.failed}</td>
+                <td>{new Date(b.created_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}</td></tr>
+            ))}</tbody>
+          </table>
+        </TableFrame>}
       </section>
     </div>
   );

@@ -1,4 +1,6 @@
 "use client";
+import { RequestState } from "@/components/RequestState";
+import { TableFrame } from "@/components/TableFrame";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -21,7 +23,6 @@ export default function Users() {
     catch (err: any) { setMsg(err.message); }
   }
 
-  if (error) return <p role="alert">{error}</p>;
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-semibold">Users</h1>
@@ -35,14 +36,19 @@ export default function Users() {
         <button className="rounded bg-slate-900 p-2 text-white">Add user</button>
       </form>
       {msg && <p role="alert" className="text-sm text-red-600">{msg}</p>}
-      <table className="w-full bg-white text-left text-sm shadow">
-        <thead><tr><th className="p-2">Name</th><th>Email</th><th>Role</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead>
-        <tbody>{data?.map((u) => (
-          <tr key={u.id} className="border-t"><td className="p-2">{u.name}</td><td>{u.email}</td><td>{u.role}</td>
-            <td>{u.active ? "Active" : "Disabled"}</td>
-            <td><button className="underline" onClick={() => toggle(u)}>{u.active ? "Disable" : "Enable"}</button></td></tr>
-        ))}</tbody>
-      </table>
+      <RequestState loading={!data} error={error} retry={reload} empty={data?.length === 0 ? ("No users found.") : undefined} />
+      {!error && !!data?.length && (
+        <TableFrame label="Users">
+          <table className="w-full bg-white text-left text-sm shadow">
+            <thead><tr><th className="p-2">Name</th><th>Email</th><th>Role</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead>
+            <tbody>{data?.map((u) => (
+              <tr key={u.id} className="border-t"><td className="p-2">{u.name}</td><td>{u.email}</td><td>{u.role}</td>
+                <td>{u.active ? "Active" : "Disabled"}</td>
+                <td><button className="underline" onClick={() => toggle(u)}>{u.active ? "Disable" : "Enable"}</button></td></tr>
+            ))}</tbody>
+          </table>
+        </TableFrame>
+      )}
     </div>
   );
 }

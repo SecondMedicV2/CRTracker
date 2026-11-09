@@ -1,4 +1,6 @@
 "use client";
+import Link from "next/link";
+import { RequestState } from "@/components/RequestState";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { useApi } from "@/lib/useApi";
@@ -9,11 +11,9 @@ const STEPS: [string, string][] = [
   ["consent_request", "4. Ask for consent"], ["slot_offer", "5. Offer a time"], ["closing", "6. Close"],
 ];
 
-function CallerCardInner() {
-  const id = useSearchParams().get("id") ?? "";
-  const { data: c, error } = useApi<any>(`/followups/${id}/caller-card`);
-  if (error) return <p role="alert" className="text-sm">{error}</p>;
-  if (!c) return null;
+function CallerCardInner({ id }: { id: string }) {
+  const { data: c, error, reload } = useApi<any>(`/followups/${id}/caller-card`);
+  if (error || !c) return <RequestState loading={!c} error={error} retry={reload} />;
   return (
     <div className="space-y-4 text-sm">
       <h1 className="text-xl font-semibold">{c.patient_name}</h1>
@@ -36,6 +36,16 @@ function CallerCardInner() {
 }
 
 
+function Detail() {
+  const id = useSearchParams().get("id");
+  return (
+    <div className="space-y-4">
+      <Link className="inline-block text-sm font-medium text-teal-800 underline" href="/followups">Back to Follow-ups</Link>
+      {id && /^\d+$/.test(id) ? <CallerCardInner key={id} id={id} /> : <p role="alert">Open a record from Follow-ups.</p>}
+    </div>
+  );
+}
+
 export default function CallerCard() {
-  return <Suspense><CallerCardInner /></Suspense>;
+  return <Suspense fallback={<p role="status">Loading…</p>}><Detail /></Suspense>;
 }

@@ -1,16 +1,17 @@
 "use client";
+import Link from "next/link";
+import { RequestState } from "@/components/RequestState";
+import { TableFrame } from "@/components/TableFrame";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
-function ReportViewInner() {
-  const id = useSearchParams().get("id") ?? "";
+function ReportViewInner({ id }: { id: string }) {
   const { data: r, error, reload } = useApi<any>(`/reports/${id}`);
   const [msg, setMsg] = useState("");
-  if (error) return <p role="alert">{error}</p>;
-  if (!r) return null;
+  if (error || !r) return <RequestState loading={!r} error={error} retry={reload} />;
   const review = r.status === "NEEDS_REVIEW";
   const run = (p: Promise<any>) => p.then(() => { setMsg(""); reload(); }).catch((e) => setMsg(e.message));
 
@@ -35,29 +36,41 @@ function ReportViewInner() {
         </div>
       )}
       {msg && <p role="alert" className="text-sm text-red-600">{msg}</p>}
-      <table className="w-full bg-white text-left text-sm shadow">
-        <thead><tr><th className="p-2">Test</th><th>Value</th><th>Unit</th><th>Reference</th><th>Flag</th><th>How far out</th></tr></thead>
-        <tbody>{r.parameters.map((p: any) => {
-          const out = p.system_flag === "LOW" || p.system_flag === "HIGH";
-          return (
-            <tr key={p.id} className={`border-t ${out ? "bg-red-50" : ""}`}>
-              <td className="p-2">{p.param_name_raw}{!p.param_code && <span className="ml-1 text-amber-700">(not recognised)</span>}</td>
-              <td className={out ? "font-semibold text-red-700" : ""}>
-                {review ? <input aria-label={`Value of ${p.param_name_raw}`} className="w-20 rounded border p-1" defaultValue={p.value_text} onBlur={(e) => e.target.value !== p.value_text && run(api(`/reports/${id}/parameters/${p.id}`, { method: "PATCH", body: { value: e.target.value } }))} /> : p.value_text}
-              </td>
-              <td>{p.unit}</td><td>{p.ref_text || (p.ref_source === "fallback" ? "admin table" : "")}</td>
-              <td>{out ? `${p.system_flag} · ${p.severity}` : p.system_flag}</td>
-              <td>{p.deviation_pct != null ? `${p.deviation_pct}%` : ""}</td>
-            </tr>
-          );
-        })}</tbody>
-      </table>
+      <TableFrame label="Report parameters">
+        <table className="w-full bg-white text-left text-sm shadow">
+          <thead><tr><th className="p-2">Test</th><th>Value</th><th>Unit</th><th>Reference</th><th>Flag</th><th>How far out</th></tr></thead>
+          <tbody>{r.parameters.map((p: any) => {
+            const out = p.system_flag === "LOW" || p.system_flag === "HIGH";
+            return (
+              <tr key={p.id} className={`border-t ${out ? "bg-red-50" : ""}`}>
+                <td className="p-2">{p.param_name_raw}{!p.param_code && <span className="ml-1 text-amber-700">(not recognised)</span>}</td>
+                <td className={out ? "font-semibold text-red-700" : ""}>
+                  {review ? <input aria-label={`Value of ${p.param_name_raw}`} className="w-20 rounded border p-1" defaultValue={p.value_text} onBlur={(e) => e.target.value !== p.value_text && run(api(`/reports/${id}/parameters/${p.id}`, { method: "PATCH", body: { value: e.target.value } }))} /> : p.value_text}
+                </td>
+                <td>{p.unit}</td><td>{p.ref_text || (p.ref_source === "fallback" ? "admin table" : "")}</td>
+                <td>{out ? `${p.system_flag} · ${p.severity}` : p.system_flag}</td>
+                <td>{p.deviation_pct != null ? `${p.deviation_pct}%` : ""}</td>
+              </tr>
+            );
+          })}</tbody>
+        </table>
+      </TableFrame>
       <p className="text-xs text-slate-500">The original PDF viewer arrives once real Thyrocare PDFs are available.</p>
     </div>
   );
 }
 
 
+function Detail() {
+  const id = useSearchParams().get("id");
+  return (
+    <div className="space-y-4">
+      <Link className="inline-block text-sm font-medium text-teal-800 underline" href="/reports">Back to Reports</Link>
+      {id && /^\d+$/.test(id) ? <ReportViewInner key={id} id={id} /> : <p role="alert">Open a record from Reports.</p>}
+    </div>
+  );
+}
+
 export default function ReportView() {
-  return <Suspense><ReportViewInner /></Suspense>;
+  return <Suspense fallback={<p role="status">Loading…</p>}><Detail /></Suspense>;
 }

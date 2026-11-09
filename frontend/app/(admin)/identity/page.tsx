@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { RequestState } from "@/components/RequestState";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
@@ -23,12 +24,12 @@ export default function Identity() {
   const decide = (id: number, decision: string) =>
     api(`/identity-reviews/${id}/decide`, { method: "POST", body: { decision } }).then(() => { setMsg(""); reload(); }).catch((e) => setMsg(e.message));
 
-  if (error) return <p role="alert">{error}</p>;
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Is this the same person?</h1>
+      <h1 className="text-xl font-semibold">Duplicate review</h1>
+      <p className="text-sm text-slate-600">Compare the records before deciding whether they belong to the same person.</p>
       {msg && <p role="alert" className="text-sm text-red-600">{msg}</p>}
-      {data?.length === 0 && <p className="text-sm text-slate-600">Nothing waiting for a decision.</p>}
+      <RequestState loading={!data} error={error} retry={reload} empty={data?.length === 0 ? "Nothing waiting for a decision." : undefined} />
       {data?.map((r) => (
         <section key={r.id} className="space-y-3 rounded bg-white p-4 text-sm shadow">
           <div className="text-amber-700">{r.reason}</div>
@@ -36,7 +37,7 @@ export default function Identity() {
             <Side title="Already in the system" p={r.existing} />
             <Side title="New report" p={r.new} />
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button className="rounded bg-slate-900 px-3 py-1 text-white" onClick={() => decide(r.id, "SAME")}>Same person: merge</button>
             <button className="rounded border px-3 py-1" onClick={() => decide(r.id, "DIFFERENT")}>Different person: keep separate</button>
           </div>

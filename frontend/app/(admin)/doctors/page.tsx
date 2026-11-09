@@ -1,4 +1,6 @@
 "use client";
+import { RequestState } from "@/components/RequestState";
+import { TableFrame } from "@/components/TableFrame";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -16,7 +18,6 @@ export default function Doctors() {
     } catch (err: any) { setMsg(err.message); }
   }
 
-  if (error) return <p role="alert">{error}</p>;
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-semibold">Doctors</h1>
@@ -29,12 +30,17 @@ export default function Doctors() {
         <button className="rounded bg-slate-900 p-2 text-white">Add doctor</button>
       </form>
       {msg && <p role="alert" className="text-sm text-red-600">{msg}</p>}
-      <table className="w-full bg-white text-left text-sm shadow">
-        <thead><tr><th className="p-2">Name</th><th>Speciality</th><th>Languages</th><th>Phone</th><th>Pilot</th><th>Order</th></tr></thead>
-        <tbody>{data?.map((d) => (
-          <tr key={d.id} className="border-t"><td className="p-2">{d.name}</td><td>{d.speciality}</td><td>{d.languages.join(", ")}</td><td>{d.phone}</td><td>{d.in_pilot ? "Yes" : ""}</td><td>{d.priority_order}</td></tr>
-        ))}</tbody>
-      </table>
+      <RequestState loading={!data} error={error} retry={reload} empty={data?.length === 0 ? ("No doctors added yet.") : undefined} />
+      {!error && !!data?.length && (
+        <TableFrame label="Doctors">
+          <table className="w-full bg-white text-left text-sm shadow">
+            <thead><tr><th className="p-2">Name</th><th>Speciality</th><th>Languages</th><th>Phone</th><th>Pilot</th><th>Order</th></tr></thead>
+            <tbody>{data?.map((d) => (
+              <tr key={d.id} className="border-t"><td className="p-2">{d.name}</td><td>{d.speciality}</td><td>{d.languages.join(", ")}</td><td>{d.phone}</td><td>{d.in_pilot ? "Yes" : ""}</td><td>{d.priority_order}</td></tr>
+            ))}</tbody>
+          </table>
+        </TableFrame>
+      )}
     </div>
   );
 }

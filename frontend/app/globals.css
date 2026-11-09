@@ -3,3 +3,26 @@
 @tailwind utilities;
 
 :focus-visible { outline: 2px solid #1d4ed8; outline-offset: 2px; }
+
+.workspace-sidebar :focus-visible { outline-color: #5eead4; }
+.workspace-sidebar #workspace-notifications :focus-visible { outline-color: #1d4ed8; }
+.workspace { overflow-wrap: anywhere; }
+.workspace h1 { font-size: 1.5rem; line-height: 1.25; }
+.workspace :is(input, select, textarea) { max-width: 100%; }
+.workspace :is(input, select, textarea).border { border-color: #94a3b8; }
+button:disabled { cursor: not-allowed; opacity: .55; }
+.table-frame table { box-shadow: none; }
+.table-frame th { background: #f1f5f9; color: #334155; font-weight: 600; }
+.table-frame :is(th, td) { padding: .625rem .75rem; vertical-align: top; }
+.table-frame tbody tr + tr { border-top: 1px solid #e2e8f0; }
+
+@media (max-width: 767px) {
+  .table-frame { contain: paint; }
+  .table-frame table { min-width: max-content; }
+  .table-frame :is(th, td) { max-width: 16rem; }
+}
+
+@media print {
+  .table-frame { contain: none; overflow: visible; }
+  .table-frame table { min-width: 0; }
+}

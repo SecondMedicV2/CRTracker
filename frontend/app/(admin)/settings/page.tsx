@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { RequestState } from "@/components/RequestState";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
@@ -13,14 +14,15 @@ export default function Settings() {
     catch (e: any) { setMsg(e.message); }
   }
 
-  if (error) return <p role="alert">{error}</p>;
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">Settings</h1>
+      <p className="text-sm text-slate-600">Changes save when you toggle a setting or leave an edited field.</p>
+      <RequestState loading={!data} error={error} retry={reload} />
       {msg && <p role="alert" className="text-sm text-red-600">{msg}</p>}
       <div className="divide-y rounded bg-white shadow">
         {data && Object.entries(data).map(([k, v]) => (
-          <label key={k} className="flex items-center justify-between gap-4 p-3 text-sm">
+          <label key={k} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
             <span className="font-mono">{k}</span>
             {typeof v === "boolean"
               ? <input type="checkbox" checked={v} onChange={(e) => set(k, e.target.checked, v)} />

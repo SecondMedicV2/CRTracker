@@ -1,62 +1,115 @@
 "use client";
-import Link from "next/link";
-import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
 
-// Admin sees everything; other roles only the pages listed (the API enforces this too).
-const NAV: [string, string, string[]][] = [
-  ["/", "Home", ["CALLER", "DOCTOR"]], ["/dashboard", "Dashboard", []], ["/import", "Import orders", []], ["/orders", "Orders", []],
-  ["/doctor-queue", "My queue", ["DOCTOR"]], ["/followups", "Follow-ups", ["CALLER", "DOCTOR"]], ["/reports", "Reports", ["DOCTOR"]], ["/patients", "Patients", ["DOCTOR"]], ["/identity", "Duplicate review", ["CALLER"]],
-  ["/users", "Users", []], ["/doctors", "Doctors", []], ["/rules", "Rules", []], ["/settings", "Settings", []], ["/audit", "Audit log", []],
-];
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import { RequestState } from "@/components/RequestState";
+import { api } from "@/lib/api";
+import { navigationFor, Role, RoleContext } from "@/lib/navigation";
+import { useApi } from "@/lib/useApi";
+
+type Notifications = { unread: number; items: { id: number; read: boolean; urgent: boolean; link: string; text: string }[] };
 
 export default function Shell({ children }: { children: React.ReactNode }) {
-  const [me, setMe] = useState<any>(null);
-  const [notes, setNotes] = useState<any>({ unread: 0, items: [] });
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    api("/auth/me").then(setMe).catch(() => { window.location.href = "/login"; });
-  }, []);
+  const { data: me, error, reload } = useApi<{ name: string; role: Role }>("/auth/me");
+  const path = usePathname();
+  const [notes, setNotes] = useState<Notifications>({ unread: 0, items: [] });
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [markingRead, setMarkingRead] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+
   useEffect(() => {
     if (!me) return;
-    const load = () => api("/notifications").then(setNotes).catch(() => {});
+    const load = () => api<Notifications>("/notifications").then(setNotes).catch(() => {});
     load();
-    const t = setInterval(load, 30000);
-    return () => clearInterval(t);
+    const timer = setInterval(load, 30000);
+    return () => clearInterval(timer);
   }, [me]);
-  if (!me) return <p role="status" className="p-8 text-sm text-slate-600">Loading…</p>;
-  const isAdmin = me.role === "ADMIN";
+
+  async function markRead() {
+    setMarkingRead(true);
+    setActionError("");
+    try {
+      await api("/notifications/read-all", { method: "POST" });
+      setNotes(await api<Notifications>("/notifications"));
+    } catch (err: any) {
+      setActionError(err.message);
+    } finally {
+      setMarkingRead(false);
+    }
+  }
+
+  async function signOut() {
+    setSigningOut(true);
+    setActionError("");
+    try {
+      await api("/auth/logout", { method: "POST" });
+      window.location.href = "/login";
+    } catch (err: any) {
+      setActionError(err.message);
+      setSigningOut(false);
+    }
+  }
+
+  if (!me) return <main className="mx-auto max-w-lg p-6"><RequestState loading={!error} error={error} retry={reload} /></main>;
+
   return (
     <div className="min-h-screen md:flex">
-      <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:z-20 focus:bg-white focus:p-2 print:hidden">Skip to the content</a>
-      <nav aria-label="Main" className="bg-slate-900 p-4 text-sm text-white md:w-56 print:hidden">
-        <div className="mb-4 font-semibold">CRTracker</div>
-        <ul className="flex flex-wrap gap-3 md:block md:space-y-2">
-          {NAV.filter(([, , roles]) => isAdmin || roles.includes(me.role)).map(([href, label]) => (
-            <li key={href}><Link href={href} className="hover:underline">{label}</Link></li>
-          ))}
-        </ul>
-        <div className="relative mt-4">
-          <button className="underline" aria-label={`Notifications, ${notes.unread} unread`} onClick={() => setOpen(!open)}>
-            Notifications{notes.unread > 0 && <span className="ml-1 rounded-full bg-red-600 px-2 text-xs">{notes.unread}</span>}
+      <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:z-30 focus:bg-white focus:p-3 print:hidden">Skip to the content</a>
+      <aside className="workspace-sidebar bg-slate-900 text-slate-100 md:sticky md:top-0 md:max-h-dvh md:w-60 md:shrink-0 md:self-start md:overflow-y-auto print:hidden">
+        <div className="flex min-h-16 items-center justify-between gap-3 px-4 md:border-b md:border-white/10">
+          <Link href="/" className="flex items-center gap-2 font-semibold" onClick={() => setMenuOpen(false)}>
+            <span aria-hidden="true" className="grid size-8 place-items-center rounded-lg bg-teal-300 text-xs font-bold text-slate-900">CR</span>
+            CRTracker
+          </Link>
+          <button type="button" aria-expanded={menuOpen} aria-controls="workspace-menu" className="rounded-lg border border-white/30 px-3 py-2 text-sm md:hidden" onClick={() => setMenuOpen(!menuOpen)}>
+            {menuOpen ? "Close menu" : "Menu"}
           </button>
-          {open && (
-            <div className="absolute z-10 mt-1 w-72 rounded bg-white p-2 text-slate-900 shadow">
-              {notes.items.length === 0 && <div>No notifications</div>}
-              <ul className="max-h-72 space-y-1 overflow-auto">{notes.items.map((n: any) => (
-                <li key={n.id} className={n.read ? "text-slate-500" : n.urgent ? "font-medium text-red-700" : "font-medium"}>
-                  <Link href={n.link || "/"} onClick={() => setOpen(false)}>{n.text}</Link>
-                </li>))}</ul>
-              <button className="mt-1 underline" onClick={() => api("/notifications/read-all", { method: "POST" }).then(() => api("/notifications").then(setNotes))}>Mark all read</button>
-            </div>
-          )}
         </div>
-        <div className="mt-4 text-slate-300">{me.name} · {me.role}</div>
-        <button className="mt-2 underline" onClick={async () => { await api("/auth/logout", { method: "POST" }); window.location.href = "/login"; }}>
-          Sign out
-        </button>
-      </nav>
-      <main id="main" className="flex-1 p-4 md:p-8">{children}</main>
+        <div id="workspace-menu" className={`${menuOpen ? "block" : "hidden"} space-y-5 px-4 pb-4 md:block md:pt-4`}>
+          <nav aria-label="Main" className="space-y-4">
+            {navigationFor(me.role).map((group) => (
+              <div key={group.label}>
+                <p className="mb-1 px-2 text-xs font-medium text-slate-400">{group.label}</p>
+                <ul className="space-y-0.5">
+                  {group.items.map(({ href, label, detail }) => {
+                    const active = path === href || path.startsWith(`${href}/`) || (detail && path.startsWith(`${detail}/`));
+                    return <li key={href}><Link href={href} aria-current={active ? (path === href ? "page" : "location") : undefined}
+                      onClick={() => { setMenuOpen(false); setNotesOpen(false); }}
+                      className={`block rounded-lg px-2 py-2 text-sm ${active ? "bg-teal-300 font-semibold text-slate-900" : "hover:bg-white/10"}`}>{label}</Link></li>;
+                  })}
+                </ul>
+              </div>
+            ))}
+          </nav>
+          <div className="space-y-2 border-t border-white/10 pt-3 text-sm">
+            <button type="button" className="rounded-lg px-2 py-2 hover:bg-white/10" aria-expanded={notesOpen} aria-controls="workspace-notifications"
+              aria-label={`Notifications, ${notes.unread} unread`} onClick={() => setNotesOpen(!notesOpen)}>
+              Notifications{notes.unread > 0 && <span className="ml-2 rounded-full bg-teal-300 px-2 text-xs text-slate-900">{notes.unread}</span>}
+            </button>
+            <div id="workspace-notifications" hidden={!notesOpen} className="space-y-2 rounded-lg bg-white p-3 text-slate-900">
+              {notes.items.length === 0 ? <p>No notifications</p> : (
+                <ul className="max-h-60 space-y-2 overflow-auto">{notes.items.map((n) => (
+                  <li key={n.id} className={n.read ? "text-slate-600" : n.urgent ? "font-medium text-red-700" : "font-medium"}>
+                    <Link href={n.link || "/"} onClick={() => { setNotesOpen(false); setMenuOpen(false); }}>{n.text}</Link>
+                  </li>
+                ))}</ul>
+              )}
+              {notes.unread > 0 && <button type="button" className="underline" onClick={markRead} disabled={markingRead}>{markingRead ? "Marking as read…" : "Mark all read"}</button>}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-x-2 px-2">
+              <span className="break-all text-slate-300">{me.name} <span className="text-xs">· {me.role}</span></span>
+              <button type="button" className="py-2 underline" onClick={signOut} disabled={signingOut}>{signingOut ? "Signing out…" : "Sign out"}</button>
+            </div>
+            {actionError && <p role="alert" className="px-2 text-red-200">{actionError}</p>}
+          </div>
+        </div>
+      </aside>
+      <main id="main" tabIndex={-1} className="workspace min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
+        <div className="mx-auto max-w-7xl"><RoleContext.Provider value={me.role}>{children}</RoleContext.Provider></div>
+      </main>
     </div>
   );
 }

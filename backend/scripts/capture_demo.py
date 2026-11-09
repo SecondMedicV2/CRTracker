@@ -38,7 +38,7 @@ for kind in ("queue",):
     grab(f"/followups?view={kind}", "/followups")
 for f in (out.get("/followups") or []):
     i = f["id"]
-    for sub in ("", "/comments", "/workflow", "/call-card", "/calls"):
+    for sub in ("", "/comments", "/workflow", "/call-card", "/caller-card", "/calls"):
         grab(f"/followups/{i}{sub}")
 for r in (out.get("/reports") or []):
     grab(f"/reports/{r['id']}")

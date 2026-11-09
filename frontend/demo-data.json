@@ -1100,6 +1100,48 @@
 }
 ]
 },
+"/followups/2/caller-card": {
+"followup_id": 2,
+"patient_name": "Test Patient",
+"mobile": "9000000000",
+"language": "en",
+"notice": "",
+"report_age_days": 95,
+"reason_for_call": "Due for a follow-up on your HbA1c, Fasting Blood Sugar, Post-Prandial Blood Sugar",
+"do_not_say": [
+"Do not explain, interpret or comment on any test result.",
+"Do not name any disease, condition or medicine.",
+"Do not promise any treatment or outcome."
+],
+"script": {
+"opening": "Hello, may I speak with Test Patient? This is Demo Admin (sample data) calling from our health team.",
+"identity_check": "Before we continue, could you please confirm your date of birth or the area where you live?",
+"free_followup_pitch": "As part of our service you are eligible for a free follow-up call with one of our doctors after your recent HbA1c, Fasting Blood Sugar, Post-Prandial Blood Sugar. There is no charge for this call.",
+"consent_request": "May I have your permission to arrange this call and to share your earlier report with the doctor?",
+"slot_offer": "Which time suits you better, morning or evening? I will book the next available slot for you.",
+"objection_handling": [
+{
+"objection": "I am busy right now.",
+"reply": "It is a short call and we can fix a time that suits you."
+},
+{
+"objection": "Is it really free?",
+"reply": "Yes, the follow-up call with the doctor is free as part of our service."
+},
+{
+"objection": "I feel fine.",
+"reply": "That is good to hear. The doctor will simply go over your earlier report and advise whether anything further is needed."
+},
+{
+"objection": "What is wrong with my report?",
+"reply": "I am not able to discuss the report. The doctor will explain everything on the call."
+}
+],
+"urgent_symptom_protocol": "If the patient mentions chest pain, difficulty breathing, fainting, severe weakness or any other urgent symptom, advise them to seek emergency care immediately and notify the doctor straight away using the Request escalation button.",
+"closing": "Thank you for your time. The doctor will speak with you at the booked time. Take care."
+},
+"priority": "ROUTINE"
+},
 "/reports/5": {
 "id": 5,
 "order_id": "P4-A2",

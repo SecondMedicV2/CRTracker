@@ -33,6 +33,14 @@ export const NAV: { label: string; items: NavItem[] }[] = [
 ];
 
 export function navigationFor(role: Role) {
-  return NAV.map(({ label, items }) => ({ label, items: items.filter((item) => item.roles.includes(role)) }))
+  return NAV.map(({ label, items }) => ({
+    label,
+    items: items.filter((item) => item.roles.includes(role)).map((item) => {
+      if (role === "CALLER" && item.href === "/followups") {
+        return { ...item, label: "Calling queue", description: "Open a report follow-up, record the outcome, and arrange a doctor call." };
+      }
+      return item;
+    }),
+  }))
     .filter(({ items }) => items.length > 0);
 }

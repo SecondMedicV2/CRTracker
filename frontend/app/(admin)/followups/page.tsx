@@ -2,7 +2,9 @@
 import { RequestState } from "@/components/RequestState";
 import { TableFrame } from "@/components/TableFrame";
 import Link from "next/link";
-import { useState } from "react";
+import { useContext, useState } from "react";
+import { callStageLabel } from "@/lib/callWorkflow";
+import { RoleContext } from "@/lib/navigation";
 import { useApi } from "@/lib/useApi";
 
 const TABS: [string, string][] = [
@@ -11,6 +13,9 @@ const TABS: [string, string][] = [
 ];
 
 export default function Followups() {
+  const role = useContext(RoleContext);
+  const isCaller = role === "CALLER";
+  const canOpenCallWorkspace = role === "CALLER" || role === "ADMIN";
   const [view, setView] = useState("queue");
   const [priority, setPriority] = useState("");
   const [tier, setTier] = useState("");
@@ -23,7 +28,12 @@ export default function Followups() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Follow-ups</h1>
+      <header>
+        <h1 className="text-xl font-semibold">{isCaller ? "Calling queue" : "Follow-ups"}</h1>
+        <p className="mt-1 text-sm text-slate-600">{isCaller
+          ? "Contact customers after their lab reports, record call outcomes, and arrange a doctor follow-up."
+          : "Review follow-up cases, monitor outreach, and see which customers need a doctor."}</p>
+      </header>
       {counts.error && <RequestState loading={false} error={counts.error} retry={counts.reload} />}
       <div role="group" aria-label="Follow-up views" className="flex flex-wrap gap-2 text-sm">
         {TABS.filter(([v]) => counts.data && v in counts.data).map(([v, label]) => (
@@ -50,13 +60,15 @@ export default function Followups() {
       {!error && !!data?.length && (
         <TableFrame label="Follow-up cases">
           <table className="w-full bg-white text-left text-sm shadow">
-            <thead><tr><th className="p-2">Patient</th><th>Due</th><th>Report age</th><th>Priority</th><th>Stage</th>{full && <><th>Buckets</th><th>Potential</th></>}</tr></thead>
+            <thead><tr><th className="p-2">{isCaller ? "Customer" : "Patient"}</th><th>Due</th><th>Report age</th><th>Priority</th><th>Status</th>{canOpenCallWorkspace && <th>Call workspace</th>}{full && <><th>Buckets</th><th>Potential</th></>}</tr></thead>
             <tbody>{data?.map((f) => (
               <tr key={f.id} className="border-t">
-                <td className="p-2"><Link className="underline" href={full ? `/followups/view?id=${f.id}` : `/caller-card/view?id=${f.id}`}>{f.patient_name}</Link></td>
+                <td className="p-2">{full ? <Link className="underline" href={`/followups/view?id=${f.id}`}>{f.patient_name}</Link> : f.patient_name}</td>
                 <td>{new Date(f.due_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
                 <td>{f.report_age_days != null ? `${f.report_age_days} days` : ""}</td>
-                <td className={f.priority === "ESCALATION" ? "font-medium text-red-700" : ""}>{f.priority}</td><td>{f.stage}</td>
+                <td className={f.priority === "ESCALATION" ? "font-medium text-red-700" : ""}>{f.priority === "ESCALATION" ? "Escalation" : "Routine"}</td>
+                <td>{callStageLabel(f.stage)}</td>
+                {canOpenCallWorkspace && <td><Link className="inline-block rounded-lg border border-teal-800 px-2 py-1 font-medium text-teal-800 hover:bg-teal-50" href={`/caller-card/view?id=${f.id}`} aria-label={`Open call workspace for ${f.patient_name}`}>Open workspace</Link></td>}
                 {full && <><td>{f.buckets.join(", ")}</td><td>{f.retest_tier} ({f.retest_score})</td></>}
               </tr>
             ))}</tbody>

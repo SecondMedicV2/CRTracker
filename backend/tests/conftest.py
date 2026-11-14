@@ -6,6 +6,7 @@ from cryptography.fernet import Fernet
 os.environ["SECRET_KEY"] = "test-secret-key-at-least-32-bytes-long!!"
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["LAB_PROVIDER"] = "mock"
+os.environ["TELEPHONY_PROVIDER"] = "manual"
 os.environ["STORAGE_DIR"] = tempfile.mkdtemp()
 os.environ["FILE_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 

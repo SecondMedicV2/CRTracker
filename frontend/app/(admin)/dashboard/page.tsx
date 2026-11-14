@@ -7,14 +7,15 @@ import { useApi } from "@/lib/useApi";
 
 const istDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" });
 
-function Card({ label, value, sub, warn }: { label: string; value: any; sub?: string; warn?: boolean }) {
-  return (
+function Card({ label, value, sub, warn, href }: { label: string; value: any; sub?: string; warn?: boolean; href?: string }) {
+  const content = (
     <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
       <div className="text-sm font-medium text-slate-500">{label}</div>
       <div className={`mt-2 text-3xl font-bold tracking-tight ${warn && Number(value) > 0 ? "text-red-600" : "text-slate-900"}`}>{value ?? "–"}</div>
       {sub && <div className="mt-1 text-sm text-slate-400">{sub}</div>}
     </div>
   );
+  return href ? <Link href={href} className="block">{content}</Link> : content;
 }
 
 export default function Dashboard() {
@@ -56,18 +57,18 @@ export default function Dashboard() {
             </section>
           )}
           <section aria-label="Key metrics" className="grid grid-cols-2 gap-6 lg:grid-cols-4">
-            <Card label="Orders imported" value={d.orders.imported} sub={`${d.orders.failed} failed`} />
-            <Card label="Reports ready" value={d.orders.reports_ready} />
-            <Card label="Normal / abnormal" value={`${d.results.normal} / ${d.results.abnormal}`} />
-            <Card label="Retests recommended / ordered" value={`${d.retests.recommended} / ${d.retests.ordered}`} />
-            <Card label="Follow-ups due today" value={d.followups_due.today} />
-            <Card label="Due this week" value={d.followups_due.this_week} />
-            <Card label="Overdue" value={d.followups_due.overdue} warn />
-            <Card label="Parked (low potential)" value={d.followups_due.parked} />
-            <Card label="Calls made" value={d.calls.made} />
-            <Card label="Consent rate" value={d.calls.consent_rate_pct == null ? "–" : `${d.calls.consent_rate_pct}%`} sub="of patients called" />
-            <Card label="Bookings" value={d.calls.bookings} />
-            <Card label="Doctor calls done" value={d.calls.doctor_calls_done} />
+            <Card label="Orders imported" value={d.orders.imported} sub={`${d.orders.failed} failed`} href="/orders" />
+            <Card label="Reports ready" value={d.orders.reports_ready} href="/reports?status_=READY" />
+            <Card label="Normal / abnormal" value={`${d.results.normal} / ${d.results.abnormal}`} href="/reports" />
+            <Card label="Retests recommended / ordered" value={`${d.retests.recommended} / ${d.retests.ordered}`} href="/reports" />
+            <Card label="Follow-ups due today" value={d.followups_due.today} href="/followups" />
+            <Card label="Due this week" value={d.followups_due.this_week} href="/followups" />
+            <Card label="Overdue" value={d.followups_due.overdue} warn href="/followups" />
+            <Card label="Parked (low potential)" value={d.followups_due.parked} href="/followups" />
+            <Card label="Calls made" value={d.calls.made} href="/followups?view=done" />
+            <Card label="Consent rate" value={d.calls.consent_rate_pct == null ? "–" : `${d.calls.consent_rate_pct}%`} sub="of patients called" href="/followups?view=done" />
+            <Card label="Bookings" value={d.calls.bookings} href="/followups?view=done" />
+            <Card label="Doctor calls done" value={d.calls.doctor_calls_done} href="/followups?view=done" />
           </section>
 
           <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">

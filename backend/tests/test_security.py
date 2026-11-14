@@ -29,7 +29,8 @@ DOCTOR_FORBIDDEN = {
     ("PUT", "/api/v1/doctors/{did}"), ("GET", "/api/v1/settings"), ("PUT", "/api/v1/settings/{key}"), ("GET", "/api/v1/rules"),
     ("PUT", "/api/v1/rules/{key}"), ("GET", "/api/v1/audit"), ("POST", "/api/v1/imports/manual"),
     ("POST", "/api/v1/imports/file/preview"), ("POST", "/api/v1/imports/file"), ("POST", "/api/v1/imports/pull"),
-    ("GET", "/api/v1/imports"), ("GET", "/api/v1/imports/{bid}"), ("GET", "/api/v1/orders"), ("POST", "/api/v1/orders/{oid}/retry"),
+    ("GET", "/api/v1/imports"), ("GET", "/api/v1/imports/{bid}"), ("DELETE", "/api/v1/imports/{bid}"), ("GET", "/api/v1/orders"),
+    ("DELETE", "/api/v1/orders/{oid}"), ("POST", "/api/v1/orders/{oid}/retry"),
     ("GET", "/api/v1/identity-reviews"), ("POST", "/api/v1/identity-reviews/{rid}/decide"),
     ("POST", "/api/v1/identity-reviews/{rid}/unmerge"), ("POST", "/api/v1/followups/recompute"),
     ("POST", "/api/v1/followups/{fid}/calls"), ("POST", "/api/v1/followups/{fid}/connect-doctor"), ("GET", "/api/v1/dashboard"),
@@ -71,7 +72,7 @@ def test_admin_matrix(admin):
 
 def test_new_routes_must_be_classified():
     """Fails when someone adds a route without deciding who may call it (update the sets above)."""
-    assert len(list(routes())) == 60  # 60 protected routes at Phase 9; bump this deliberately together with the sets
+    assert len(list(routes())) == 62  # 60 protected routes at Phase 9; bump this deliberately together with the sets
 
 
 # ---- the two leaks the review found ----

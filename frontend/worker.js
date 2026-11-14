@@ -598,7 +598,7 @@ async function handleApiRequest(request, url, env) {
   // --- FOLLOWUPS ---
   if (path === "/followups" && method === "GET") return reply(200, store.followups);
   if (path === "/followups/summary" && method === "GET") return reply(200, demo["/followups/summary"] || {});
-  if (path === "/doctor-queue" && method === "GET") return reply(200, demo["/doctor-queue"] || store.followups);
+  if ((path === "/doctor/queue" || path === "/doctor-queue") && method === "GET") return reply(200, demo["/doctor-queue"] || store.followups);
   if (path === "/identity-reviews" && method === "GET") return reply(200, store.identityReviews);
   if (path.startsWith("/identity-reviews/") && method === "POST") return reply(200, { ok: true });
   if (path === "/audit" && method === "GET") return reply(200, store.audit);

@@ -16,6 +16,8 @@ function Orders() {
   const status = STATUSES.includes(filter) ? filter : "";
   const qs = new URLSearchParams({ ...(status && { status_: status }), ...(batch && { batch_id: batch }) }).toString();
   const { data, error, reload } = useApi<any[]>(`/orders?${qs}`);
+  const me = useApi<any>("/auth/me");
+  const isAdmin = me.data?.role === "ADMIN";
   const [msg, setMsg] = useState("");
 
   function setStatus(next: string) {
@@ -37,13 +39,27 @@ function Orders() {
       {!error && !!data?.length && (
         <TableFrame label="Orders">
           <table className="w-full bg-white text-left text-sm shadow">
-            <thead><tr><th className="p-2">Order ID</th><th>Status</th><th>Tries</th><th>Reason</th><th><span className="sr-only">Actions</span></th></tr></thead>
+            <thead><tr><th className="p-2">Order ID</th><th>Status</th><th>Tries</th><th>Reason</th><th className="text-right p-2">Actions</th></tr></thead>
             <tbody>{data?.map((o) => (
-              <tr key={o.id} className="border-t"><td className="p-2 font-mono">{o.order_id}</td><td>{o.status}</td><td>{o.attempts}</td>
+              <tr key={o.id} className="border-t">
+                <td className="p-2 font-mono">{o.order_id}</td>
+                <td>{o.status}</td>
+                <td>{o.attempts}</td>
                 <td className="text-red-700">{o.error}</td>
-                <td>{o.status === "FAILED_FETCH" && (
-                  <button className="underline" onClick={() => api(`/orders/${o.id}/retry`, { method: "POST" }).then(() => { setMsg(""); reload(); }).catch((e) => setMsg(e.message))}>Retry</button>
-                )}</td></tr>
+                <td className="text-right p-2">
+                  {o.status === "FAILED_FETCH" && (
+                    <button className="underline mr-3" onClick={() => api(`/orders/${o.id}/retry`, { method: "POST" }).then(() => { setMsg(""); reload(); }).catch((e) => setMsg(e.message))}>Retry</button>
+                  )}
+                  {isAdmin && (
+                    <button
+                      className="rounded bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 border border-rose-200 hover:bg-rose-100"
+                      onClick={() => confirm(`Delete order ${o.order_id}?`) && api(`/orders/${o.id}`, { method: "DELETE" }).then(() => { setMsg(""); reload(); }).catch((e) => setMsg(e.message))}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </td>
+              </tr>
             ))}</tbody>
           </table>
         </TableFrame>

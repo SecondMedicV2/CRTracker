@@ -10,6 +10,19 @@
     "not_found_handling": "404-page",
     "run_worker_first": ["/api/*"]
   },
+  "kv_namespaces": [
+    {
+      "binding": "CRTRACKER_DATA",
+      "id": "2608de4217dc4c36b7095fdc138eda5d"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "crtracker_db",
+      "database_name": "crtracker-db",
+      "database_id": "15ed5d63-02ae-4155-8999-90a3d0387acc"
+    }
+  ],
   "vars": {
     // Set to the real backend address once it is hosted (no trailing slash).
     "BACKEND_URL": ""

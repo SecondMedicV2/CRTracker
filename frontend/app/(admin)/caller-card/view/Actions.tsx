@@ -39,6 +39,7 @@ export default function Actions({ fid }: { fid: string }) {
   const [outcomeNote, setOutcomeNote] = useState("");
   const [doctorNote, setDoctorNote] = useState("");
   const [contact, setContact] = useState<DoctorContact | null>(null);
+  const [callStatus, setCallStatus] = useState("");
   const w = wf.data;
   const closed = !!w && (!callable.includes(w.stage) || !!w.suppressed_reason);
 
@@ -94,6 +95,36 @@ export default function Actions({ fid }: { fid: string }) {
 
           {!closed && (
             <>
+              <section className={panel}>
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-slate-900">Outbound Call (MyOperator)</h3>
+                  <span className="rounded bg-teal-100 px-2 py-0.5 text-xs font-bold text-teal-900">SecondMedic Dialer</span>
+                </div>
+                <p className="text-xs text-slate-600">
+                  Place an automated outbound call directly from our company (SecondMedic) to the customer’s mobile number via MyOperator.
+                </p>
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => run(async () => {
+                      const res = await api<{ message: string; call_id?: string; to?: string }>(`/followups/${fid}/call-customer`, { method: "POST" });
+                      setCallStatus(res.message || "Outgoing call placed successfully via MyOperator.");
+                      wf.reload();
+                    }, "Call initiated via MyOperator")}
+                    className="w-full flex items-center justify-center gap-2 rounded-xl bg-teal-800 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-teal-900 transition disabled:opacity-50"
+                  >
+                    <span>📞</span> Call Customer Now (MyOperator)
+                  </button>
+                  {callStatus && (
+                    <div className="mt-2 rounded-lg border border-teal-200 bg-teal-50 p-2.5 text-xs text-teal-950">
+                      <p className="font-semibold">Call Status:</p>
+                      <p className="mt-0.5">{callStatus}</p>
+                    </div>
+                  )}
+                </div>
+              </section>
+
               <section className={panel}>
                 <h3 className="font-semibold">Doctor handoff</h3>
                 {w.consent ? <p className="text-teal-800">Consent recorded {formatTime(w.consent.given_at)} IST</p> : (

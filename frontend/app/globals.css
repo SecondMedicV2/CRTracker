@@ -2,27 +2,54 @@
 @tailwind components;
 @tailwind utilities;
 
-:focus-visible { outline: 2px solid #1d4ed8; outline-offset: 2px; }
-
-.workspace-sidebar :focus-visible { outline-color: #5eead4; }
-.workspace-sidebar #workspace-notifications :focus-visible { outline-color: #1d4ed8; }
-.workspace { overflow-wrap: anywhere; }
-.workspace h1 { font-size: 1.5rem; line-height: 1.25; }
-.workspace :is(input, select, textarea) { max-width: 100%; }
-.workspace :is(input, select, textarea).border { border-color: #94a3b8; }
-button:disabled { cursor: not-allowed; opacity: .55; }
-.table-frame table { box-shadow: none; }
-.table-frame th { background: #f1f5f9; color: #334155; font-weight: 600; }
-.table-frame :is(th, td) { padding: .625rem .75rem; vertical-align: top; }
-.table-frame tbody tr + tr { border-top: 1px solid #e2e8f0; }
-
-@media (max-width: 767px) {
-  .table-frame { contain: paint; }
-  .table-frame table { min-width: max-content; }
-  .table-frame :is(th, td) { max-width: 16rem; }
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900;
+  }
 }
 
-@media print {
-  .table-frame { contain: none; overflow: visible; }
-  .table-frame table { min-width: 0; }
+:focus-visible {
+  @apply outline-2 outline-offset-2 outline-teal-600;
+}
+
+.workspace-sidebar {
+  @apply bg-slate-900 text-slate-100;
+}
+
+.workspace-sidebar :focus-visible {
+  @apply outline-teal-400;
+}
+
+.workspace {
+  overflow-wrap: anywhere;
+}
+
+button:disabled {
+  @apply cursor-not-allowed opacity-55;
+}
+
+/* Table styles */
+.table-frame {
+  @apply rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden;
+}
+
+.table-frame table {
+  @apply w-full text-left text-sm;
+}
+
+.table-frame th {
+  @apply bg-slate-50 text-slate-600 font-semibold px-4 py-3;
+}
+
+.table-frame td {
+  @apply px-4 py-3 border-t border-slate-100;
+}
+
+@media (max-width: 767px) {
+  .table-frame {
+    @apply overflow-x-auto;
+  }
+  .table-frame table {
+    @apply min-w-max;
+  }
 }

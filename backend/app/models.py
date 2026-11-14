@@ -24,7 +24,7 @@ class User(Base, Stamped):
     name: Mapped[str] = mapped_column(String(120))
     email: Mapped[str] = mapped_column(String(200), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(200))
-    role: Mapped[str] = mapped_column(String(10))  # ADMIN | CALLER | DOCTOR
+    role: Mapped[str] = mapped_column(String(20))  # ADMIN | CALLER | DOCTOR | CUSTOMER | RETAILER | RIDER | SUPPORT | PHARMACIST
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 

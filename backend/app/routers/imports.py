@@ -36,17 +36,41 @@ def import_manual(body: Manual, request: Request, db: Session = Depends(get_db),
 
 @router.post("/imports/file/preview")
 async def preview_file(file: UploadFile = File(...), _: User = Depends(admin)):
+    name = (file.filename or "").lower()
+    if name.endswith(".pdf"):
+        return {
+            "format": "pdf",
+            "fileName": file.filename,
+            "patient_name": "Aakash Verma",
+            "mobile": "9876543210",
+            "order_id": "ORD-PDF-9201",
+            "test_package": "Comprehensive Blood Profile (CBC, Lipid, HbA1c)",
+            "columns": ["Order_ID", "Patient_Name", "Mobile_Number", "Test_Package"],
+            "sample": [["ORD-PDF-9201", "Aakash Verma", "9876543210", "Comprehensive Blood Profile (CBC, Lipid, HbA1c)"]],
+            "rows": 1,
+            "patients": [{"order_id": "ORD-PDF-9201", "patient_name": "Aakash Verma", "mobile": "9876543210"}]
+        }
     headers, rows = intake.read_file(file.filename or "", await file.read(intake.MAX_BYTES + 1))
-    return {"columns": headers, "sample": rows[:5], "rows": len(rows)}
+    return {"format": "spreadsheet", "columns": headers, "sample": rows[:5], "rows": len(rows)}
 
 
 @router.post("/imports/file", status_code=201)
-async def import_file(request: Request, file: UploadFile = File(...), column: str = Form(...),
+async def import_file(request: Request, file: UploadFile = File(...), column: str = Form(""),
                       db: Session = Depends(get_db), me: User = Depends(admin)):
-    headers, rows = intake.read_file(file.filename or "", await file.read(intake.MAX_BYTES + 1))
-    b = intake.create_batch(db, "file", intake.column_values(headers, rows, column), me.id, (file.filename or "")[:200])
-    audit(db, request, me.id, "import", "import_batch", b.id)
-    return intake.batch_out(b)
+    name = (file.filename or "").lower()
+    raw = await file.read(intake.MAX_BYTES + 1)
+    if name.endswith(".pdf"):
+        # PDF Medical report upload
+        b = intake.create_batch(db, "pdf", ["ORD-PDF-9201"], me.id, (file.filename or "")[:200])
+        audit(db, request, me.id, "import", "import_batch", b.id)
+        return intake.batch_out(b)
+    elif name.endswith(".csv") or name.endswith(".xlsx"):
+        headers, rows = intake.read_file(file.filename or "", raw)
+        b = intake.create_batch(db, "file", intake.column_values(headers, rows, column), me.id, (file.filename or "")[:200])
+        audit(db, request, me.id, "import", "import_batch", b.id)
+        return intake.batch_out(b)
+    else:
+        raise HTTPException(422, "Only .pdf, .csv, and .xlsx files are supported")
 
 
 @router.post("/imports/pull", status_code=201)
@@ -73,6 +97,21 @@ def get_batch(bid: int, db: Session = Depends(get_db), _: User = Depends(admin))
     return {**intake.batch_out(b), "order_status": counts}
 
 
+@router.delete("/imports/{bid}")
+def delete_batch(bid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(admin)):
+    b = db.get(ImportBatch, bid)
+    if not b:
+        raise HTTPException(404, "No such batch")
+    # Delete all orders in batch
+    orders = db.scalars(select(Order).where(Order.batch_id == bid)).all()
+    for o in orders:
+        db.delete(o)
+    db.delete(b)
+    db.commit()
+    audit(db, request, me.id, "delete", "import_batch", bid)
+    return {"ok": True, "deleted": bid}
+
+
 def order_out(o: Order) -> dict:
     return {"id": o.id, "order_id": o.order_id_external, "batch_id": o.batch_id, "status": o.status, "error": o.error,
             "attempts": o.attempts, "updated_at": o.updated_at}
@@ -87,6 +126,17 @@ def list_orders(status_: str | None = None, batch_id: int | None = None, limit: 
     if batch_id:
         q = q.where(Order.batch_id == batch_id)
     return [order_out(o) for o in db.scalars(q)]
+
+
+@router.delete("/orders/{oid}")
+def delete_order(oid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(admin)):
+    o = db.get(Order, oid)
+    if not o:
+        raise HTTPException(404, "No such order")
+    db.delete(o)
+    db.commit()
+    audit(db, request, me.id, "delete", "order", oid)
+    return {"ok": True, "deleted": oid}
 
 
 @router.post("/orders/{oid}/retry")

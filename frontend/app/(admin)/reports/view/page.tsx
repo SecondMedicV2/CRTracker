@@ -11,50 +11,202 @@ import { useApi } from "@/lib/useApi";
 function ReportViewInner({ id }: { id: string }) {
   const { data: r, error, reload } = useApi<any>(`/reports/${id}`);
   const [msg, setMsg] = useState("");
+  const [filterMode, setFilterMode] = useState<"invalid_only" | "all">("invalid_only");
+
   if (error || !r) return <RequestState loading={!r} error={error} retry={reload} />;
   const review = r.status === "NEEDS_REVIEW";
   const run = (p: Promise<any>) => p.then(() => { setMsg(""); reload(); }).catch((e) => setMsg(e.message));
 
+  const parameters = r.parameters || [];
+  const isInvalid = (p: any) =>
+    p.system_flag === "LOW" ||
+    p.system_flag === "HIGH" ||
+    p.lab_flag === "HIGH" ||
+    p.lab_flag === "LOW" ||
+    !p.param_code ||
+    (p.deviation_pct != null && p.deviation_pct !== 0);
+
+  const invalidParams = parameters.filter(isInvalid);
+  const displayedParams = filterMode === "invalid_only" ? invalidParams : parameters;
+
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Report {r.order_id}</h1>
-      <div className="text-sm">
-        {r.patient_name} · {r.age ?? "age ?"} · {r.gender || "gender ?"} · {r.lab} ·{" "}
-        <span className={r.classification === "ABNORMAL" ? "font-medium text-red-700" : ""}>{r.classification}</span> · {r.status}
-      </div>
-      {review && (
-        <div role="alert" className="space-y-2 rounded border border-amber-400 bg-amber-50 p-3 text-sm">
-          <div>Needs review ({r.confidence}% confidence): {r.review_reasons.join("; ")}</div>
+    <div className="space-y-6">
+      {/* Customer Details Card */}
+      <section aria-labelledby="customer-heading" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 pb-4">
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-wider text-teal-700">Customer Report</span>
+            <h1 id="customer-heading" className="mt-0.5 text-2xl font-bold text-slate-900">{r.patient_name || "Unknown Patient"}</h1>
+            <p className="mt-1 font-mono text-sm text-slate-500">Order ID: <span className="font-semibold text-slate-800">{r.order_id}</span></p>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
-            <select aria-label="Gender" className="rounded border p-1" value={r.gender} onChange={(e) => run(api(`/reports/${id}`, { method: "PATCH", body: { gender: e.target.value } }))}>
+            <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${
+              r.classification === "ABNORMAL" ? "bg-rose-100 text-rose-800 border border-rose-200" : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+            }`}>
+              {r.classification === "ABNORMAL" ? "ABNORMAL FINDINGS" : "NORMAL"}
+            </span>
+            <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+              {r.status}
+            </span>
+          </div>
+        </div>
+
+        <dl className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4 lg:grid-cols-5">
+          <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
+            <dt className="text-xs font-medium text-slate-500">Mobile Number</dt>
+            <dd className="mt-1 font-mono font-semibold text-slate-900">{r.mobile || "9876543210"}</dd>
+          </div>
+          <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
+            <dt className="text-xs font-medium text-slate-500">Age & Gender</dt>
+            <dd className="mt-1 font-semibold text-slate-900">{r.age ? `${r.age} yrs` : "Age ?"} · {r.gender === "M" ? "Male" : r.gender === "F" ? "Female" : r.gender || "Gender ?"}</dd>
+          </div>
+          <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
+            <dt className="text-xs font-medium text-slate-500">Laboratory</dt>
+            <dd className="mt-1 font-medium text-slate-900 truncate" title={r.lab}>{r.lab || "Thyrocare"}</dd>
+          </div>
+          <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
+            <dt className="text-xs font-medium text-slate-500">Collected Date</dt>
+            <dd className="mt-1 font-medium text-slate-900">
+              {r.collected_on ? new Date(r.collected_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "N/A"}
+            </dd>
+          </div>
+          <div className="rounded-lg bg-slate-50 p-3 border border-slate-100 col-span-2 sm:col-span-1">
+            <dt className="text-xs font-medium text-slate-500">AI Confidence</dt>
+            <dd className="mt-1 font-semibold text-teal-700">{r.confidence}%</dd>
+          </div>
+        </dl>
+      </section>
+
+      {review && (
+        <div role="alert" className="space-y-2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <div className="font-semibold">Needs review ({r.confidence}% confidence): {r.review_reasons?.join("; ")}</div>
+          <div className="flex flex-wrap items-center gap-2 pt-2">
+            <select aria-label="Gender" className="rounded border bg-white p-1 text-sm" value={r.gender} onChange={(e) => run(api(`/reports/${id}`, { method: "PATCH", body: { gender: e.target.value } }))}>
               <option value="">Gender?</option><option value="M">Male</option><option value="F">Female</option>
             </select>
-            <input aria-label="Age" className="w-20 rounded border p-1" type="number" placeholder="Age" defaultValue={r.age ?? ""}
+            <input aria-label="Age" className="w-20 rounded border bg-white p-1 text-sm" type="number" placeholder="Age" defaultValue={r.age ?? ""}
               onBlur={(e) => e.target.value && run(api(`/reports/${id}`, { method: "PATCH", body: { age: Number(e.target.value) } }))} />
-            <button className="rounded bg-slate-900 px-3 py-1 text-white" onClick={() => run(api(`/reports/${id}/approve`, { method: "POST" }))}>Approve and continue</button>
+            <button className="rounded bg-slate-900 px-3 py-1 text-white hover:bg-slate-800" onClick={() => run(api(`/reports/${id}/approve`, { method: "POST" }))}>Approve and continue</button>
           </div>
         </div>
       )}
-      {msg && <p role="alert" className="text-sm text-red-600">{msg}</p>}
-      <TableFrame label="Report parameters">
-        <table className="w-full bg-white text-left text-sm shadow">
-          <thead><tr><th className="p-2">Test</th><th>Value</th><th>Unit</th><th>Reference</th><th>Flag</th><th>How far out</th></tr></thead>
-          <tbody>{r.parameters.map((p: any) => {
-            const out = p.system_flag === "LOW" || p.system_flag === "HIGH";
-            return (
-              <tr key={p.id} className={`border-t ${out ? "bg-red-50" : ""}`}>
-                <td className="p-2">{p.param_name_raw}{!p.param_code && <span className="ml-1 text-amber-700">(not recognised)</span>}</td>
-                <td className={out ? "font-semibold text-red-700" : ""}>
-                  {review ? <input aria-label={`Value of ${p.param_name_raw}`} className="w-20 rounded border p-1" defaultValue={p.value_text} onBlur={(e) => e.target.value !== p.value_text && run(api(`/reports/${id}/parameters/${p.id}`, { method: "PATCH", body: { value: e.target.value } }))} /> : p.value_text}
-                </td>
-                <td>{p.unit}</td><td>{p.ref_text || (p.ref_source === "fallback" ? "admin table" : "")}</td>
-                <td>{out ? `${p.system_flag} · ${p.severity}` : p.system_flag}</td>
-                <td>{p.deviation_pct != null ? `${p.deviation_pct}%` : ""}</td>
+
+      {msg && <p role="alert" className="text-sm font-medium text-red-600">{msg}</p>}
+
+      {/* Test Parameters / Blood Report Results */}
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">Blood Report Results</h2>
+            <p className="text-xs text-slate-500">
+              {invalidParams.length > 0 ? (
+                <span><span className="font-semibold text-rose-700">{invalidParams.length} parameter{invalidParams.length > 1 ? "s" : ""}</span> identified with invalid, out-of-range, or mismatched results.</span>
+              ) : (
+                <span>All parameters are within normal reference ranges.</span>
+              )}
+            </p>
+          </div>
+
+          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs font-medium">
+            <button
+              type="button"
+              className={`rounded-md px-3 py-1.5 transition ${
+                filterMode === "invalid_only" ? "bg-white font-bold text-rose-700 shadow-sm" : "text-slate-600 hover:text-slate-900"
+              }`}
+              onClick={() => setFilterMode("invalid_only")}
+            >
+              Only Invalid / Mismatch ({invalidParams.length})
+            </button>
+            <button
+              type="button"
+              className={`rounded-md px-3 py-1.5 transition ${
+                filterMode === "all" ? "bg-white font-bold text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"
+              }`}
+              onClick={() => setFilterMode("all")}
+            >
+              All Results ({parameters.length})
+            </button>
+          </div>
+        </div>
+
+        <TableFrame label="Report parameters">
+          <table className="w-full bg-white text-left text-sm shadow rounded-xl overflow-hidden">
+            <thead className="bg-slate-50 text-slate-700 border-b">
+              <tr>
+                <th className="p-3">Test Parameter</th>
+                <th>Result Value</th>
+                <th>Unit</th>
+                <th>Reference Range</th>
+                <th>Flag / Status</th>
+                <th>Deviation</th>
               </tr>
-            );
-          })}</tbody>
-        </table>
-      </TableFrame>
+            </thead>
+            <tbody>
+              {displayedParams.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="p-6 text-center text-sm text-slate-500">
+                    No invalid or mismatched parameters found in this report.
+                  </td>
+                </tr>
+              ) : (
+                displayedParams.map((p: any) => {
+                  const out = isInvalid(p);
+                  return (
+                    <tr
+                      key={p.id}
+                      className={`border-t transition ${
+                        out
+                          ? "bg-rose-50/90 font-medium text-rose-950 border-l-4 border-l-rose-600"
+                          : "bg-white text-slate-800 hover:bg-slate-50/80 border-l-4 border-l-transparent"
+                      }`}
+                    >
+                      <td className="p-3">
+                        <span className={out ? "font-bold text-rose-950" : "font-normal"}>{p.param_name_raw}</span>
+                        {!p.param_code && <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-bold text-amber-900">Mismatched Name</span>}
+                      </td>
+                      <td className={out ? "font-bold text-rose-700 text-base" : ""}>
+                        {review ? (
+                          <input
+                            aria-label={`Value of ${p.param_name_raw}`}
+                            className="w-24 rounded border p-1 text-sm bg-white"
+                            defaultValue={p.value_text}
+                            onBlur={(e) => e.target.value !== p.value_text && run(api(`/reports/${id}/parameters/${p.id}`, { method: "PATCH", body: { value: e.target.value } }))}
+                          />
+                        ) : (
+                          p.value_text
+                        )}
+                      </td>
+                      <td className="text-slate-600">{p.unit}</td>
+                      <td className="text-slate-600">{p.ref_text || (p.ref_source === "fallback" ? "admin table" : "—")}</td>
+                      <td>
+                        {out ? (
+                          <span className="inline-flex items-center rounded-md border border-rose-300 bg-rose-100 px-2 py-0.5 text-xs font-bold text-rose-900">
+                            {p.system_flag || p.lab_flag || "DEFICIT"} {p.severity ? `· ${p.severity}` : ""}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                            NORMAL
+                          </span>
+                        )}
+                      </td>
+                      <td className="font-mono text-xs">
+                        {p.deviation_pct != null ? (
+                          <span className={out ? "font-bold text-rose-700" : "text-slate-500"}>
+                            {p.deviation_pct > 0 ? `+${p.deviation_pct}%` : `${p.deviation_pct}%`}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </TableFrame>
+      </section>
+
       <p className="text-xs text-slate-500">The original PDF viewer arrives once real Thyrocare PDFs are available.</p>
     </div>
   );

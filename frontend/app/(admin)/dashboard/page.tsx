@@ -9,10 +9,10 @@ const istDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Kolkata", yea
 
 function Card({ label, value, sub, warn }: { label: string; value: any; sub?: string; warn?: boolean }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <div className="text-sm text-slate-600">{label}</div>
-      <div className={`text-2xl font-semibold ${warn && Number(value) > 0 ? "text-red-700" : ""}`}>{value ?? "–"}</div>
-      {sub && <div className="text-xs text-slate-500">{sub}</div>}
+    <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
+      <div className="text-sm font-medium text-slate-500">{label}</div>
+      <div className={`mt-2 text-3xl font-bold tracking-tight ${warn && Number(value) > 0 ? "text-red-600" : "text-slate-900"}`}>{value ?? "–"}</div>
+      {sub && <div className="mt-1 text-sm text-slate-400">{sub}</div>}
     </div>
   );
 }
@@ -24,32 +24,38 @@ export default function Dashboard() {
   const top = d?.funnel?.[0]?.count || 0;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="font-semibold">Dashboard</h1>
-          <p className="mt-1 text-sm text-slate-600">Track lab orders and follow-up activity.</p>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Dashboard</h1>
+          <p className="mt-1 text-sm text-slate-500">Track lab orders and follow-up activity.</p>
         </div>
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <label className="flex items-center gap-1">From <input type="date" className="rounded border p-1" value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} /></label>
-          <label className="flex items-center gap-1">To <input type="date" className="rounded border p-1" value={to} min={from} onChange={(e) => e.target.value && setTo(e.target.value)} /></label>
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <label className="flex items-center gap-2">
+            <span className="text-slate-500">From</span>
+            <input type="date" className="rounded-lg border border-slate-200 px-3 py-2" value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} />
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="text-slate-500">To</span>
+            <input type="date" className="rounded-lg border border-slate-200 px-3 py-2" value={to} min={from} onChange={(e) => e.target.value && setTo(e.target.value)} />
+          </label>
         </div>
       </div>
       <RequestState loading={!d} error={error} retry={reload} />
       {d && !error && (
         <>
           {Object.values(d.needs_attention).some((n: any) => n > 0) && (
-            <section aria-labelledby="attention-heading" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
-              <h2 id="attention-heading" className="font-semibold">Needs attention</h2>
-              <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
-                {d.needs_attention.failed_fetch > 0 && <li><Link href="/orders?status_=FAILED_FETCH" className="underline">Failed downloads ({d.needs_attention.failed_fetch})</Link></li>}
+            <section aria-labelledby="attention-heading" className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900">
+              <h2 id="attention-heading" className="font-semibold text-amber-950">Needs attention</h2>
+              <ul className="mt-3 flex flex-wrap gap-x-6 gap-y-3">
+                {d.needs_attention.failed_fetch > 0 && <li><Link href="/orders?status_=FAILED_FETCH" className="font-medium underline hover:text-amber-700">Failed downloads ({d.needs_attention.failed_fetch})</Link></li>}
                 {d.needs_attention.failed_extract > 0 && <li>Failed readings ({d.needs_attention.failed_extract})</li>}
-                {d.needs_attention.needs_review > 0 && <li><Link href="/reports?status_=NEEDS_REVIEW" className="underline">Reports to review ({d.needs_attention.needs_review})</Link></li>}
-                {d.needs_attention.pending_identity > 0 && <li><Link href="/identity" className="underline">Duplicate checks ({d.needs_attention.pending_identity})</Link></li>}
+                {d.needs_attention.needs_review > 0 && <li><Link href="/reports?status_=NEEDS_REVIEW" className="font-medium underline hover:text-amber-700">Reports to review ({d.needs_attention.needs_review})</Link></li>}
+                {d.needs_attention.pending_identity > 0 && <li><Link href="/identity" className="font-medium underline hover:text-amber-700">Duplicate checks ({d.needs_attention.pending_identity})</Link></li>}
               </ul>
             </section>
           )}
-          <section aria-label="Key metrics" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <section aria-label="Key metrics" className="grid grid-cols-2 gap-6 lg:grid-cols-4">
             <Card label="Orders imported" value={d.orders.imported} sub={`${d.orders.failed} failed`} />
             <Card label="Reports ready" value={d.orders.reports_ready} />
             <Card label="Normal / abnormal" value={`${d.results.normal} / ${d.results.abnormal}`} />
@@ -64,46 +70,46 @@ export default function Dashboard() {
             <Card label="Doctor calls done" value={d.calls.doctor_calls_done} />
           </section>
 
-          <section className="rounded-xl border border-slate-200 bg-white p-4">
-            <h2 className="mb-1 font-medium">Conversion funnel</h2>
-            <p className="mb-2 text-xs text-slate-500">Follow-ups created in the period, and how far each got.</p>
-            <ul className="space-y-1 text-sm">{d.funnel.map((s: any) => (
-              <li key={s.step} className="flex items-center gap-2">
-                <span className="w-28 shrink-0 sm:w-44">{s.step}</span>
-                <div className="h-5 flex-1 rounded bg-slate-200"><div className="h-5 rounded bg-slate-700" style={{ width: `${top ? (s.count / top) * 100 : 0}%` }} /></div>
-                <span className="w-10 text-right">{s.count}</span>
+          <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-900">Conversion funnel</h2>
+            <p className="mt-1 text-sm text-slate-500">Follow-ups created in the period, and how far each got.</p>
+            <ul className="mt-4 space-y-3 text-sm">{d.funnel.map((s: any) => (
+              <li key={s.step} className="flex items-center gap-4">
+                <span className="w-32 shrink-0 font-medium text-slate-700 sm:w-48">{s.step}</span>
+                <div className="h-3 flex-1 rounded-full bg-slate-100"><div className="h-3 rounded-full bg-teal-500" style={{ width: `${top ? (s.count / top) * 100 : 0}%` }} /></div>
+                <span className="w-12 text-right font-semibold text-slate-900">{s.count}</span>
               </li>))}</ul>
           </section>
 
-          <div className="grid gap-6 md:grid-cols-2">
+          <div className="grid gap-8 md:grid-cols-2">
             <section>
-              <h2 className="mb-1 font-medium">Patients per bucket (now)</h2>
+              <h2 className="mb-4 text-lg font-semibold text-slate-900">Patients per bucket (now)</h2>
               <TableFrame label="Patients per bucket">
-                <table className="w-full bg-white text-left text-sm shadow"><tbody>
-                  {Object.entries(d.patients_per_bucket).map(([k, v]: any) => <tr key={k} className="border-t"><td className="p-2">{k}</td><td>{v}</td></tr>)}
-                  {Object.keys(d.patients_per_bucket).length === 0 && <tr><td className="p-2 text-slate-500">None yet</td></tr>}
+                <table className="w-full text-sm"><tbody>
+                  {Object.entries(d.patients_per_bucket).map(([k, v]: any) => <tr key={k} className="border-t border-slate-100"><td className="px-4 py-3 font-medium text-slate-700">{k}</td><td className="px-4 py-3 text-slate-900">{v}</td></tr>)}
+                  {Object.keys(d.patients_per_bucket).length === 0 && <tr><td className="px-4 py-3 text-slate-500">None yet</td></tr>}
                 </tbody></table>
               </TableFrame>
             </section>
             <section>
-              <h2 className="mb-1 font-medium">Calls by outcome</h2>
+              <h2 className="mb-4 text-lg font-semibold text-slate-900">Calls by outcome</h2>
               <TableFrame label="Call outcomes">
-                <table className="w-full bg-white text-left text-sm shadow"><tbody>
-                  {Object.entries(d.calls.by_outcome).map(([k, v]: any) => <tr key={k} className="border-t"><td className="p-2">{k}</td><td>{v}</td></tr>)}
-                  {Object.keys(d.calls.by_outcome).length === 0 && <tr><td className="p-2 text-slate-500">No calls in this period</td></tr>}
+                <table className="w-full text-sm"><tbody>
+                  {Object.entries(d.calls.by_outcome).map(([k, v]: any) => <tr key={k} className="border-t border-slate-100"><td className="px-4 py-3 font-medium text-slate-700">{k}</td><td className="px-4 py-3 text-slate-900">{v}</td></tr>)}
+                  {Object.keys(d.calls.by_outcome).length === 0 && <tr><td className="px-4 py-3 text-slate-500">No calls in this period</td></tr>}
                 </tbody></table>
               </TableFrame>
             </section>
           </div>
 
           <section>
-            <h2 className="mb-1 font-medium">Doctor load</h2>
+            <h2 className="mb-4 text-lg font-semibold text-slate-900">Doctor load</h2>
             <TableFrame label="Doctor load">
-              <table className="w-full bg-white text-left text-sm shadow">
-                <thead><tr><th className="p-2">Doctor</th><th>Open</th><th>Escalations</th><th>Not accepted</th><th>Upcoming bookings</th><th>Calls done</th></tr></thead>
+              <table className="w-full text-sm">
+                <thead><tr><th className="px-4 py-3 text-left font-semibold text-slate-600">Doctor</th><th className="px-4 py-3 text-left font-semibold text-slate-600">Open</th><th className="px-4 py-3 text-left font-semibold text-slate-600">Escalations</th><th className="px-4 py-3 text-left font-semibold text-slate-600">Not accepted</th><th className="px-4 py-3 text-left font-semibold text-slate-600">Upcoming</th><th className="px-4 py-3 text-left font-semibold text-slate-600">Calls done</th></tr></thead>
                 <tbody>{d.doctors.map((x: any) => (
-                  <tr key={x.id} className="border-t"><td className="p-2">{x.name}{x.in_pilot && " (pilot)"}</td><td>{x.open_cases}</td><td>{x.escalations}</td>
-                    <td className={x.not_accepted > 0 ? "text-amber-700" : ""}>{x.not_accepted}</td><td>{x.upcoming_bookings}</td><td>{x.calls_done}</td></tr>))}</tbody>
+                  <tr key={x.id} className="border-t border-slate-100"><td className="px-4 py-3 font-medium text-slate-900">{x.name}{x.in_pilot && " (pilot)"}</td><td className="px-4 py-3 text-slate-700">{x.open_cases}</td><td className="px-4 py-3 text-slate-700">{x.escalations}</td>
+                    <td className={`px-4 py-3 ${x.not_accepted > 0 ? "text-amber-700 font-medium" : "text-slate-700"}`}>{x.not_accepted}</td><td className="px-4 py-3 text-slate-700">{x.upcoming_bookings}</td><td className="px-4 py-3 text-slate-700">{x.calls_done}</td></tr>))}</tbody>
               </table>
             </TableFrame>
           </section>

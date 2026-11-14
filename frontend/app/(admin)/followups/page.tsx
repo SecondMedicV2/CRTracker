@@ -60,7 +60,7 @@ export default function Followups() {
       {!error && !!data?.length && (
         <TableFrame label="Follow-up cases">
           <table className="w-full bg-white text-left text-sm shadow">
-            <thead><tr><th className="p-2">{isCaller ? "Customer" : "Patient"}</th><th>Due</th><th>Report age</th><th>Priority</th><th>Status</th>{canOpenCallWorkspace && <th>Call workspace</th>}{full && <><th>Buckets</th><th>Potential</th></>}</tr></thead>
+            <thead><tr><th className="p-2">{isCaller ? "Customer" : "Patient"}</th><th>Due</th><th>Report age</th><th>Priority</th><th>Status</th><th>Deficits / Findings</th>{canOpenCallWorkspace && <th>Call workspace</th>}{full && <><th>Buckets</th><th>Potential</th></>}</tr></thead>
             <tbody>{data?.map((f) => (
               <tr key={f.id} className="border-t">
                 <td className="p-2">{full ? <Link className="underline" href={`/followups/view?id=${f.id}`}>{f.patient_name}</Link> : f.patient_name}</td>
@@ -68,6 +68,21 @@ export default function Followups() {
                 <td>{f.report_age_days != null ? `${f.report_age_days} days` : ""}</td>
                 <td className={f.priority === "ESCALATION" ? "font-medium text-red-700" : ""}>{f.priority === "ESCALATION" ? "Escalation" : "Routine"}</td>
                 <td>{callStageLabel(f.stage)}</td>
+                <td>
+                  {f.deficits_summary ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-lg bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-800 border border-rose-200">
+                      <span className="size-1.5 rounded-full bg-rose-600"></span>
+                      {f.deficits_summary}
+                    </span>
+                  ) : f.buckets && f.buckets.length > 0 ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-lg bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 border border-amber-200">
+                      <span className="size-1.5 rounded-full bg-amber-600"></span>
+                      {f.buckets.join(", ")}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-400">Normal</span>
+                  )}
+                </td>
                 {canOpenCallWorkspace && <td><Link className="inline-block rounded-lg border border-teal-800 px-2 py-1 font-medium text-teal-800 hover:bg-teal-50" href={`/caller-card/view?id=${f.id}`} aria-label={`Open call workspace for ${f.patient_name}`}>Open workspace</Link></td>}
                 {full && <><td>{f.buckets.join(", ")}</td><td>{f.retest_tier} ({f.retest_score})</td></>}
               </tr>

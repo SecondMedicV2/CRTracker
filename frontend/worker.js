@@ -162,7 +162,33 @@ async function handleApiRequest(request, url, env) {
 
   // --- IMPORTS ---
   if (path === "/imports" && method === "GET") {
-    return reply(200, store.batches);
+    const enriched = store.batches.map((b) => {
+      const pat = b.patients?.[0] || store.patients[0];
+      const ord = store.orders.find((o) => o.batch_id === b.id) || store.orders[0];
+      const rep = store.reports.find((r) => r.order_id === ord?.order_id) || store.reports[0];
+      const fu = store.followups.find((f) => f.patient_id === pat?.id);
+
+      let callStatus = "Call pending";
+      if (fu?.stage === "CALLED" || fu?.stage === "CALL_INITIATED" || fu?.stage === "OUTBOUND_CALL") callStatus = "Call initiated";
+      else if (fu?.stage === "CALL_LATER" || fu?.stage === "NOT_REACHABLE") callStatus = "Retry calling";
+      else if (fu?.stage === "CONSENT_GIVEN" || fu?.stage === "BOOKED") callStatus = "Followup pending";
+      else if (fu?.stage === "DOCTOR_DONE") callStatus = "Completed";
+
+      const isPdfSource = b.source === "pdf" || (b.file_name && b.file_name.toLowerCase().endsWith(".pdf"));
+      const sourceLabel = isPdfSource ? "PDF" : "LabTrace App";
+      const labtraceId = pat?.order_id || ord?.order_id || `LT-${1000 + b.id}`;
+
+      return {
+        ...b,
+        source_label: sourceLabel,
+        patient_name: pat?.patient_name || pat?.name || "Aakash Verma",
+        mobile: pat?.mobile || "9876543210",
+        labtrace_id: labtraceId,
+        report_id: pat?.report_id || rep?.id || 1,
+        status: b.status || callStatus
+      };
+    });
+    return reply(200, enriched);
   }
 
   if (path === "/imports/manual" && method === "POST") {

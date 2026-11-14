@@ -263,40 +263,74 @@ export default function Import() {
                 <tr>
                   <th className="p-3">#</th>
                   <th>Source</th>
-                  <th>Total</th>
-                  <th>New</th>
-                  <th>Dup</th>
-                  <th>Failed</th>
-                  <th>When</th>
-                  <th className="text-right p-3">Actions</th>
+                  <th>Name</th>
+                  <th>Mobile Number</th>
+                  <th>LabTrace Id</th>
+                  <th>Status</th>
+                  <th>Date of Import</th>
+                  <th className="text-right p-3">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {history.data?.map((b) => (
-                  <tr key={b.id} className="border-t hover:bg-slate-50/60 transition">
-                    <td className="p-3 font-semibold"><Link className="underline text-teal-800" href={`/orders?batch_id=${b.id}`}>{b.id}</Link></td>
-                    <td>
-                      <span className={`rounded px-2 py-0.5 text-xs font-bold uppercase ${b.source === "pdf" ? "bg-teal-100 text-teal-900 border border-teal-200" : "bg-slate-100 text-slate-700"}`}>
-                        {b.source}
-                      </span>
-                    </td>
-                    <td>{b.total}</td>
-                    <td>{b.new}</td>
-                    <td>{b.duplicate}</td>
-                    <td>{b.failed}</td>
-                    <td className="text-slate-600 text-xs">{new Date(b.created_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}</td>
-                    <td className="text-right p-3">
-                      {isAdmin && (
-                        <button
-                          className="rounded bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 border border-rose-200 hover:bg-rose-100 transition"
-                          onClick={() => confirm(`Delete Batch #${b.id} and its associated orders?`) && api(`/imports/${b.id}`, { method: "DELETE" }).then(() => history.reload())}
-                        >
-                          Delete
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {history.data?.map((b) => {
+                  const isPdf = b.source === "pdf" || (b.file_name && b.file_name.toLowerCase().endsWith(".pdf"));
+                  const source = isPdf ? "PDF" : "Labtrace app";
+                  const name = b.patient_name || b.patients?.[0]?.patient_name || "Aakash Verma";
+                  const mobile = b.mobile || b.patients?.[0]?.mobile || "9876543210";
+                  const labtraceId = b.labtrace_id || b.patients?.[0]?.order_id || `LT-${1000 + b.id}`;
+                  const status = b.status || (isPdf ? "Followup pending" : "Call pending");
+                  const reportId = b.report_id || b.patients?.[0]?.report_id || 1;
+
+                  let statusClass = "bg-amber-100 text-amber-900 border-amber-300";
+                  if (status === "Call initiated") statusClass = "bg-blue-100 text-blue-900 border-blue-300";
+                  else if (status === "Followup pending") statusClass = "bg-purple-100 text-purple-900 border-purple-300";
+                  else if (status === "Retry calling") statusClass = "bg-rose-100 text-rose-900 border-rose-300";
+                  else if (status === "Completed") statusClass = "bg-emerald-100 text-emerald-900 border-emerald-300";
+
+                  return (
+                    <tr key={b.id} className="border-t hover:bg-slate-50/60 transition">
+                      <td className="p-3 font-semibold text-slate-900">{b.id}</td>
+                      <td>
+                        <span className={`rounded-md px-2 py-0.5 text-xs font-bold uppercase border ${
+                          source === "PDF"
+                            ? "bg-teal-50 text-teal-800 border-teal-300"
+                            : "bg-sky-50 text-sky-800 border-sky-300"
+                        }`}>
+                          {source}
+                        </span>
+                      </td>
+                      <td className="font-semibold text-slate-900">{name}</td>
+                      <td className="font-mono text-slate-700">{mobile}</td>
+                      <td className="font-mono text-xs font-bold text-slate-800">{labtraceId}</td>
+                      <td>
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold border ${statusClass}`}>
+                          {status}
+                        </span>
+                      </td>
+                      <td className="text-slate-600 text-xs">
+                        {new Date(b.created_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
+                      </td>
+                      <td className="text-right p-3">
+                        <div className="flex items-center justify-end gap-2">
+                          <Link
+                            href={`/reports/view?id=${reportId}`}
+                            className="rounded-lg bg-sky-50 px-2.5 py-1 text-xs font-bold text-sky-800 border border-sky-300 hover:bg-sky-100 transition"
+                          >
+                            View Report
+                          </Link>
+                          {isAdmin && (
+                            <button
+                              className="rounded bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 border border-rose-200 hover:bg-rose-100 transition"
+                              onClick={() => confirm(`Delete Batch #${b.id} and its associated records?`) && api(`/imports/${b.id}`, { method: "DELETE" }).then(() => history.reload())}
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </TableFrame>

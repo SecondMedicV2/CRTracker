@@ -60,9 +60,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:z-30 focus:bg-white focus:p-3 print:hidden">Skip to the content</a>
       <aside className="workspace-sidebar bg-slate-900 text-slate-100 md:sticky md:top-0 md:max-h-dvh md:w-60 md:shrink-0 md:self-start md:overflow-y-auto print:hidden">
         <div className="flex min-h-16 items-center justify-between gap-3 px-4 md:border-b md:border-white/10">
-          <Link href="/" className="flex items-center gap-2 font-semibold" onClick={() => setMenuOpen(false)}>
-            <span aria-hidden="true" className="grid size-8 place-items-center rounded-lg bg-teal-300 text-xs font-bold text-slate-900">CR</span>
-            CRTracker
+          <Link href="/" className="flex items-center gap-2.5 font-semibold text-white tracking-wide" onClick={() => setMenuOpen(false)}>
+            <img src="/logo.png" alt="CRTracker Orbit Logo" className="size-8 object-contain rounded-md" />
+            <span>CRTracker</span>
           </Link>
           <button type="button" aria-expanded={menuOpen} aria-controls="workspace-menu" className="rounded-lg border border-white/30 px-3 py-2 text-sm md:hidden" onClick={() => setMenuOpen(!menuOpen)}>
             {menuOpen ? "Close menu" : "Menu"}

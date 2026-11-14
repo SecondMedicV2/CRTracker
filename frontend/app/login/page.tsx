@@ -25,7 +25,7 @@ export default function Login() {
     <main className="grid min-h-screen place-items-center bg-slate-900 px-4 py-8">
       <form onSubmit={submit} className="w-full max-w-md space-y-5 rounded-2xl bg-white p-6 shadow-xl sm:p-8">
         <header>
-          <span aria-hidden="true" className="mb-4 grid size-10 place-items-center rounded-lg bg-teal-200 text-sm font-bold text-teal-950">CR</span>
+          <img src="/logo.png" alt="CRTracker Orbit Logo" className="mb-4 size-12 object-contain" />
           <h1 className="text-2xl font-semibold">Sign in to CRTracker</h1>
           <p className="mt-1 text-sm text-slate-600">Access your report and follow-up workspace.</p>
         </header>

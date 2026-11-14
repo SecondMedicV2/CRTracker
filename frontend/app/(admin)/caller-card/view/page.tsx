@@ -48,7 +48,7 @@ function CallerCardInner({ id }: { id: string }) {
 
   return (
     <div className="space-y-5 text-sm">
-      <header className="space-y-4 rounded-2xl bg-slate-900 p-5 text-white sm:p-6">
+      <header className="space-y-4 rounded-2xl bg-gradient-to-r from-sky-800 to-sky-950 p-5 text-white shadow-sm sm:p-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div><h1 className="font-semibold">Call workspace</h1><p className="mt-1 text-slate-300">SecondMedic report follow-up</p></div>
           <span className={`rounded-full px-3 py-1 text-xs font-semibold ${c.priority === "ESCALATION" ? "bg-amber-200 text-amber-950" : "bg-slate-700 text-slate-100"}`}>

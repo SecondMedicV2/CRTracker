@@ -96,25 +96,8 @@ def caller_card(fid: int, request: Request, db: Session = Depends(get_db), me: U
         raise HTTPException(409, "The call script is waiting for doctor approval")
     p = db.get(Patient, f.patient_id)
     script = cc.render_caller_script(c.content["caller_script"], p.name, me.name, get_setting(db, "company_name"))
-    deficits = []
-    if c and c.content and "abnormal_findings" in c.content:
-        for a in c.content["abnormal_findings"]:
-            direction = str(a.get("direction", "")).lower()
-            status_label = "Deficit (Low)" if direction == "low" else "Elevated (High)"
-            deficits.append({
-                "param_code": a.get("param_code", ""),
-                "name": a.get("name", ""),
-                "value": a.get("value"),
-                "unit": a.get("unit", ""),
-                "ref_range": a.get("ref_range", ""),
-                "direction": direction,
-                "severity": a.get("severity", "mild"),
-                "status_label": status_label,
-                "guidance": f"Doctor to review {a.get('name', 'finding')} with customer."
-            })
     audit(db, request, me.id, "view", "caller_card", fid)
     return {"followup_id": fid, "patient_name": p.name, "mobile": mobile_out(p, me), "language": c.language,
             "notice": c.notice, "report_age_days": c.content["summary"]["report_age_days"], "reason_for_call": cc.reason_for_call(c),
-            "deficits": deficits, "abnormal_findings": deficits,
             "script": {k: v for k, v in script.items() if k != "do_not_say"}, "do_not_say": script["do_not_say"],
             "priority": f.priority}

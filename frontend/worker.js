@@ -856,46 +856,7 @@ async function handleApiRequest(request, url, env) {
     if (sub === "/call-card" && method === "GET") return reply(200, demo[`/followups/${fid}/call-card`] || demo["/followups/2/call-card"] || {});
     if (sub === "/caller-card" && method === "GET") {
       const base = demo[`/followups/${fid}/caller-card`] || demo["/followups/2/caller-card"] || {};
-      const deficits = [
-        {
-          param_code: "HBA1C",
-          name: "Glycosylated Hemoglobin (HbA1c)",
-          value: 6.1,
-          unit: "%",
-          ref_range: "<5.7",
-          direction: "high",
-          severity: "mild",
-          status_label: "Elevated (High)",
-          guidance: "Follow-up for blood sugar review; doctor will discuss dietary precautions."
-        },
-        {
-          param_code: "VIT_D",
-          name: "Vitamin D3 (25-OH)",
-          value: 14.8,
-          unit: "ng/mL",
-          ref_range: "30 - 100",
-          direction: "low",
-          severity: "moderate",
-          status_label: "Deficit (Low)",
-          guidance: "Notable deficiency; doctor can suggest appropriate supplementation."
-        },
-        {
-          param_code: "HB",
-          name: "Hemoglobin",
-          value: 11.4,
-          unit: "g/dL",
-          ref_range: "13.0 - 17.0",
-          direction: "low",
-          severity: "mild",
-          status_label: "Deficit (Low)",
-          guidance: "Mildly low hemoglobin; doctor will review dietary iron and symptoms."
-        }
-      ];
-      return reply(200, {
-        ...base,
-        deficits,
-        abnormal_findings: deficits
-      });
+      return reply(200, { ...base, deficits: undefined, abnormal_findings: undefined });
     }
     if (sub === "/comments") {
       if (method === "GET") return reply(200, store.comments[fid] || demo[`/followups/${fid}/comments`] || demo["/followups/2/comments"] || []);

@@ -895,8 +895,154 @@ async function handleApiRequest(request, url, env) {
   }
 
   // --- RULES ---
-  if (path === "/rules" && method === "GET") return reply(200, demo["/rules"] || []);
-  if (path.startsWith("/rules/") && (method === "POST" || method === "PUT")) return reply(200, { ok: true });
+  const DEFAULT_RULES = {
+    aliases: {
+      "glycosylated hemoglobin": "HBA1C", "hba1c": "HBA1C", "a1c": "HBA1C",
+      "fasting blood sugar": "GLUCOSE_FASTING", "fbs": "GLUCOSE_FASTING", "glucose fasting": "GLUCOSE_FASTING",
+      "post prandial glucose": "GLUCOSE_PP", "ppbs": "GLUCOSE_PP",
+      "total cholesterol": "CHOL_TOTAL", "cholesterol total": "CHOL_TOTAL",
+      "ldl cholesterol": "LDL", "ldl": "LDL", "hdl cholesterol": "HDL", "hdl": "HDL",
+      "triglycerides": "TRIGLYCERIDES", "tg": "TRIGLYCERIDES",
+      "haemoglobin": "HEMOGLOBIN", "hemoglobin": "HEMOGLOBIN", "hb": "HEMOGLOBIN",
+      "tsh": "TSH", "ft3": "FT3", "free t3": "FT3", "ft4": "FT4", "free t4": "FT4",
+      "creatinine": "CREATININE", "sgot": "SGOT", "ast": "SGOT", "sgpt": "SGPT", "alt": "SGPT",
+      "vitamin d": "VITAMIN_D", "25-oh vitamin d": "VITAMIN_D", "egfr": "EGFR"
+    },
+    buckets: [
+      { code: "DIABETES", name: "Diabetes / Prediabetes", params: ["HBA1C", "GLUCOSE_FASTING", "GLUCOSE_PP"], interval_days: 90, priority: "ROUTINE", retest: ["HBA1C", "FBS", "PPBS"] },
+      { code: "LIPID", name: "Lipid / Cardio risk", params: ["TRIGLYCERIDES", "LDL", "HDL", "CHOL_TOTAL"], interval_days: 90, priority: "ROUTINE", retest: ["LIPID"] },
+      { code: "THYROID", name: "Thyroid", params: ["TSH", "FT3", "FT4"], interval_days: 90, priority: "ROUTINE", retest: ["THYROID"] },
+      { code: "ANAEMIA", name: "Anaemia / Iron", params: ["HEMOGLOBIN", "FERRITIN", "IRON", "TIBC"], interval_days: 90, priority: "ROUTINE", retest: ["CBC", "IRON"] },
+      { code: "VIT_D_B12", name: "Vitamin D / B12", params: ["VITAMIN_D", "B12"], interval_days: 90, priority: "ROUTINE", retest: ["VITD", "B12"] },
+      { code: "KIDNEY", name: "Kidney", params: ["CREATININE", "UREA", "EGFR", "URIC_ACID"], interval_days: 90, priority: "ROUTINE", retest: ["KFT"] },
+      { code: "LIVER", name: "Liver", params: ["SGOT", "SGPT", "ALP", "BILIRUBIN"], interval_days: 90, priority: "ROUTINE", retest: ["LFT"] },
+      { code: "CANCER_MARKER", name: "Cancer markers", params: ["PSA", "CA125", "CEA"], interval_days: 0, priority: "ESCALATION", retest: [] },
+      { code: "OTHER", name: "Other abnormal", params: [], interval_days: 90, priority: "ROUTINE", retest: [] }
+    ],
+    test_catalogue: [
+      { code: "HBA1C", name: "HbA1c" },
+      { code: "FBS", name: "Fasting Blood Sugar" },
+      { code: "PPBS", name: "Post-Prandial Blood Sugar" },
+      { code: "LIPID", name: "Lipid Profile" },
+      { code: "THYROID", name: "Thyroid Profile" },
+      { code: "CBC", name: "Complete Blood Count" },
+      { code: "IRON", name: "Iron Studies" },
+      { code: "VITD", name: "Vitamin D" },
+      { code: "B12", name: "Vitamin B12" },
+      { code: "KFT", name: "Kidney Function Test" },
+      { code: "LFT", name: "Liver Function Test" }
+    ],
+    reference_ranges: {
+      HBA1C: { unit: "%", bands: [["normal", null, 5.7], ["prediabetes", 5.7, 6.5], ["diabetes_range", 6.5, null]] },
+      GLUCOSE_FASTING: { unit: "mg/dL", bands: [["normal", 70, 100], ["prediabetes", 100, 126], ["diabetes_range", 126, null]] },
+      GLUCOSE_PP: { unit: "mg/dL", bands: [["normal", null, 140], ["prediabetes", 140, 200], ["diabetes_range", 200, null]] },
+      CHOL_TOTAL: { unit: "mg/dL", bands: [["desirable", null, 200], ["high", 200, null]] },
+      LDL: { unit: "mg/dL", bands: [["optimal", null, 100], ["near_optimal", 100, 130], ["borderline", 130, 160], ["high", 160, null]] },
+      HDL: { unit: "mg/dL", low_below: { M: 40, F: 50 } },
+      TRIGLYCERIDES: { unit: "mg/dL", bands: [["normal", null, 150], ["borderline", 150, 200], ["high", 200, 500], ["very_high", 500, null]] },
+      HEMOGLOBIN: { unit: "g/dL", low_below: { M: 13, F: 12 } },
+      VITAMIN_D: { unit: "ng/mL", bands: [["deficient", null, 20], ["insufficient", 20, 30], ["sufficient", 30, null]] },
+      EGFR: { unit: "mL/min/1.73m2", bands: [["abnormal", null, 60], ["normal", 60, null]] }
+    },
+    critical_values: [],
+    score_weights: {
+      severity: { mild: 10, moderate: 20, severe: 30 },
+      time_ratio: [[0.8, 0], [1.0, 10], [1.5, 20], [null, 25]],
+      trend: { worsening: 20, stable_abnormal: 10, improving: 5, none: 0 },
+      buckets: { "1": 5, "2": 10, "3+": 15 },
+      engagement_bonus: 10,
+      tiers: { HIGH: 65, MEDIUM: 40 }
+    },
+    severity: { mild_max_pct: 10, moderate_max_pct: 25 },
+    caller_script_forbidden: [
+      "diabetes", "diabetic", "cholesterol", "cancer", "anaemia", "hypertension",
+      "disease", "illness", "prescribe", "medicine", "medication", "dose", "mg", "pill"
+    ],
+    script_templates: {
+      en: {
+        headline: "Health Follow-up for {tests}",
+        doctor: {
+          opening: "Hello, I am Dr. from SecondMedic reviewing your recent health checkup.",
+          finding: "{name} is {value} {unit} ({direction}, normal: {ref_range})",
+          discussion_points: ["Discuss lifestyle, diet, and physical activity", "Review any ongoing symptoms or medication"],
+          questions_to_ask: ["Are you experiencing fatigue, dizziness, or unusual thirst?"],
+          counselling_points: ["Maintain balanced nutrition and regular hydration", "Avoid self-medication"],
+          test_line: "Recommend {name}: {rationale}",
+          rationale: "Routine monitor for {bucket}",
+          red_flags: ["Chest discomfort", "Shortness of breath", "Sudden weakness"],
+          closing: "We will monitor your parameters and follow up in {interval_days} days.",
+          next_followup: "Suggested next review in {interval_days} days"
+        },
+        caller: {
+          opening: "Namaste, I am calling from SecondMedic regarding your recent diagnostic report.",
+          identity_check: "May I please speak with {patient_name}?",
+          free_followup_pitch: "We have reviewed your {tests} and would like to arrange a complimentary follow-up consultation with our doctor to explain your results.",
+          consent_request: "May I have your consent to connect you with our doctor?",
+          slot_offer: "Would today afternoon or tomorrow morning be convenient for you?",
+          objection_handling: [
+            { objection: "Is this free?", reply: "Yes, this follow-up consultation is completely complimentary as part of SecondMedic health checkup." },
+            { objection: "I am feeling fine", reply: "Preventive consultation helps ensure your parameters stay healthy and lets you discuss any precautions." }
+          ],
+          do_not_say: ["Do not diagnose any illness", "Do not discuss medicine dosages or brands"],
+          urgent_symptom_protocol: "If you feel severe pain or difficulty breathing, please seek emergency medical attention immediately.",
+          closing: "Thank you for your time. Stay healthy!"
+        }
+      }
+    }
+  };
+
+  if (path === "/rules" && method === "GET") {
+    const list = Object.keys(DEFAULT_RULES).map((key) => ({
+      key,
+      version: store.rules?.[key]?.version || 1,
+      signed_off_by: store.rules?.[key]?.signed_off_by || 1,
+      signed_off_at: store.rules?.[key]?.signed_off_at || "2026-11-01T00:00:00Z",
+      pending_signoff: store.rules?.[key]?.pending_signoff ?? false
+    }));
+    return reply(200, list);
+  }
+
+  const rkMatch = path.match(/^\/rules\/([a-zA-Z0-9_]+)$/);
+  if (rkMatch) {
+    const key = rkMatch[1];
+    if (method === "GET") {
+      const rule = store.rules?.[key] || {
+        key,
+        version: 1,
+        data: DEFAULT_RULES[key] || {},
+        pending_signoff: false
+      };
+      return reply(200, rule);
+    }
+    if (method === "PUT" || method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      if (!store.rules) store.rules = {};
+      const current = store.rules[key] || { key, version: 1, data: DEFAULT_RULES[key] || {} };
+      store.rules[key] = {
+        key,
+        version: (current.version || 1) + 1,
+        data: b.data !== undefined ? b.data : b,
+        pending_signoff: true
+      };
+      await saveStore(env, store);
+      return reply(200, store.rules[key]);
+    }
+  }
+
+  const signoffMatch = path.match(/^\/rules\/([a-zA-Z0-9_]+)\/signoff$/);
+  if (signoffMatch && method === "POST") {
+    const key = signoffMatch[1];
+    if (!store.rules) store.rules = {};
+    const current = store.rules[key] || { key, version: 1, data: DEFAULT_RULES[key] || {} };
+    store.rules[key] = {
+      ...current,
+      pending_signoff: false,
+      signed_off_by: store.me?.id || 1,
+      signed_off_at: new Date().toISOString()
+    };
+    await saveStore(env, store);
+    return reply(200, store.rules[key]);
+  }
 
   // Generic fallback: check if demo has it, or return empty object/array
   const hit = demo[path];

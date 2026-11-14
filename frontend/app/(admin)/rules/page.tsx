@@ -4,33 +4,139 @@ import { RequestState } from "@/components/RequestState";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
+const RULE_METADATA: Record<string, { title: string; desc: string }> = {
+  aliases: {
+    title: "Lab Test Name Aliases & Normalization",
+    desc: "Maps diverse lab test names from Thyrocare, SRL, and local pathology labs to canonical system codes (e.g. 'FBS' -> 'GLUCOSE_FASTING')."
+  },
+  buckets: {
+    title: "Clinical Condition Buckets",
+    desc: "Defines clinical condition categories (Diabetes, Lipid/Cardio, Thyroid, Anaemia, Vitamin D, etc.) and their retest intervals."
+  },
+  test_catalogue: {
+    title: "Master Test Catalogue",
+    desc: "Authoritative list of blood and diagnostic tests available for doctors to order as retests."
+  },
+  reference_ranges: {
+    title: "Clinical Reference Ranges",
+    desc: "Standard biological reference intervals and severity bands used when a lab report does not print ranges."
+  },
+  critical_values: {
+    title: "Critical / Panic Values (Emergency Escalation)",
+    desc: "Alarm thresholds that trigger immediate emergency doctor escalation and clinical notifications."
+  },
+  score_weights: {
+    title: "Retest Scoring & Prioritization Algorithm",
+    desc: "Mathematical scoring weights for severity, time ratio, parameter count, and patient engagement."
+  },
+  severity: {
+    title: "Severity Percentage Thresholds",
+    desc: "Percentage distance beyond reference limits used to classify abnormal findings as mild, moderate, or severe."
+  },
+  caller_script_forbidden: {
+    title: "Compliance: Forbidden Terms for Callers",
+    desc: "Words that calling agents must never say (e.g. diagnoses, medicine names, prescribing terms)."
+  },
+  script_templates: {
+    title: "Doctor & Caller Dialogue Templates",
+    desc: "Structured script templates for explaining reports, taking patient consent, and doctor consultations."
+  }
+};
+
 function Rule({ k, onChange }: { k: string; onChange: () => void }) {
   const { data, error, reload } = useApi<any>(`/rules/${k}`);
   const [text, setText] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
+  const [saving, setSaving] = useState(false);
+  const meta = RULE_METADATA[k] || {
+    title: k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+    desc: `Medical rule set for ${k}`
+  };
+
   if (error || !data) return <RequestState loading={!data} error={error} retry={reload} />;
-  const shown = text ?? JSON.stringify(data.data, null, 2);
+  const ruleData = data.data !== undefined ? data.data : data;
+  const shown = text ?? JSON.stringify(ruleData, null, 2);
 
   async function save() {
+    setSaving(true);
     try {
-      await api(`/rules/${k}`, { method: "PUT", body: { data: JSON.parse(shown) } });
-      setText(null); setMsg(""); reload(); onChange();
-    } catch (e: any) { setMsg(e.message); }
+      const parsed = JSON.parse(shown);
+      await api(`/rules/${k}`, { method: "PUT", body: { data: parsed } });
+      setText(null);
+      setMsg("");
+      reload();
+      onChange();
+    } catch (e: any) {
+      setMsg(e.message || "Invalid JSON format");
+    } finally {
+      setSaving(false);
+    }
   }
+
   async function signoff() {
-    try { await api(`/rules/${k}/signoff`, { method: "POST" }); reload(); onChange(); } catch (e: any) { setMsg(e.message); }
+    try {
+      await api(`/rules/${k}/signoff`, { method: "POST" });
+      reload();
+      onChange();
+    } catch (e: any) {
+      setMsg(e.message);
+    }
   }
 
   return (
-    <details className="rounded bg-white p-3 shadow">
-      <summary className="cursor-pointer text-sm font-medium">
-        {k} · v{data.version} · {data.pending_signoff ? <span className="text-amber-800">pending sign-off</span> : <span className="text-green-700">signed off</span>}
+    <details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-3 group">
+      <summary className="cursor-pointer text-sm font-semibold flex flex-wrap items-center justify-between gap-3 list-none">
+        <div className="flex items-center gap-2">
+          <span className="text-teal-700 font-mono text-base group-open:rotate-90 transition-transform">▸</span>
+          <div>
+            <h2 className="font-bold text-slate-900 text-base">{meta.title}</h2>
+            <p className="text-xs text-slate-500 font-normal mt-0.5">{meta.desc}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-mono bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
+            Key: {k} · v{data.version || 1}
+          </span>
+          {data.pending_signoff ? (
+            <span className="rounded-full bg-amber-100 border border-amber-300 px-2.5 py-0.5 text-xs font-bold text-amber-900">
+              Pending Doctor Sign-off
+            </span>
+          ) : (
+            <span className="rounded-full bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 text-xs font-bold text-emerald-900">
+              ✓ Signed Off
+            </span>
+          )}
+        </div>
       </summary>
-      <textarea aria-label={`${k} (JSON)`} className="mt-2 h-64 w-full rounded border p-2 font-mono text-xs" value={shown} onChange={(e) => setText(e.target.value)} />
-      {msg && <p role="alert" className="text-sm text-red-600">{msg}</p>}
-      <div className="mt-2 flex flex-wrap gap-2 text-sm">
-        <button className="rounded bg-slate-900 px-3 py-1 text-white disabled:opacity-40" disabled={text === null} onClick={save}>Save as new version</button>
-        <button className="rounded border px-3 py-1" onClick={signoff}>Record doctor sign-off</button>
+
+      <div className="pt-3 border-t border-slate-100 space-y-3">
+        <label className="block text-xs font-semibold text-slate-700">
+          Rule Definition (JSON)
+          <textarea
+            aria-label={`${k} (JSON)`}
+            className="mt-1 h-72 w-full rounded-xl border border-slate-300 bg-slate-900 p-3 font-mono text-xs text-emerald-400 focus:outline-none focus:ring-2 focus:ring-teal-500"
+            value={shown}
+            onChange={(e) => setText(e.target.value)}
+          />
+        </label>
+
+        {msg && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700 font-medium">{msg}</p>}
+
+        <div className="flex flex-wrap gap-2 text-sm pt-1">
+          <button
+            className="rounded-lg bg-teal-800 px-4 py-2 font-semibold text-white shadow-sm hover:bg-teal-900 transition disabled:opacity-40"
+            disabled={text === null || saving}
+            onClick={save}
+          >
+            {saving ? "Saving…" : "Save as New Version"}
+          </button>
+          <button
+            className="rounded-lg border border-slate-300 bg-white px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50 transition"
+            onClick={signoff}
+          >
+            Record Doctor Sign-off
+          </button>
+        </div>
       </div>
     </details>
   );
@@ -39,12 +145,27 @@ function Rule({ k, onChange }: { k: string; onChange: () => void }) {
 export default function Rules() {
   const { data, error, reload } = useApi<any[]>("/rules");
   const pending = data?.some((r) => r.pending_signoff);
+
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Rules</h1>
+    <div className="space-y-6 max-w-4xl">
+      <div>
+        <h1 className="text-xl font-semibold text-slate-900">Clinical & Operational Rules</h1>
+        <p className="mt-1 text-sm text-slate-600">
+          Version-controlled medical logic governing lab aliases, condition buckets, reference thresholds, and caller compliance.
+        </p>
+      </div>
+
       <RequestState loading={!data} error={error} retry={reload} empty={data?.length === 0 ? "No rule sets found." : undefined} />
-      {pending && <div role="alert" className="rounded border border-amber-400 bg-amber-50 p-3 text-sm">Starter content, pending clinical sign-off. Do not use in production until a doctor approves each rule set.</div>}
-      {data?.map((r) => <Rule key={r.key} k={r.key} onChange={reload} />)}
+
+      {pending && (
+        <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <strong>Starter content, pending clinical sign-off:</strong> Medical rules must be signed off by a licensed doctor before live diagnostic evaluation.
+        </div>
+      )}
+
+      <div className="space-y-4">
+        {data?.map((r) => <Rule key={r.key} k={r.key} onChange={reload} />)}
+      </div>
     </div>
   );
 }

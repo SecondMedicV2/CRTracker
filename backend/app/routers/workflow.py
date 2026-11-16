@@ -223,8 +223,9 @@ def doctor_queue(doctor_id: int | None = None, db: Session = Depends(get_db), me
         return []
     q = (select(Followup, Patient, Report).join(Patient, Patient.id == Followup.patient_id).join(Report, Report.id == Followup.report_id)
          .where(Followup.suppressed_reason == "", Followup.stage.notin_(DONE),
-                or_(Followup.stage.in_(("BOOKED", "CONSENT_GIVEN")), Followup.priority == "ESCALATION"))
-         .order_by(case((Followup.priority == "ESCALATION", 0), else_=1),
+                or_(Followup.stage.in_(("BOOKED", "CONSENT_GIVEN")), Followup.priority.in_(("ESCALATION", "URGENT"))))
+         .order_by(case((Followup.priority.in_(("URGENT", "ESCALATION")), 0), (Followup.priority == "PRIORITY", 1), else_=2),
+                   Followup.retest_score.desc(),
                    case((Followup.retest_tier == "HIGH", 0), (Followup.retest_tier == "MEDIUM", 1), else_=2), Followup.due_on, Followup.id))
     if mine:
         q = q.where(Followup.assigned_doctor_id == mine.id)

@@ -34,6 +34,7 @@ DOCTOR_FORBIDDEN = {
     ("GET", "/api/v1/identity-reviews"), ("POST", "/api/v1/identity-reviews/{rid}/decide"),
     ("POST", "/api/v1/identity-reviews/{rid}/unmerge"), ("POST", "/api/v1/followups/recompute"),
     ("POST", "/api/v1/followups/{fid}/calls"), ("POST", "/api/v1/followups/{fid}/connect-doctor"), ("GET", "/api/v1/dashboard"),
+    ("POST", "/api/v1/patients/{pid}/call"),
 }
 # Only a doctor may approve a call card; an admin must be refused that one route.
 ADMIN_FORBIDDEN = {("POST", "/api/v1/call-cards/{cid}/approve")}

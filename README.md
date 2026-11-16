@@ -26,7 +26,14 @@ cp ../.env.example .env                  # edit it; make FILE_ENCRYPTION_KEY wit
 
 cd ../frontend && npm install && npm run build && npm run start   # http://localhost:3000
 ```
-Tests: `cd backend && .venv/Scripts/python -m pytest` (128 tests). Load test: `python -m scripts.loadtest 500`.
+Tests: `cd backend && .venv/Scripts/python -m pytest` (199 tests). Load test: `python -m scripts.loadtest 500`.
+
+### AI Report Insights
+- **Clinical analysis engine:** Evaluates defects, explanations, what tests measure, deviations, and related multi-marker patterns.
+- **Actionable suggestions:** Doctor clinical discussion points, caller-safe lifestyle/diet/symptom questions (strictly zero digits, zero drug names, zero disease names), and doctor clarifications.
+- **Priority orchestration:** Doctor-approved critical lab rules force `URGENT` priority (within 2h). AI priority suggestions capped at `PRIORITY` (within 24h) or `ROUTINE`. Matching cases sort to the top of doctor and caller queues.
+- **Review workflow:** `DRAFT` insights require doctor review/approval. Callers receive scrubbed, caller-safe views upon approval.
+- **Zero-key default:** Built-in `TemplateProvider` runs fully offline. Optional `anthropic` or `gemini` providers supported.
 
 **Status:** hosting plan chosen (all free plans, see DEPLOY_FREE.md); the Cloudflare site/Worker is `frontend/` (`npm run cf:deploy`), the API is described by `render.yaml`. The Thyrocare connection and PDF reading are not finished
 (waiting on documents and a provider decision); the app runs on a built-in mock lab and structured test reports.

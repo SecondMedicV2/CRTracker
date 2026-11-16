@@ -31,7 +31,7 @@ def conditions(view: str):
         "due_this_week": and_(active, Followup.due_on >= today, Followup.due_on <= today + timedelta(days=7)),
         "next_30_days": and_(active, Followup.due_on >= today, Followup.due_on <= today + timedelta(days=30)),
         "overdue": and_(active, Followup.due_on < today),
-        "escalations": and_(active, Followup.priority == "ESCALATION"),
+        "escalations": and_(active, Followup.priority.in_(("ESCALATION", "URGENT"))),
         "low_potential": and_(live, parked),  # parked, not deleted (Part 11.4)
         "done": and_(Followup.suppressed_reason == "", Followup.stage.in_(DONE)),
     }[view]
@@ -72,7 +72,8 @@ def list_followups(view: str = "queue", bucket: str | None = None, priority: str
     if due_to:
         q = q.where(Followup.due_on <= due_to)
     # escalations first, then HIGH, MEDIUM, LOW, then earliest due (Part 13.2)
-    q = q.order_by(case((Followup.priority == "ESCALATION", 0), else_=1),
+    q = q.order_by(case((Followup.priority.in_(("URGENT", "ESCALATION")), 0), (Followup.priority == "PRIORITY", 1), else_=2),
+                   Followup.retest_score.desc(),
                    case((Followup.retest_tier == "HIGH", 0), (Followup.retest_tier == "MEDIUM", 1), else_=2),
                    Followup.due_on, Followup.id).limit(min(limit, 2000))
     rows = [row(f, p, r, me, full) for f, p, r in db.execute(q)]

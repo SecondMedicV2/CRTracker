@@ -305,3 +305,35 @@ class IdentityReview(Base):
     decided_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ReportInsight(Base, Stamped):
+    """Doctor-reviewed AI report insights (defects, suggestions, priority, future tests)."""
+    __tablename__ = "report_insights"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id"), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)  # DRAFT | APPROVED | REJECTED
+    content: Mapped[dict] = mapped_column(JSON)
+    provider: Mapped[str] = mapped_column(String(40), default="template")
+    model: Mapped[str] = mapped_column(String(60), default="")
+    prompt_version: Mapped[str] = mapped_column(String(20), default="v1")
+    input_hash: Mapped[str] = mapped_column(String(64), default="")
+    validation_errors: Mapped[list] = mapped_column(JSON, default=list)
+    approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CriticalRule(Base, Stamped):
+    """Clinician-approved urgent criteria. Switched off, never deleted."""
+    __tablename__ = "critical_rules"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    marker_code: Mapped[str] = mapped_column(String(40), index=True)
+    label: Mapped[str] = mapped_column(String(120))
+    comparator: Mapped[str] = mapped_column(String(4))  # < | <= | > | >=
+    threshold: Mapped[float] = mapped_column(Float)
+    unit: Mapped[str] = mapped_column(String(30))
+    note: Mapped[str] = mapped_column(String(300), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    approved_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

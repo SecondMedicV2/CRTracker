@@ -7,6 +7,7 @@ import { Suspense } from "react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
+import ReportInsights from "@/components/ReportInsights";
 
 function ReportViewInner({ id }: { id: string }) {
   const { data: r, error, reload } = useApi<any>(`/reports/${id}`);
@@ -90,7 +91,6 @@ function ReportViewInner({ id }: { id: string }) {
           </div>
         </div>
       )}
-
       {msg && <p role="alert" className="text-sm font-medium text-red-600">{msg}</p>}
 
       {/* Test Parameters / Blood Report Results */}
@@ -207,6 +207,7 @@ function ReportViewInner({ id }: { id: string }) {
         </TableFrame>
       </section>
 
+      <ReportInsights reportId={id} />
       <p className="text-xs text-slate-500">The original PDF viewer arrives once real Thyrocare PDFs are available.</p>
     </div>
   );

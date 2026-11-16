@@ -36,10 +36,10 @@ class ManualDialer(TelephonyProvider):
 class MyOperatorDialer(TelephonyProvider):
     """MyOperator outbound dialer: places outgoing calls from company (SecondMedic) to customer."""
 
-    def __init__(self):
-        self.api_key = os.getenv("MYOPERATOR_API_KEY", "")
-        self.company_id = os.getenv("MYOPERATOR_COMPANY_ID", "secondmedic")
-        self.caller_id = os.getenv("MYOPERATOR_CALLER_ID", "")
+    def __init__(self, api_key: str | None = None, company_id: str | None = None, caller_id: str | None = None):
+        self.api_key = api_key if api_key is not None else os.getenv("MYOPERATOR_API_KEY", "")
+        self.company_id = company_id if company_id is not None else os.getenv("MYOPERATOR_COMPANY_ID", "secondmedic")
+        self.caller_id = caller_id if caller_id is not None else os.getenv("MYOPERATOR_CALLER_ID", "")
         self.api_url = os.getenv("MYOPERATOR_API_URL", "https://obd-api.myoperator.co/v1/sdk/outbound/call")
 
     def dial_info(self, doctor: Doctor) -> dict:

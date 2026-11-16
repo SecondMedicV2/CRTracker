@@ -11,7 +11,7 @@
 9. ⛔ Q9 What exactly does "cascade to the rest of the doctors" mean?
 10. Q10 Should callers see any clinical info at all (even the "reason for call" wording)?
 11. ⛔ Q11 Languages beyond English / Hindi / Hinglish.
-12. ⛔ Q12 Telephony/dialer in use; real-time transfer in v1?
+12. ⛔ Q12 MyOperator click-to-call integration is implemented from configured company ID, API token and outbound virtual number; confirm the provider's API contract and complete a live test call to a controlled number.
 13. Q13 Test catalogue with Thyrocare codes and prices; should v1 place retest orders?
 14. Q14 Doctors: count, specialities, languages, hours/slots, how bookings work.
 15. Q15 Number of callers/doctors; daily volume (assumed 500 orders/day).
@@ -36,3 +36,6 @@ New from review:
 32. Upgrade to Next.js 16 to clear the two `npm audit` findings (major upgrade, needs a regression pass). Schedule it before launch?
 33. Commission an independent penetration test and a legal review (DPDP Act) before real patient data goes in?
 34. Should doctors only see their own assigned patients (today they see all)? Needs a decision before hosting.
+
+35. Q5 update: `critical_rules` table now seeded with starter clinical safety thresholds (HbA1c > 10.0%, K < 2.8 or > 6.2 mmol/L, Hb < 7.0 g/dL, PLT < 50, Creatinine > 4.0, Glucose < 50 or > 300, Bilirubin > 5.0). Needs SecondMedic chief medical officer sign-off via `/rules`.
+36. LLM vendor DPA: If switching from offline `TemplateProvider` to `anthropic` or `gemini`, ensure zero-data-retention / BAA / DPA terms are signed with the respective cloud vendor.

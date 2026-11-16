@@ -11,9 +11,10 @@ from sqlalchemy.orm import Session
 from .. import status
 from ..analysis import NORMAL_LABELS, load_rules
 from ..db import get_db
-from ..models import (Appointment, CallLog, Consent, Doctor, Followup, IdentityReview, Order, Patient, PatientBucket,
-                      Report, ReportParameter, RetestRecommendation, User)
-from ..security import audit, require
+from ..models import (Appointment, CallLog, Consent, CriticalRule, Doctor, Followup, IdentityReview, Order, Patient, PatientBucket,
+                      Report, ReportInsight, ReportParameter, RetestRecommendation, User)
+from ..security import audit, current_user, require
+from .. import ai_insights, biomarkers, units
 from ..timeutil import IST, today_ist
 from .followups import DONE, conditions, list_followups
 from .patients import mobile_out
@@ -212,3 +213,185 @@ def export_trend(pid: int, request: Request, codes: str = "", range: str = "all"
     audit(db, request, me.id, "export", "trend", pid)
     return _csv(f"trend-{pid}.csv", ["Test", "Date", "Value", "Unit", "Flag", "Order"],
                 [[s["name"], p["date"], p["value"], s["unit"], p["flag"], p["order_id"]] for s in t["series"] for p in s["points"]])
+
+
+# ---------------- AI report insights ----------------
+def _insight_out(ins: ReportInsight) -> dict:
+    return {
+        "id": ins.id,
+        "report_id": ins.report_id,
+        "status": ins.status,
+        "content": ins.content,
+        "provider": ins.provider,
+        "model": ins.model,
+        "prompt_version": ins.prompt_version,
+        "validation_errors": ins.validation_errors,
+        "approved_by": ins.approved_by,
+        "approved_at": ins.approved_at,
+        "created_at": ins.created_at,
+        "updated_at": ins.updated_at,
+    }
+
+
+@router.get("/reports/{rid}/insight")
+def get_report_insight(rid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(current_user)):
+    insight = db.scalar(select(ReportInsight).where(ReportInsight.report_id == rid))
+    if me.role == "CALLER":
+        if not insight or insight.status != "APPROVED":
+            raise HTTPException(403, "Report insights are only visible to callers once approved by a doctor")
+        safe_content = {
+            "overview": insight.content.get("overview", ""),
+            "caller_questions": insight.content.get("suggestions", {}).get("caller_questions", []),
+            "doctor_connect": insight.content.get("doctor_connect", {}),
+            "red_flag_protocol": insight.content.get("red_flag_protocol", ""),
+            "limitations": insight.content.get("limitations", ""),
+            "suggested_window_days": insight.content.get("future", {}).get("suggested_window_days"),
+        }
+        return {
+            "id": insight.id,
+            "report_id": insight.report_id,
+            "status": insight.status,
+            "caller_safe": True,
+            "content": safe_content,
+        }
+
+    report = db.get(Report, rid)
+    if not report:
+        raise HTTPException(404, "No such report")
+
+    if not insight:
+        insight = ai_insights.generate_insight_for_report(db, report)
+
+    audit(db, request, me.id, "view", "report_insight", rid)
+    return _insight_out(insight)
+
+
+@router.post("/reports/{rid}/insight/regenerate")
+def regenerate_insight_endpoint(rid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(staff)):
+    report = db.get(Report, rid)
+    if not report:
+        raise HTTPException(404, "No such report")
+    ins = ai_insights.regenerate_insight(db, rid, me.id)
+    audit(db, request, me.id, "regenerate", "report_insight", rid)
+    return _insight_out(ins)
+
+
+from pydantic import BaseModel
+
+
+@router.patch("/reports/{rid}/insight")
+def patch_insight_endpoint(rid: int, body: dict, request: Request, db: Session = Depends(get_db), me: User = Depends(staff)):
+    report = db.get(Report, rid)
+    if not report:
+        raise HTTPException(404, "No such report")
+    ins = ai_insights.patch_insight_content(db, rid, body, me.id)
+    audit(db, request, me.id, "edit", "report_insight", rid)
+    return _insight_out(ins)
+
+
+@router.post("/reports/{rid}/insight/approve")
+def approve_insight_endpoint(rid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(staff)):
+    report = db.get(Report, rid)
+    if not report:
+        raise HTTPException(404, "No such report")
+    ins = ai_insights.approve_insight(db, rid, me.id)
+    audit(db, request, me.id, "approve", "report_insight", rid)
+    return _insight_out(ins)
+
+
+@router.post("/reports/{rid}/insight/reject")
+def reject_insight_endpoint(rid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(staff)):
+    report = db.get(Report, rid)
+    if not report:
+        raise HTTPException(404, "No such report")
+    ins = ai_insights.reject_insight(db, rid, me.id)
+    audit(db, request, me.id, "reject", "report_insight", rid)
+    return _insight_out(ins)
+
+
+# ---------------- Doctor-approved critical rules ----------------
+
+class CriticalRuleIn(BaseModel):
+    marker: str
+    comparator: str
+    threshold: float
+    unit: str
+    note: str = ""
+
+
+class CriticalRulePatch(BaseModel):
+    active: bool | None = None
+    note: str | None = None
+
+
+@router.get("/critical-rules")
+def list_critical_rules(db: Session = Depends(get_db), me: User = Depends(staff)):
+    rules = db.scalars(select(CriticalRule).order_by(CriticalRule.active.desc(), CriticalRule.marker_code)).all()
+    return [
+        {
+            "id": r.id,
+            "marker_code": r.marker_code,
+            "marker": biomarkers.marker_label(r.marker_code),
+            "label": r.label,
+            "comparator": r.comparator,
+            "threshold": r.threshold,
+            "unit": r.unit,
+            "note": r.note,
+            "active": r.active,
+            "approved_by": r.approved_by,
+            "approved_at": r.approved_at,
+            "created_at": r.created_at,
+            "updated_at": r.updated_at,
+        }
+        for r in rules
+    ]
+
+
+@router.post("/critical-rules", status_code=201)
+def create_critical_rule(body: CriticalRuleIn, request: Request, db: Session = Depends(get_db), me: User = Depends(staff)):
+    import uuid
+
+    if body.comparator not in ("<", "<=", ">", ">="):
+        raise HTTPException(422, "Comparator must be <, <=, >, or >=")
+    if not units.norm_unit(body.unit):
+        raise HTTPException(422, "A valid measurement unit is required for the threshold")
+
+    code = biomarkers.marker_code(body.marker)
+    lbl = f"{biomarkers.marker_label(code)} {body.comparator} {body.threshold} {body.unit}"
+    rule_id = str(uuid.uuid4())
+    now_dt = datetime.now(timezone.utc)
+
+    rule = CriticalRule(
+        id=rule_id,
+        marker_code=code,
+        label=lbl,
+        comparator=body.comparator,
+        threshold=body.threshold,
+        unit=body.unit,
+        note=body.note.strip()[:300],
+        active=True,
+        approved_by=me.id,
+        approved_at=now_dt,
+        created_at=now_dt,
+        updated_at=now_dt,
+    )
+    db.add(rule)
+    db.commit()
+    audit(db, request, me.id, "CRITICAL_RULE_APPROVED", "critical_rule", rule_id)
+    return {"id": rule_id, "marker_code": code, "label": lbl}
+
+
+@router.patch("/critical-rules/{rule_id}")
+def update_critical_rule(rule_id: str, body: CriticalRulePatch, request: Request, db: Session = Depends(get_db), me: User = Depends(staff)):
+    rule = db.get(CriticalRule, rule_id)
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+
+    if body.active is not None:
+        rule.active = body.active
+    if body.note is not None:
+        rule.note = body.note.strip()[:300]
+    rule.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    audit(db, request, me.id, "CRITICAL_RULE_UPDATED", "critical_rule", rule_id)
+    return {"ok": True, "active": rule.active}

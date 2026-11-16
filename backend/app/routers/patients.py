@@ -7,10 +7,13 @@ from .. import identity, storage
 from ..db import get_db
 from ..models import IdentityReview, Order, Patient, Report, User
 from ..security import audit, require
+from ..settings_store import get_setting
+from ..telephony import MyOperatorDialer
 
 router = APIRouter(tags=["patients"])
 clinical = require("ADMIN", "DOCTOR")
 reviewer = require("ADMIN", "CALLER")  # caller resolves on the call, admin from the queue (Part 9.5)
+admin = require("ADMIN")
 
 
 def mobile_out(p: Patient, user: User) -> str:
@@ -69,6 +72,32 @@ def patch_patient(pid: int, body: PatientPatch, request: Request, db: Session = 
     db.commit()
     audit(db, request, me.id, "update", "patient", pid)
     return patient_out(p, me)
+
+
+@router.post("/patients/{pid}/call", status_code=202)
+def call_patient(pid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(admin)):
+    p = db.get(Patient, pid)
+    if not p or p.merged_into_id:
+        raise HTTPException(404, "No such patient")
+    if p.do_not_call:
+        raise HTTPException(409, "This patient asked not to be called")
+    mobile = identity.norm_mobile(storage.decrypt_str(p.mobile_enc)) if p.mobile_enc else ""
+    if not mobile:
+        raise HTTPException(409, "This patient has no callable mobile number")
+
+    company_id = str(get_setting(db, "myoperator_company_id"))
+    api_key = str(get_setting(db, "myoperator_api_key"))
+    caller_id = str(get_setting(db, "myoperator_caller_id"))
+    if not company_id.strip() or not api_key.strip() or not caller_id.strip():
+        raise HTTPException(503, "Configure MyOperator company ID, API token, and outbound number in Settings")
+
+    audit(db, request, me.id, "outbound_call", "patient", pid)
+    result = MyOperatorDialer(api_key=api_key, company_id=company_id, caller_id=caller_id).call_customer(
+        mobile, customer_name=p.name
+    )
+    if not result.get("success") or result.get("status") != "initiated":
+        raise HTTPException(502, "MyOperator could not start the call")
+    return {"status": result["status"], "call_id": result["call_id"]}
 
 
 # ---- identity reviews (demographics only, never results) ----

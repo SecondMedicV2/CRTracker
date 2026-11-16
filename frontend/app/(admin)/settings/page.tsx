@@ -205,6 +205,8 @@ export default function Settings() {
                       <input
                         id={`setting-${k}`}
                         className="rounded-lg border border-slate-300 p-2 text-sm font-medium text-slate-800 focus:border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-600 min-w-44"
+                        type={k === "myoperator_api_key" ? "password" : "text"}
+                        autoComplete={k === "myoperator_api_key" ? "new-password" : undefined}
                         defaultValue={v ?? ""}
                         placeholder="Not configured"
                         onBlur={(e) => e.target.value !== String(v ?? "") && set(k, e.target.value, v)}

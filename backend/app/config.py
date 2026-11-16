@@ -15,9 +15,11 @@ class Env(BaseSettings):
     lab_provider: str = "mock"  # mock | thyrocare
     storage_dir: str = "./storage"
     file_encryption_key: str = ""  # Fernet key; generated per `python -m app.storage`
-    llm_provider: str = "template"  # template (no AI, no key) | anthropic
+    llm_provider: str = "template"  # template (no AI, no key) | anthropic | gemini
     llm_model: str = "claude-sonnet-5-5"
     anthropic_api_key: str = ""
+    google_api_key: str = ""
+    ai_patient_data: str = "deidentified"  # none | deidentified
     # Shared secret the Cloudflare Worker adds to every request. When set, the backend refuses anything without it,
     # so nobody can bypass the Worker (and the client address it reports can be trusted). Empty = local development.
     edge_secret: str = ""
@@ -51,6 +53,9 @@ SETTING_DEFAULTS = {
     "fetch_max_attempts": 3,
     "extraction_min_confidence_pct": 80,
     "identity_name_similarity_pct": 85,
+    "myoperator_company_id": "",
+    "myoperator_api_key": "",
+    "myoperator_caller_id": "",
     "company_name": "our health team",  # spoken in caller scripts (Q19: real brand/pitch wording pending)
     "caller_script_requires_approval": False,  # True = callers only see doctor-approved scripts
     "callcard_lead_days": 14,  # pre-generate cards this many days before the due date

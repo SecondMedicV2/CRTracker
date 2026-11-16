@@ -142,6 +142,74 @@ function Rule({ k, onChange }: { k: string; onChange: () => void }) {
   );
 }
 
+function CriticalRules() {
+  const { data, error, reload } = useApi<any[]>("/critical-rules");
+  const [msg, setMsg] = useState("");
+  if (error || !data) return <RequestState loading={!data} error={error} retry={reload} />;
+
+  async function toggle(rule: any) {
+    try {
+      await api(`/critical-rules/${rule.id}`, { method: "PATCH", body: { active: !rule.active } });
+      setMsg("");
+      reload();
+    } catch (e: any) {
+      setMsg(e.message);
+    }
+  }
+
+  return (
+    <div className="space-y-3 rounded bg-white p-4 shadow">
+      <div>
+        <h2 className="text-base font-semibold">Critical Lab Rules (Urgent triggers)</h2>
+        <p className="text-xs text-slate-600">
+          Doctor-approved safety triggers. Reports matching any active rule are locked to URGENT priority and prioritized in doctor queues.
+        </p>
+      </div>
+      {msg && <p role="alert" className="text-xs text-red-600">{msg}</p>}
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs">
+          <thead>
+            <tr className="border-b bg-slate-50 text-slate-700">
+              <th className="p-2">Parameter</th>
+              <th>Condition</th>
+              <th>Urgency</th>
+              <th>Clinical reason</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((r: any) => (
+              <tr key={r.id} className="border-b hover:bg-slate-50">
+                <td className="p-2 font-medium">{r.canonical_name || r.param_code}</td>
+                <td className="font-mono">{r.operator} {r.threshold_value} {r.unit}</td>
+                <td>
+                  <span className="rounded bg-red-100 px-1.5 py-0.5 font-semibold text-red-800">
+                    {r.urgency_tier}
+                  </span>
+                </td>
+                <td className="text-slate-600">{r.reason}</td>
+                <td>
+                  <label className="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={r.active}
+                      onChange={() => toggle(r)}
+                      aria-label={`Toggle ${r.param_code} rule`}
+                    />
+                    <span className={r.active ? "font-medium text-emerald-700" : "text-slate-400"}>
+                      {r.active ? "Active" : "Disabled"}
+                    </span>
+                  </label>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function Rules() {
   const { data, error, reload } = useApi<any[]>("/rules");
   const pending = data?.some((r) => r.pending_signoff);
@@ -156,7 +224,6 @@ export default function Rules() {
       </div>
 
       <RequestState loading={!data} error={error} retry={reload} empty={data?.length === 0 ? "No rule sets found." : undefined} />
-
       {pending && (
         <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
           <strong>Starter content, pending clinical sign-off:</strong> Medical rules must be signed off by a licensed doctor before live diagnostic evaluation.
@@ -166,6 +233,7 @@ export default function Rules() {
       <div className="space-y-4">
         {data?.map((r) => <Rule key={r.key} k={r.key} onChange={reload} />)}
       </div>
+      <CriticalRules />
     </div>
   );
 }

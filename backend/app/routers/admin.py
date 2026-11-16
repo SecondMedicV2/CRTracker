@@ -17,6 +17,15 @@ from .auth import public
 router = APIRouter(tags=["admin"])
 admin = require("ADMIN")
 Role = Literal["ADMIN", "CALLER", "DOCTOR"]
+SECRET_SETTINGS = {"myoperator_api_key"}
+
+
+def settings_out(db: Session) -> dict:
+    values = all_settings(db)
+    for key in SECRET_SETTINGS:
+        if values.get(key):
+            values[key] = "********"
+    return values
 
 
 # ---- users ----
@@ -120,7 +129,7 @@ def update_doctor(did: int, body: DoctorIn, request: Request, db: Session = Depe
 # ---- settings ----
 @router.get("/settings")
 def get_settings(db: Session = Depends(get_db), _: User = Depends(admin)):
-    return all_settings(db)
+    return settings_out(db)
 
 
 @router.put("/settings/{key}")
@@ -135,7 +144,7 @@ def put_setting(key: str, body: dict, request: Request, db: Session = Depends(ge
     db.merge(Setting(key=key, value=value, updated_by=me.id))
     db.commit()
     audit(db, request, me.id, "update", "setting", key)
-    return all_settings(db)
+    return settings_out(db)
 
 
 # ---- rules: versioned, doctor sign-off ----

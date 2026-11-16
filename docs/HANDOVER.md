@@ -45,7 +45,9 @@ See `.env.example` for every key, with comments. The important ones:
 - `LAB_PROVIDER`: `mock` (made-up reports) until the Thyrocare connection is finished. `LLM_PROVIDER`: `template` (no AI).
 
 Business settings (no restart needed) are on the **Settings** screen: pull time (07:00 IST), attempt limits, doctor timeouts (4 h escalation / 24 h routine),
-pilot mode, whether callers can see results (off), whether callers need doctor-approved scripts (off), company name spoken in scripts.
+pilot mode, whether callers can see results (off), whether callers need doctor-approved scripts (off), company name spoken in scripts, and MyOperator click-to-call credentials.
+Admins can start a call from a patient detail page; the app blocks patients marked "Do not call" and confirms before sending the request. The API token is masked in Settings responses.
+Set the MyOperator company ID, API token, and outbound virtual number in Settings before calling. Live calls incur provider usage and should only be tested against a number you control.
 
 ## 4. Who does what
 | Role | Screens |
@@ -78,7 +80,7 @@ The critical-values table is **empty on purpose**; no hypertension bucket exists
 
 ## 8. Before going live: decisions and work still outstanding
 Blocking (from `OPEN_QUESTIONS.md`): Thyrocare API documents and credentials (Q2); which AI/OCR provider (Q3); 10+ real sample PDFs (Q17);
-final bucket list and who signs rules off (Q4); critical values from a doctor (Q5); languages (Q11); dialer (Q12); test catalogue/prices (Q13); doctors and hours (Q14);
+final bucket list and who signs rules off (Q4); critical values from a doctor (Q5); languages (Q11); provider account/API behavior validation (Q12); test catalogue/prices (Q13); doctors and hours (Q14);
 hosting, retention and legal review (Q16); brand and pitch wording (Q19, Q20).
 Work not done: the single-report upload screen (AC17), real Thyrocare adapter, PDF reading, Playwright browser tests, penetration test, Next.js 16 upgrade (see `SECURITY.md`).
 

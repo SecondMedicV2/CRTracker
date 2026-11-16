@@ -7,15 +7,43 @@ import { Suspense } from "react";
 import { api } from "@/lib/api";
 import Trends from "@/components/Trends";
 import { useApi } from "@/lib/useApi";
+import { RoleContext } from "@/lib/navigation";
+import { useContext, useState } from "react";
 
 function PatientInner({ id }: { id: string }) {
   const { data: p, error, reload } = useApi<any>(`/patients/${id}`);
+  const role = useContext(RoleContext);
+  const [calling, setCalling] = useState(false);
+  const [callMessage, setCallMessage] = useState("");
   if (error || !p) return <RequestState loading={!p} error={error} retry={reload} />;
   const patch = (body: object) => api(`/patients/${id}`, { method: "PATCH", body }).then(reload);
+  async function callPatient() {
+    if (!window.confirm(`Start a real call to ${p.name} at ${p.mobile}?`)) return;
+    setCalling(true);
+    setCallMessage("");
+    try {
+      await api(`/patients/${id}/call`, { method: "POST" });
+      setCallMessage("MyOperator accepted the call request.");
+    } catch (e: any) {
+      setCallMessage(e.message);
+    } finally {
+      setCalling(false);
+    }
+  }
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{p.name}</h1>
       <div className="text-sm">{p.age} · {p.gender} · <span className="font-mono">{p.mobile}</span></div>
+      {role === "ADMIN" && (
+        <div className="space-y-2">
+          <button type="button" className="rounded-lg bg-teal-700 px-4 py-2 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={calling || p.do_not_call || !p.mobile} onClick={callPatient}>
+            {calling ? "Starting call…" : "Call patient"}
+          </button>
+          {p.do_not_call && <p className="text-sm text-red-700">Calling is disabled because this patient asked not to be called.</p>}
+          {callMessage && <p role="status" className="text-sm">{callMessage}</p>}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-4 text-sm">
         <label>Language{" "}
           <select className="rounded border p-1" value={p.language} onChange={(e) => patch({ language: e.target.value })}>

@@ -19,6 +19,11 @@ def conclude(db: Session, order: Order, report: Report) -> None:
     status.move(order, status.PENDING_IDENTITY if held else status.READY)
     if not held:
         followup.build(db, order)
+        try:
+            from . import ai_insights
+            ai_insights.generate_insight_for_report(db, report)
+        except Exception:
+            pass  # retryable on failure, idempotent
 
 
 def extract_order(db: Session, order: Order) -> None:

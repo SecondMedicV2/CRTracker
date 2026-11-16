@@ -1,10 +1,11 @@
 """Telephony and Outbound Calling for CRTracker.
 Supports Manual dialing and MyOperator outbound calling (SecondMedic to customer)."""
-import json
 import logging
 import os
 import re
-import urllib.request
+
+import httpx
+
 from .models import Doctor
 
 log = logging.getLogger("telephony")
@@ -65,34 +66,34 @@ class MyOperatorDialer(TelephonyProvider):
                     "agent": agent_phone or self.caller_id,
                     "reference_id": f"fu-{followup_id}" if followup_id else "direct"
                 }
-                req = urllib.request.Request(
-                    self.api_url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
-                    method="POST"
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    res_data = json.loads(resp.read().decode())
-                    return {
-                        "success": True,
-                        "status": "initiated",
-                        "provider": "myoperator",
-                        "call_id": res_data.get("call_id") or f"MYOP-{res_data.get('id', 'LIVE')}",
-                        "from": "SecondMedic",
-                        "to": clean_num,
-                        "customer_name": customer_name,
-                        "message": f"Outgoing call initiated to {customer_name or clean_num} via MyOperator"
-                    }
-            except Exception as e:
-                log.error("MyOperator call failed: %s", e)
+                resp = httpx.post(self.api_url, json=payload, timeout=10,
+                                  headers={"Authorization": f"Bearer {self.api_key}"})
+                if resp.status_code >= 400:
+                    # never echo the provider's answer: it can repeat our token
+                    reason = f"MyOperator rejected the call request (HTTP {resp.status_code})"
+                    log.error(reason)
+                    return {"success": False, "status": "rejected", "provider": "myoperator", "error": reason,
+                            "to": clean_num, "message": reason}
+                try:
+                    res_data = resp.json()
+                except ValueError:
+                    res_data = {}
+                res_data = res_data if isinstance(res_data, dict) else {}
                 return {
-                    "success": False,
-                    "status": "failed",
+                    "success": True,
+                    "status": "initiated",
                     "provider": "myoperator",
-                    "error": str(e),
+                    "call_id": res_data.get("call_id") or f"MYOP-{res_data.get('id', 'LIVE')}",
+                    "from": "SecondMedic",
                     "to": clean_num,
-                    "message": f"Failed to connect to MyOperator: {str(e)}"
+                    "customer_name": customer_name,
+                    "message": f"Outgoing call initiated to {customer_name or clean_num} via MyOperator"
                 }
+            except httpx.HTTPError as e:
+                reason = f"Could not reach MyOperator ({type(e).__name__})"
+                log.error(reason)
+                return {"success": False, "status": "failed", "provider": "myoperator", "error": reason,
+                        "to": clean_num, "message": reason}
 
         # Simulation / ready state when MYOPERATOR_API_KEY is not yet populated
         return {

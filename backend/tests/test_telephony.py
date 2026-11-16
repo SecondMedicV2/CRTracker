@@ -37,21 +37,25 @@ def test_admin_can_start_patient_call_through_myoperator(admin, monkeypatch):
 
     def fake_post(url, **kwargs):
         requests.append((url, kwargs))
-        return httpx.Response(200, json={"status": "success"}, request=httpx.Request("POST", url))
+        return httpx.Response(200, json={"call_id": "C-1"}, request=httpx.Request("POST", url))
 
     monkeypatch.setattr("app.telephony.httpx.post", fake_post)
     response = admin.post(f"{API}/patients/{patient_id}/call")
 
     assert response.status_code == 202
-    assert response.json() == {"status": "initiated"}
+    assert response.json() == {"status": "initiated", "call_id": "C-1"}
     assert len(requests) == 1
     url, kwargs = requests[0]
-    assert url == "https://api.myoperator.com/v1/click_to_call"
+    # The provider contract is still unconfirmed (OPEN_QUESTIONS Q12); this pins what we send today.
+    assert url == "https://obd-api.myoperator.co/v1/sdk/outbound/call"
     assert kwargs["headers"] == {"Authorization": f"Bearer {settings['myoperator_api_key']}"}
     assert kwargs["json"] == {
         "company_id": settings["myoperator_company_id"],
+        "secret_token": settings["myoperator_api_key"],
         "caller_id": settings["myoperator_caller_id"],
-        "customer_number": "9876543210",
+        "to": "+919876543210",
+        "agent": settings["myoperator_caller_id"],
+        "reference_id": "direct",
     }
     with dbmod.SessionLocal() as db:
         assert db.scalar(select(AuditLog).where(AuditLog.action == "outbound_call", AuditLog.entity_id == str(patient_id)))

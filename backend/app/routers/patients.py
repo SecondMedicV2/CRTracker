@@ -96,7 +96,8 @@ def call_patient(pid: int, request: Request, db: Session = Depends(get_db), me: 
         mobile, customer_name=p.name
     )
     if not result.get("success") or result.get("status") != "initiated":
-        raise HTTPException(502, "MyOperator could not start the call")
+        # result["error"] is built by the dialer from the HTTP status only, never from MyOperator's reply
+        raise HTTPException(502, result.get("error") or "MyOperator could not start the call")
     return {"status": result["status"], "call_id": result["call_id"]}
 
 

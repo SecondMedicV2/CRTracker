@@ -235,7 +235,8 @@ export default function Import() {
 
       {/* SECTION 3: Pull from Lab */}
       <section className="space-y-3 rounded-2xl bg-white p-5 shadow-sm border border-slate-200">
-        <h2 className="text-base font-bold text-slate-900">3. Pull serviced orders from partner lab</h2>
+        <h2 className="text-base font-bold text-slate-900">3. Pull ready reports from LabTrace</h2>
+        <p className="text-xs text-slate-600">Picks up every work order with a ready report whose sample was collected in these dates. This also runs automatically on the schedule in Settings.</p>
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <input type="date" aria-label="From date" className="rounded-lg border border-slate-300 p-1.5 text-sm" value={range.start} onChange={(e) => setRange({ ...range, start: e.target.value })} />
           <span className="text-slate-500">to</span>
@@ -274,18 +275,20 @@ export default function Import() {
               <tbody>
                 {history.data?.map((b) => {
                   const isPdf = b.source === "pdf" || (b.file_name && b.file_name.toLowerCase().endsWith(".pdf"));
-                  const source = isPdf ? "PDF" : "Labtrace app";
-                  const name = b.patient_name || b.patients?.[0]?.patient_name || "Aakash Verma";
-                  const mobile = b.mobile || b.patients?.[0]?.mobile || "9876543210";
-                  const labtraceId = b.labtrace_id || b.patients?.[0]?.order_id || `LT-${1000 + b.id}`;
-                  const status = b.status || (isPdf ? "Followup pending" : "Call pending");
-                  const reportId = b.report_id || b.patients?.[0]?.report_id || 1;
+                  const source = isPdf ? "PDF" : b.source === "api" ? "LabTrace" : b.source === "manual" ? "Manual" : "File";
+                  const first = b.patients?.[0];
+                  const more = (b.orders_count ?? b.patients?.length ?? 0) > 1 ? ` +${(b.orders_count ?? b.patients.length) - 1} more` : "";
+                  const name = (b.patient_name || first?.patient_name || "—") + (first?.patient_name ? more : "");
+                  const mobile = b.mobile || first?.mobile || "—";
+                  const labtraceId = b.labtrace_id || first?.lab_ref || first?.order_id || "—";
+                  const status = b.status || "Processing";
+                  const reportId = b.report_id || first?.report_id;
 
                   let statusClass = "bg-amber-100 text-amber-900 border-amber-300";
                   if (status === "Call initiated") statusClass = "bg-blue-100 text-blue-900 border-blue-300";
-                  else if (status === "Followup pending") statusClass = "bg-purple-100 text-purple-900 border-purple-300";
-                  else if (status === "Retry calling") statusClass = "bg-rose-100 text-rose-900 border-rose-300";
-                  else if (status === "Completed") statusClass = "bg-emerald-100 text-emerald-900 border-emerald-300";
+                  else if (status === "Followup pending" || status === "Waiting for review") statusClass = "bg-purple-100 text-purple-900 border-purple-300";
+                  else if (status === "Retry calling" || status === "Needs attention") statusClass = "bg-rose-100 text-rose-900 border-rose-300";
+                  else if (status === "Completed" || status === "Ready for calls") statusClass = "bg-emerald-100 text-emerald-900 border-emerald-300";
 
                   return (
                     <tr key={b.id} className="border-t hover:bg-slate-50/60 transition">
@@ -313,10 +316,10 @@ export default function Import() {
                       <td className="text-right p-3">
                         <div className="flex items-center justify-end gap-2">
                           <Link
-                            href={`/reports/view?id=${reportId}`}
+                            href={reportId && !more ? `/reports/view?id=${reportId}` : `/orders?batch_id=${b.id}`}
                             className="rounded-lg bg-sky-50 px-2.5 py-1 text-xs font-bold text-sky-800 border border-sky-300 hover:bg-sky-100 transition"
                           >
-                            View Report
+                            {reportId && !more ? "View Report" : "View Orders"}
                           </Link>
                           {isAdmin && (
                             <button

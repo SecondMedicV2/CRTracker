@@ -10,3 +10,4 @@ psycopg[binary]>=3.2  # production Postgres driver
 python-multipart>=0.0.9
 openpyxl>=3.1
 cryptography>=43
+pypdf>=5  # reads text out of lab report PDFs

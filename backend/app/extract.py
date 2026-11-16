@@ -4,11 +4,13 @@ shape, normalises names/units, validates, and scores confidence (Part 6.4-6.6).
 Canonical input:
 {"patient": {"name","age","gender","mobile"}, "collected_on", "reported_on", "lab",
  "parameters": [{"name","value","unit","ref_range" | "ref_low"/"ref_high","flag"}]}"""
+import io
 import re
 from datetime import datetime, timezone
 
 from . import storage
 from .analysis import NUM, parse_range
+from .config import env
 from .models import Report, ReportParameter
 
 UNITS = {"mg/dl": "mg/dL", "g/dl": "g/dL", "ng/ml": "ng/mL", "pg/ml": "pg/mL", "miu/l": "mIU/L",
@@ -20,9 +22,86 @@ class ExtractError(Exception):
     """Message is shown to admins; must not contain patient data."""
 
 
-def pdf_to_data(pdf: bytes) -> dict:
-    # Real implementation arrives with the LLMProvider (Phase 6; vendor is open question Q3).
-    raise ExtractError("PDF extraction needs an LLM/OCR provider, which is not configured yet")
+# Thyrocare prints a "technology" column between the test name and the value; it is not part of the name.
+METHODS = (r"(?:C\.?L\.?I\.?A|E\.?C\.?L\.?I\.?A|C\.?M\.?I\.?A|H\.?P\.?L\.?C|E\.?L\.?I\.?S\.?A|I\.?S\.?E|PHOTOMETRY|"
+           r"SPECTROPHOTOMETRY|IMMUNOTURBIDIMETRY|CALCULATED|CALCULATION|DERIVED|FLOW CYTOMETRY|MICROSCOPY|"
+           r"LC-?MS/?MS|ICP-?MS|NEPHELOMETRY|TURBIDIMETRY|ENZYMATIC|COLORIMETRY|POTENTIOMETRY)")
+ROW = re.compile(rf"^(?P<name>[A-Za-z0-9(].*?[A-Za-z0-9)\]])(?:\s+{METHODS})?\s+(?P<value>[<>]?\s?{NUM})"
+                 r"(?:\s+(?P<unit>[^\s\d<>\-][^\s]*))?\s*(?P<range>.*)$", re.I)
+NOT_A_TEST = re.compile(r"\b(age|sex|gender|date|page|barcode|collected|received|reported|printed|mobile|phone|"
+                        r"pin|ref|patient|sample|lab code|order|years?|tel|fax)\b|:", re.I)
+PRIVATE_LINE = re.compile(r"\b(name|patient|address|mobile|phone|e-?mail|ref\.? ?by|referred|barcode|client|"
+                          r"booked|aadhaar|pin ?code)\b", re.I)
+KNOWN_UNITS = {u.lower() for u in UNITS} | {
+    "mmol/l", "µmol/l", "umol/l", "fl", "pg", "10^3/µl", "10^6/µl", "x10^3/ul", "x10^6/ul", "thou/µl", "mill/µl",
+    "cells/µl", "meq/l", "mg/l", "µg/dl", "ug/dl", "miu/ml", "ng/dl", "mm/hr", "sec", "gm/dl", "µg/l", "ug/l"}
+
+
+def pdf_text(pdf: bytes) -> str:
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(pdf))
+        if len(reader.pages) > 60:
+            raise ExtractError("The PDF has more than 60 pages")
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    except ExtractError:
+        raise
+    except Exception:
+        raise ExtractError("Could not read this PDF")
+    if len(text.strip()) < 20:
+        raise ExtractError("The PDF has no readable text (it may be a scanned image)")
+    return text
+
+
+def parse_report_text(text: str) -> dict:
+    """Rule-based reader for text PDFs laid out as  NAME [TECHNOLOGY] VALUE UNIT RANGE  (Thyrocare's layout).
+    Unrecognised names or values lower the confidence score, which sends the report to a human reviewer."""
+    params, seen = [], set()
+    for line in text.splitlines():
+        line = re.sub(r"\s+", " ", line).strip()
+        m = ROW.match(line)
+        if not m or NOT_A_TEST.search(m["name"]) or len(re.findall(r"[A-Za-z]", m["name"])) < 2:
+            continue
+        unit, rng = (m["unit"] or "").strip(), m["range"].strip()
+        if not (unit.lower() in KNOWN_UNITS or parse_range(rng)):
+            continue  # a sentence that merely contains a number
+        name = m["name"].strip()
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            params.append({"name": name, "value": m["value"].replace(" ", ""), "unit": unit, "ref_range": rng[:60]})
+    return {"parameters": params}
+
+
+def redact(text: str, patient: dict) -> str:
+    """Drops lines that identify the person and masks their name, phone numbers and e-mail anywhere else."""
+    out = "\n".join(ln for ln in text.splitlines() if not PRIVATE_LINE.search(ln))
+    for part in str(patient.get("name") or "").split():
+        if len(part) >= 3:
+            out = re.sub(rf"\b{re.escape(part)}\b", "[name]", out, flags=re.I)
+    out = re.sub(r"[\w.+-]+@[\w-]+\.[\w.]+", "[email]", out)
+    return re.sub(r"(?<![\d.])(?:\+?91[\s-]?)?\d(?:[\s-]?\d){9}(?![\d.])", "[number]", out)
+
+
+def pdf_to_data(pdf: bytes, patient: dict | None = None) -> dict:
+    """Text PDF -> canonical shape, with the built-in rule-based reader. With AI_PDF_EXTRACTION=true and an AI
+    provider set, the model reads it instead; it only sees the text with identifying lines removed."""
+    text = pdf_text(pdf)
+    if env.ai_pdf_extraction and env.llm_provider != "template" and env.ai_patient_data != "none":
+        from .llm import LLMError, get_llm
+
+        try:
+            data = get_llm().extract_results(redact(text, patient or {}))
+            if isinstance(data, dict) and data.get("parameters"):
+                return {k: data.get(k) for k in ("parameters", "collected_on", "reported_on")}
+        except LLMError:
+            pass  # fall back to the rule-based reader
+    return parse_report_text(text)
+
+
+def merge_patient(found: dict, booked: dict) -> dict:
+    """The lab booking (name, age, gender, mobile) wins over what the report itself says, field by field."""
+    return {k: booked.get(k) if booked.get(k) not in (None, "") else found.get(k) for k in ("name", "age", "gender", "mobile")}
 
 
 def canonical_code(name: str, aliases: dict) -> str:

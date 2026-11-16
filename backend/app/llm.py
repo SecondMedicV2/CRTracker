@@ -32,6 +32,13 @@ Rules:
 - Output MUST be valid JSON matching the schema."""
 
 
+EXTRACT_SYSTEM_PROMPT = """You copy lab test results out of the text of a pathology report. Identifying details were removed.
+Return JSON: {"collected_on": ISO date or null, "reported_on": ISO date or null, "parameters": [{"name", "value", "unit", "ref_range"}]}.
+- One entry per measured test, exactly as printed: do not convert units, round, guess, or add tests that are not in the text.
+- value is the printed result (a number, or text such as "Negative"); ref_range is the printed reference range, or "".
+- Skip headings, method/technology names, comments and interpretation notes."""
+
+
 class LLMProvider:
     name = "base"
     model = ""
@@ -42,6 +49,9 @@ class LLMProvider:
 
     def generate_insight(self, data: dict) -> dict:
         raise NotImplementedError
+
+    def extract_results(self, text: str) -> dict:
+        raise LLMError(f"{self.name} cannot read report text")
 
 
 def _trend(t: str) -> str:
@@ -130,12 +140,17 @@ class AnthropicProvider(LLMProvider):
             raise LLMError(f"LLM call failed ({type(e).__name__})")
 
     def generate_insight(self, data: dict) -> dict:
+        return self._ask(INSIGHT_SYSTEM_PROMPT, json.dumps(data, ensure_ascii=False))
+
+    def extract_results(self, text: str) -> dict:
+        return self._ask(EXTRACT_SYSTEM_PROMPT, text[:60000], max_tokens=8000)
+
+    def _ask(self, system: str, content: str, max_tokens: int = 4000) -> dict:
         import httpx
 
         if not env.anthropic_api_key:
             raise LLMError("ANTHROPIC_API_KEY is not set")
-        body = {"model": self.model, "max_tokens": 4000, "system": INSIGHT_SYSTEM_PROMPT,
-                "messages": [{"role": "user", "content": json.dumps(data, ensure_ascii=False)}]}
+        body = {"model": self.model, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": content}]}
         try:
             r = httpx.post("https://api.anthropic.com/v1/messages", json=body, timeout=90,
                            headers={"x-api-key": env.anthropic_api_key, "anthropic-version": "2023-06-01"})
@@ -200,6 +215,9 @@ class GeminiProvider(LLMProvider):
     def generate_insight(self, data: dict) -> dict:
         user_content = json.dumps(data, ensure_ascii=False)
         return self._call_gemini(INSIGHT_SYSTEM_PROMPT, user_content)
+
+    def extract_results(self, text: str) -> dict:
+        return self._call_gemini(EXTRACT_SYSTEM_PROMPT, text[:60000])
 
 
 def get_llm() -> LLMProvider:

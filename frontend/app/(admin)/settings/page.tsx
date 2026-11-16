@@ -56,6 +56,16 @@ const SETTINGS_MAP: Record<string, SettingMeta> = {
     description: "Time of day (HH:MM IST) when completed reports are fetched from partner laboratories.",
     category: "Lab & Data Intake"
   },
+  pull_every_minutes: {
+    label: "Repeat Lab Sync Every (minutes)",
+    description: "0 = sync once a day at the time above. For example 60 = after that time, also pull new LabTrace reports every hour.",
+    category: "Lab & Data Intake"
+  },
+  pull_lookback_days: {
+    label: "Lab Sync Look-back (days)",
+    description: "Each automatic sync picks up ready reports for samples collected this many days back. Reports usually arrive 1-3 days after collection.",
+    category: "Lab & Data Intake"
+  },
   fetch_max_attempts: {
     label: "Lab Fetch Retry Limit",
     description: "Maximum number of attempts to retrieve pending reports from the lab before failing.",

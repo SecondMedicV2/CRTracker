@@ -73,7 +73,7 @@ def test_admin_matrix(admin):
 
 def test_new_routes_must_be_classified():
     """Fails when someone adds a route without deciding who may call it (update the sets above)."""
-    assert len(list(routes())) == 71  # 60 at Phase 9, 71 with AI insights and patient calling; bump with the sets
+    assert len(list(routes())) == 72  # 60 at Phase 9, 72 with AI insights and patient calling; bump with the sets
 
 
 # ---- the two leaks the review found ----

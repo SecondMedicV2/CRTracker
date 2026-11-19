@@ -4,6 +4,200 @@
 // 3. Otherwise, operates as the primary production API engine backed by Cloudflare KV (CRTRACKER_DATA).
 // 4. Cron triggers wake the background service if external backend is configured.
 
+import {
+  parseRange,
+  parseValue,
+  canonicalCode,
+  flagParameter,
+  severityFor,
+  classifyReport,
+  countAbnormalParameters,
+  analyse,
+  calculateConfidence,
+  redactPII,
+  crossCheckExtraction,
+  extractParameters,
+  normalizeUnit,
+  DEFAULT_ALIASES,
+  DEFAULT_REFERENCE_RANGES,
+  DEFAULT_SEVERITY
+} from "./lib/extract.js";
+
+const EDGE_DEFAULT_RULES = {
+  aliases: DEFAULT_ALIASES,
+  reference_ranges: DEFAULT_REFERENCE_RANGES,
+  severity: DEFAULT_SEVERITY,
+  buckets: [
+    { code: "DIABETES", name: "Diabetes / Prediabetes", params: ["HBA1C", "GLUCOSE_FASTING", "GLUCOSE_PP"], interval_days: 90, priority: "ROUTINE", retest: ["HBA1C", "FBS", "PPBS"] },
+    { code: "LIPID", name: "Lipid / Cardio risk", params: ["TRIGLYCERIDES", "LDL", "HDL", "CHOL_TOTAL"], interval_days: 90, priority: "ROUTINE", retest: ["LIPID"] },
+    { code: "THYROID", name: "Thyroid", params: ["TSH", "FT3", "FT4"], interval_days: 90, priority: "ROUTINE", retest: ["THYROID"] },
+    { code: "ANAEMIA", name: "Anaemia / Iron", params: ["HEMOGLOBIN", "FERRITIN", "IRON", "TIBC"], interval_days: 90, priority: "ROUTINE", retest: ["CBC", "IRON"] },
+    { code: "VIT_D_B12", name: "Vitamin D / B12", params: ["VITAMIN_D", "B12"], interval_days: 90, priority: "ROUTINE", retest: ["VITD", "B12"] },
+    { code: "KIDNEY", name: "Kidney", params: ["CREATININE", "UREA", "EGFR", "URIC_ACID"], interval_days: 90, priority: "ROUTINE", retest: ["KFT"] },
+    { code: "LIVER", name: "Liver", params: ["SGOT", "SGPT", "ALP", "BILIRUBIN"], interval_days: 90, priority: "ROUTINE", retest: ["LFT"] },
+    { code: "CANCER_MARKER", name: "Cancer markers", params: ["PSA", "CA125", "CEA"], interval_days: 0, priority: "ESCALATION", retest: [] },
+    { code: "OTHER", name: "Other abnormal", params: [], interval_days: 90, priority: "ROUTINE", retest: [] }
+  ],
+  test_catalogue: [
+    { code: "HBA1C", name: "HbA1c" },
+    { code: "FBS", name: "Fasting Blood Sugar" },
+    { code: "PPBS", name: "Post-Prandial Blood Sugar" },
+    { code: "LIPID", name: "Lipid Profile" },
+    { code: "THYROID", name: "Thyroid Profile" },
+    { code: "CBC", name: "Complete Blood Count" },
+    { code: "IRON", name: "Iron Studies" },
+    { code: "VITD", name: "Vitamin D" },
+    { code: "B12", name: "Vitamin B12" },
+    { code: "KFT", name: "Kidney Function Test" },
+    { code: "LFT", name: "Liver Function Test" }
+  ]
+};
+
+async function jsonBody(request) {
+  try {
+    return await request.json();
+  } catch (_) {
+    return {};
+  }
+}
+
+function sortParameters(params = []) {
+  return [...params].sort((a, b) => {
+    const aAb = a.system_flag === "HIGH" || a.system_flag === "LOW" ? 0 : 1;
+    const bAb = b.system_flag === "HIGH" || b.system_flag === "LOW" ? 0 : 1;
+    if (aAb !== bAb) return aAb - bAb;
+    return (a.id || 0) - (b.id || 0);
+  });
+}
+
+function mobileOut(mobile, user) {
+  if (!mobile) return "";
+  const m = String(mobile);
+  return user.role === "ADMIN" ? m : "X".repeat(Math.max(m.length - 4, 0)) + m.slice(-4);
+}
+
+function patientOut(p, user) {
+  return {
+    id: p.id,
+    name: p.name,
+    gender: p.gender,
+    age: p.age,
+    mobile: mobileOut(p.mobile, user),
+    household_tag: p.household_tag || "",
+    language: p.language || "en",
+    do_not_call: Boolean(p.do_not_call)
+  };
+}
+
+function resolveRules(store) {
+  const root = store?.rules || {};
+  const aliases =
+    root.aliases?.data ||
+    (root.aliases && typeof root.aliases === "object" && !root.aliases.data ? root.aliases : null) ||
+    EDGE_DEFAULT_RULES.aliases;
+  const referenceRanges =
+    root.reference_ranges?.data ||
+    (root.reference_ranges && typeof root.reference_ranges === "object" && !root.reference_ranges.data ? root.reference_ranges : null) ||
+    EDGE_DEFAULT_RULES.reference_ranges;
+  const severity =
+    root.severity?.data ||
+    (root.severity && typeof root.severity === "object" && !root.severity.data ? root.severity : null) ||
+    EDGE_DEFAULT_RULES.severity;
+  return {
+    aliases,
+    reference_ranges: referenceRanges,
+    severity,
+    buckets: root.buckets?.data || root.buckets || EDGE_DEFAULT_RULES.buckets,
+    test_catalogue: root.test_catalogue?.data || root.test_catalogue || EDGE_DEFAULT_RULES.test_catalogue
+  };
+}
+
+async function generateRulesInsight(env, report) {
+  const params = (await kvGet(env, `report_params:${report.id}`)) || [];
+  const abnormal = params.filter(p => p.system_flag === "LOW" || p.system_flag === "HIGH");
+  const review = params.filter(p => !p.system_flag || p.system_flag === "REVIEW_REQUIRED");
+  const inRange = params.filter(p => p.system_flag === "NORMAL");
+
+  const total = params.length;
+  const overview = `${total} laboratory test result(s) were analyzed from this report${report.collected_on ? ` dated ${report.collected_on.slice(0, 10)}` : ""}. ${abnormal.length} result(s) are outside the laboratory's stated range, ${review.length} require manual review, and ${inRange.length} are within printed ranges.`;
+
+  const defects = abnormal.map(p => ({
+    ref: String(p.id),
+    marker: p.param_name_raw,
+    status: p.system_flag,
+    severity: p.severity || "mild",
+    what_it_measures: "",
+    explanation: `${p.param_name_raw} ${p.value_text || p.value_num} ${p.unit} is outside the reference range.`,
+    related_refs: [],
+    priority: p.severity === "severe" ? "HIGH" : "MEDIUM"
+  }));
+
+  const doctor_discussion = abnormal.map(p => `Discuss symptoms and lifestyle factors relevant to ${p.param_name_raw}.`);
+  if (doctor_discussion.length === 0) doctor_discussion.push("Review general health status.");
+
+  const caller_questions = [
+    "Have you received your laboratory report and had a chance to view it?",
+    "Have you discussed these test results with your treating doctor yet?",
+    "Would you like our team to schedule a consultation with our doctor to review the report?",
+    "Have you experienced any new, unusual, or changing physical symptoms recently?",
+    "Are you currently taking any prescribed regular medications or daily supplements?"
+  ];
+
+  const priority = abnormal.length > 0 ? "PRIORITY" : "ROUTINE";
+  const reason = abnormal.length > 0 ? `${abnormal.length} result(s) outside reference ranges.` : "All tested parameters are within printed laboratory reference ranges.";
+
+  const insightId = `ins-${report.id}-${Date.now()}`;
+  const now = new Date().toISOString();
+  const contentObj = {
+    schema_version: "1.0",
+    overview,
+    defects,
+    suggestions: {
+      doctor_discussion,
+      caller_questions,
+      clarifications_for_doctor: []
+    },
+    doctor_connect: {
+      priority,
+      source: "rule",
+      reason,
+      connect_within_hours: priority === "PRIORITY" ? 24 : 72
+    },
+    future: {
+      monitoring_tests: [],
+      suggested_window_days: 90,
+      trend_notes: [],
+      watch_markers: abnormal.map(p => p.param_code).filter(Boolean)
+    },
+    red_flag_protocol: "If you feel severe pain or difficulty breathing, please seek emergency medical attention immediately.",
+    limitations: "Screening review only; does not replace physician consultation.",
+    needs_doctor_review: true
+  };
+
+  return {
+    id: insightId,
+    report_id: report.id,
+    status: "DRAFT",
+    overview,
+    defects,
+    suggestions: contentObj.suggestions,
+    doctor_connect: contentObj.doctor_connect,
+    future: contentObj.future,
+    red_flag_protocol: contentObj.red_flag_protocol,
+    limitations: contentObj.limitations,
+    needs_doctor_review: contentObj.needs_doctor_review,
+    content: contentObj,
+    provider: "template",
+    model: "rules",
+    prompt_version: "1.0",
+    validation_errors: [],
+    approved_by: null,
+    approved_at: null,
+    created_at: now,
+    updated_at: now
+  };
+}
+
 const PURGE_KEY = "de" + "mo_purged";
 
 const SESSION_COOKIE = "crt_session";
@@ -63,13 +257,18 @@ const memoryKv = new Map(); // only used when no KV binding exists (local runs)
 async function kvGet(env, key) {
   if (env && env.CRTRACKER_DATA) return env.CRTRACKER_DATA.get(key, "json").catch(() => null);
   const hit = memoryKv.get(key);
-  return hit && hit.until > Date.now() ? hit.value : null;
+  return hit && (!hit.until || hit.until > Date.now()) ? hit.value : null;
 }
 
 async function kvPut(env, key, value, ttlSeconds) {
-  const ttl = Math.max(60, Math.floor(ttlSeconds)); // KV refuses anything under 60 s
-  if (env && env.CRTRACKER_DATA) return env.CRTRACKER_DATA.put(key, JSON.stringify(value), { expirationTtl: ttl });
-  memoryKv.set(key, { value, until: Date.now() + ttl * 1000 });
+  if (ttlSeconds && ttlSeconds > 0) {
+    const ttl = Math.max(60, Math.floor(ttlSeconds)); // KV refuses anything under 60 s
+    if (env && env.CRTRACKER_DATA) return env.CRTRACKER_DATA.put(key, JSON.stringify(value), { expirationTtl: ttl });
+    memoryKv.set(key, { value, until: Date.now() + ttl * 1000 });
+  } else {
+    if (env && env.CRTRACKER_DATA) return env.CRTRACKER_DATA.put(key, JSON.stringify(value));
+    memoryKv.set(key, { value, until: null });
+  }
 }
 
 async function kvDelete(env, key) {
@@ -154,9 +353,15 @@ async function signIn(request, env, store) {
 // Admin-only areas, plus areas a role may read but not change. Callers never see lab findings.
 function forbidden(path, method, role) {
   if (role === "ADMIN") return false;
-  if (/^\/(imports|users|admin|audit|integrations|orders)(\/|$)/.test(path)) return true;
+  if (/^\/(imports|users|admin|audit|integrations|orders)(\/|$)/.test(path)) {
+    if (path === "/audit" && role === "DOCTOR") return false;
+    return true;
+  }
   if (method !== "GET" && /^\/(settings|rules|doctors)(\/|$)/.test(path)) return true;
-  if (role === "CALLER" && /^\/(reports|patients)(\/|$)/.test(path)) return true;
+  if (role === "CALLER" && /^\/(reports|patients|trends|exports\/trends)(\/|$)/.test(path)) {
+    if (/^\/reports\/\d+\/insight(?:\/|$)/.test(path) && method === "GET") return false;
+    return true;
+  }
   return false;
 }
 
@@ -251,9 +456,9 @@ function asPdf(bytes) {
   return bytes && bytes.byteLength > 4 && bytes.byteLength <= MAX_PDF_BYTES && String.fromCharCode(...bytes.slice(0, 4)) === "%PDF" ? bytes : null;
 }
 
-async function labtraceReportPdf(env, workOrderId, thyrocarePatientId) {
+async function labtraceReportPdf(env, workOrderId, thyrocarePatientId, existingSession) {
   if (!WORK_ORDER_ID.test(String(workOrderId || ""))) throw new LabTraceError(404, "This report did not come from LabTrace.");
-  const lt = await labtraceSession(env);
+  const lt = existingSession || await labtraceSession(env);
   const list = await labtraceJson(lt, `/api/reports?workOrderId=${encodeURIComponent(workOrderId)}`, "Report list");
   const reports = (Array.isArray(list) ? list : []).sort((a, b) => String(b.uploaded_at || "").localeCompare(String(a.uploaded_at || "")));
   for (const rep of reports) {
@@ -284,6 +489,271 @@ async function labtraceReportPdf(env, workOrderId, thyrocarePatientId) {
     }
   }
   throw new LabTraceError(404, "The report PDF is not in LabTrace yet.");
+}
+
+const EXTRACT_SYSTEM_PROMPT = `You copy lab test results out of the text of a pathology report. Identifying details were removed.
+Return JSON: {"collected_on": ISO date or null, "reported_on": ISO date or null, "parameters": [{"name", "value", "unit", "ref_range"}]}.
+- One entry per measured test, exactly as printed: do not convert units, round, guess, or add tests that are not in the text.
+- value is the printed result (a number, or text such as "Negative"); ref_range is the printed reference range, or "".
+- Skip headings, method/technology names, comments and interpretation notes.`;
+
+async function extractText(env, pdfBytes) {
+  if (!env?.AI || typeof env.AI.toMarkdown !== "function") {
+    throw new LabTraceError(503, "PDF text conversion is not available.");
+  }
+  let result;
+  try {
+    result = await env.AI.toMarkdown(
+      {
+        name: "report.pdf",
+        blob: new Blob([pdfBytes], { type: "application/pdf" })
+      },
+      {
+        conversionOptions: {
+          output: { format: "text" }
+        }
+      }
+    );
+  } catch (_) {
+    throw new LabTraceError(502, "Could not read this PDF.");
+  }
+
+  if (result?.format === "error") {
+    throw new LabTraceError(502, "Could not read this PDF.");
+  }
+  const text = String(
+    result?.text ??
+    result?.data ??
+    result?.result ??
+    result?.markdown ??
+    ""
+  ).trim();
+  if (text.length < 20) {
+    throw new ExtractError("The PDF has no readable text (it may be a scanned image)");
+  }
+  return text;
+}
+
+function normalizeExtractedParam(raw, id, aliases) {
+  const name = String(raw?.name ?? raw?.param_name_raw ?? "").trim().slice(0, 120);
+  const valueText = String(
+    raw?.value_text ??
+    raw?.value ??
+    raw?.value_num ??
+    ""
+  ).trim().slice(0, 60);
+  const [parsedNum, parsedText] = parseValue(
+    raw?.value_num !== undefined && raw?.value_num !== null
+      ? raw.value_num
+      : (raw?.value ?? valueText)
+  );
+  const unit = normalizeUnit(String(raw?.unit ?? "").trim());
+  const refText = String(raw?.ref_range ?? raw?.ref_text ?? "").trim().slice(0, 60);
+  const range = parseRange(refText);
+  return {
+    id,
+    param_code: canonicalCode(name, aliases),
+    param_name_raw: name,
+    value_num: parsedNum,
+    value_text: parsedText || valueText,
+    unit,
+    ref_low: range ? range[0] : (raw?.ref_low ?? null),
+    ref_high: range ? range[1] : (raw?.ref_high ?? null),
+    ref_text: refText,
+    system_flag: raw?.system_flag ?? "",
+    severity: raw?.severity ?? "",
+    deviation_pct: raw?.deviation_pct ?? null,
+    ref_source: raw?.ref_source ?? "",
+    lab_flag: String(raw?.lab_flag ?? raw?.flag ?? "").slice(0, 20)
+  };
+}
+
+async function geminiExtract(env, report, sourceText) {
+  if (!env?.GOOGLE_API_KEY) return null;
+  const safeText = redactPII(sourceText, {
+    name: report?.patient_name,
+    mobile: report?.mobile
+  });
+  const responseSchema = {
+    type: "object",
+    properties: {
+      collected_on: { type: ["string", "null"] },
+      reported_on: { type: ["string", "null"] },
+      parameters: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            value: { type: ["string", "number"] },
+            unit: { type: "string" },
+            ref_range: { type: "string" }
+          },
+          required: ["name", "value", "unit", "ref_range"]
+        }
+      }
+    },
+    required: ["collected_on", "reported_on", "parameters"]
+  };
+
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GOOGLE_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: EXTRACT_SYSTEM_PROMPT }]
+          },
+          contents: [{
+            role: "user",
+            parts: [{ text: safeText }]
+          }],
+          generationConfig: {
+            temperature: 0,
+            responseMimeType: "application/json",
+            responseSchema
+          }
+        })
+      }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!rawText) return null;
+    const parsed = JSON.parse(rawText);
+    return parsed && Array.isArray(parsed.parameters) ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizedTestName(name) {
+  return String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizedValueText(param) {
+  return String(param?.value_text ?? param?.value ?? param?.value_num ?? "")
+    .trim()
+    .replace(/\s+/g, "");
+}
+
+function crossCheckParams(ruleParams, geminiParams, sourceText) {
+  const reasons = [];
+  const mismatchedNames = new Set();
+
+  const ruleMap = new Map();
+  for (const p of ruleParams) {
+    const name = normalizedTestName(p.param_name_raw);
+    if (name) ruleMap.set(name, p);
+  }
+
+  const gemMap = new Map();
+  for (const p of geminiParams) {
+    const name = normalizedTestName(p.param_name_raw || p.name);
+    if (name) gemMap.set(name, p);
+  }
+
+  for (const [name, rp] of ruleMap) {
+    const gp = gemMap.get(name);
+    if (!gp) {
+      mismatchedNames.add(rp.param_name_raw || name);
+      continue;
+    }
+
+    const ruleValue = normalizedValueText(rp);
+    const gemValue = normalizedValueText(gp);
+    const ruleUnit = normalizeUnit(rp.unit || "").toLowerCase();
+    const gemUnit = normalizeUnit(gp.unit || "").toLowerCase();
+    if (!ruleValue || ruleValue !== gemValue || (ruleUnit && gemUnit && ruleUnit !== gemUnit)) {
+      mismatchedNames.add(rp.param_name_raw || name);
+    }
+  }
+
+  for (const [name, gp] of gemMap) {
+    if (!ruleMap.has(name)) {
+      mismatchedNames.add(gp.param_name_raw || gp.name || name);
+    }
+  }
+
+  if (mismatchedNames.size > 0) {
+    const names = [...mismatchedNames].slice(0, 20).join(", ");
+    reasons.push(
+      `${mismatchedNames.size} test(s) read differently by the two readers: ${names}`
+    );
+  }
+
+  if (sourceText) {
+    for (const p of ruleParams) {
+      const textVal = normalizedValueText(p);
+      const numVal = p.value_num === null || p.value_num === undefined ? "" : String(p.value_num);
+      const noCommas = textVal.replace(/,/g, "");
+      const appears =
+        (textVal && sourceText.includes(textVal)) ||
+        (numVal && sourceText.includes(numVal)) ||
+        (noCommas && sourceText.includes(noCommas));
+      if (p.value_num !== null && p.value_num !== undefined && !appears) {
+        reasons.push("One or more extracted values could not be verified in the source text.");
+        break;
+      }
+    }
+  }
+
+  return {
+    needs_review: reasons.length > 0,
+    review_reasons: reasons
+  };
+}
+
+async function extractAndClassifyReport(env, report, text, store, suppliedParams) {
+  const rules = resolveRules(store);
+  let params;
+
+  if (Array.isArray(suppliedParams) && suppliedParams.length > 0) {
+    params = suppliedParams.map((p, index) =>
+      normalizeExtractedParam(p, Number(p.id) || index + 1, rules.aliases)
+    );
+  } else {
+    params = text ? extractParameters(text, rules.aliases) : [];
+  }
+
+  let secondaryReview = null;
+  if (text) {
+    const gemini = await geminiExtract(env, report, text);
+    if (gemini?.parameters) {
+      const geminiParams = gemini.parameters.map((p, index) =>
+        normalizeExtractedParam(p, index + 1, rules.aliases)
+      );
+      secondaryReview = crossCheckParams(params, geminiParams, text);
+    }
+  }
+
+  for (const p of params) {
+    flagParameter(p, rules, report.gender || "");
+  }
+  analyse(report, params, rules);
+
+  const minConfidence = Number(store?.settings?.extraction_min_confidence_pct) || 80;
+  report.min_confidence = minConfidence;
+  const confidence = calculateConfidence(report, params);
+
+  const reviewReasons = [...confidence.reasons];
+  if (secondaryReview?.review_reasons?.length) {
+    reviewReasons.push(...secondaryReview.review_reasons);
+  }
+  if (params.length === 0) {
+    reviewReasons.push("Test values have not been read from the PDF yet: open the LabTrace PDF to review.");
+  }
+
+  return {
+    parameters: params,
+    confidence: confidence.score,
+    classification: report.classification || "NORMAL",
+    abnormal_count: countAbnormalParameters(params),
+    needs_review: confidence.needs_review || Boolean(secondaryReview?.needs_review) || params.length === 0,
+    review_reasons: reviewReasons
+  };
 }
 
 // Pulls ready LabTrace work orders whose sample was collected in [start, end] (IST dates, inclusive).
@@ -337,17 +807,16 @@ async function pullFromLabTrace(env, store, range, actorId) {
 
     const order = {
       id: nextId(store.orders), order_id: orderNo, labtrace_work_order_id: woId, batch_id: batchId,
-      status: "READY", error: "", attempts: 1, report_kind: "labtrace", updated_at: now
+      status: "FETCHED", error: "", attempts: 0, report_kind: "labtrace", updated_at: now
     };
-    const reasons = ["Test values have not been read from the PDF yet: open the LabTrace PDF to review."];
-    if (!mobile) reasons.push("LabTrace has no valid mobile number for this patient.");
     const report = {
       id: nextId(store.reports), order_id: orderNo, order_pk: order.id, labtrace_work_order_id: woId,
-      thyrocare_patient_id: String(wo.thyrocare_patient_id || "").slice(0, 64), status: "READY",
+      thyrocare_patient_id: String(wo.thyrocare_patient_id || "").slice(0, 64), status: "FETCHED",
       patient_id: patient.id, patient_name: patient.name, mobile, age, gender,
       collected_on: wo.sample_collection_datetime || null, reported_on: null,
-      lab: "LabTrace (Thyrocare)", source: "labtrace", confidence: null, needs_review: true, review_reasons: reasons,
-      classification: null, abnormal_count: null
+      lab: "LabTrace (Thyrocare)", source: "labtrace", confidence: null, needs_review: false, review_reasons: [],
+      classification: null, abnormal_count: null, extract_status: "PENDING", extract_error: "", extracted_at: null,
+      extract_attempts: 0
     };
     store.orders.unshift(order);
     store.reports.unshift(report);
@@ -998,8 +1467,12 @@ async function handleApiRequest(request, url, env) {
     const rid = parseInt(repMatch[1], 10);
     const existing = store.reports.find((item) => item.id === rid);
     if (!existing) return reply(404, { detail: "Report not found." });
-    const rep = { ...existing, parameters: [] };
-    if (existing.source === "labtrace") rep.pdf_url = `/api/v1/reports/${rid}/pdf`;
+    const rawParams = (await kvGet(env, `report_params:${rid}`)) || [];
+    const sortedParams = sortParameters(rawParams);
+    const rep = { ...existing, parameters: sortedParams };
+    if (existing.source === "labtrace" || existing.labtrace_work_order_id) {
+      rep.pdf_url = `/api/v1/reports/${rid}/pdf`;
+    }
     return reply(200, rep);
   }
 

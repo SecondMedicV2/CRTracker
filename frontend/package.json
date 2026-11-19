@@ -1,11 +1,14 @@
 {
   "name": "crtracker-frontend",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
     "build:cf": "next build",
+    "test:extract": "node --test test/extract.test.mjs",
+    "test:e2e": "node --test test/e2e.test.mjs",
     "cf:dev": "wrangler dev",
     "cf:deploy": "npm run build:cf && wrangler deploy"
   },

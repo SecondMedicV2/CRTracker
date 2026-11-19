@@ -23,6 +23,9 @@
       "database_id": "15ed5d63-02ae-4155-8999-90a3d0387acc"
     }
   ],
+  "ai": {
+    "binding": "AI"
+  },
   "vars": {
     // Set to the real backend address once it is hosted (no trailing slash).
     "BACKEND_URL": ""

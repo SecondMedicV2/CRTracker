@@ -20,13 +20,14 @@ function Summary({ b }: { b: any }) {
       <div className="text-slate-600 text-sm">
         Total {b.total} · New {b.new} · Already imported {b.duplicate} · Failed {b.failed}
       </div>
+      {b.message && <p className="font-medium text-slate-800">{b.message}</p>}
 
       {patient && (
         <div className="rounded-xl border border-teal-200 bg-teal-50/80 p-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold uppercase tracking-wider text-teal-900">Extracted Customer Details</span>
-            <span className="rounded bg-rose-100 border border-rose-300 px-2 py-0.5 text-xs font-bold text-rose-900">
-              {patient.classification || "ABNORMAL"}
+            <span className={`rounded border px-2 py-0.5 text-xs font-bold ${patient.classification === "ABNORMAL" ? "bg-rose-100 border-rose-300 text-rose-900" : patient.classification === "NORMAL" ? "bg-emerald-100 border-emerald-300 text-emerald-900" : "bg-amber-100 border-amber-300 text-amber-900"}`}>
+              {patient.classification || "NOT READ YET"}
             </span>
           </div>
 
@@ -79,11 +80,24 @@ export default function Import() {
   const [summary, setSummary] = useState<any>(null);
   const [error, setError] = useState("");
   const [text, setText] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<any>(null);
-  const [column, setColumn] = useState("");
-  const [range, setRange] = useState({ start: "", end: "" });
   const [pending, setPending] = useState(false);
+  const [callMsg, setCallMsg] = useState("");
+  const { data: status } = useApi<any>("/integrations/status");
+  const [callingBatchId, setCallingBatchId] = useState<number | null>(null);
+
+  async function handleCallCustomer(name: string, mobile: string, reportId: number, batchId: number) {
+    if (!window.confirm(`Initiate outbound call to ${name} (${mobile}) through MyOperator? MyOperator rings your phone first, then connects the patient.`)) return;
+    setCallingBatchId(batchId);
+    setCallMsg("");
+    try {
+      const res = await api<any>(`/reports/${reportId}/call`, { method: "POST" });
+      setCallMsg(res.message || `Outgoing call initiated to ${name} (${mobile}) via MyOperator.`);
+    } catch (e: any) {
+      setCallMsg(e.message || "Failed to initiate call via MyOperator.");
+    } finally {
+      setCallingBatchId(null);
+    }
+  }
 
   const done = (b: any) => { setSummary(b); setError(""); history.reload(); };
   const fail = (e: any) => setError(e.message);
@@ -101,22 +115,12 @@ export default function Import() {
     }
   }
 
-  async function upload(path: string, extra?: Record<string, string>) {
-    const fd = new FormData();
-    fd.append("file", file!);
-    Object.entries(extra ?? {}).forEach(([k, v]) => fd.append(k, v));
-    const r = await fetch(`/api/v1${path}`, { method: "POST", body: fd });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Upload failed");
-    return data;
-  }
-
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-slate-900">Import Orders & Medical Reports</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Upload medical reports in PDF format for direct processing, or integrate orders via bulk CSV/XLSX spreadsheet.
+          Pull ready reports from LabTrace, or add order IDs by hand.
         </p>
       </div>
 
@@ -130,7 +134,7 @@ export default function Import() {
         <textarea
           aria-label="Order IDs"
           className="h-24 w-full rounded-lg border border-slate-300 p-2.5 font-mono text-sm focus:border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-600"
-          placeholder="e.g. ORD-92101, ORD-92102, ORD-92103"
+          placeholder="e.g. TC-1001, TC-1002"
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
@@ -143,117 +147,45 @@ export default function Import() {
         </button>
       </section>
 
-      {/* SECTION 2: Medical Report File Upload (PDF, CSV, XLSX) */}
-      <section className="space-y-3 rounded-2xl bg-white p-5 shadow-sm border border-slate-200">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
-          <div>
-            <h2 className="text-base font-bold text-slate-900">2. Medical / Blood Report File (PDF, CSV, or XLSX)</h2>
-            <p className="text-xs text-slate-500">
-              Upload customer medical reports in <strong>PDF format</strong> for automatic extraction, or upload CSV/XLSX for spreadsheet integration.
-            </p>
-          </div>
-          <span className="rounded-full bg-teal-50 border border-teal-200 px-2.5 py-0.5 text-xs font-semibold text-teal-800">
-            PDF & Spreadsheet Supported
-          </span>
-        </div>
-
-        <div className="pt-1">
-          <input
-            type="file"
-            aria-label="Order ID or Medical report file (PDF, CSV, or XLSX)"
-            accept=".pdf,.csv,.xlsx"
-            className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-slate-900 file:text-white hover:file:bg-slate-800 cursor-pointer"
-            onChange={(e) => {
-              const f = e.target.files?.[0] ?? null;
-              setFile(f);
-              setPreview(null);
-              setColumn("");
-              if (f) {
-                const fd = new FormData();
-                fd.append("file", f);
-                fetch("/api/v1/imports/file/preview", { method: "POST", body: fd })
-                  .then(async (r) => {
-                    const d = await r.json();
-                    if (!r.ok) throw new Error(d.detail);
-                    setPreview(d);
-                    setColumn(d.columns?.[0] ?? "");
-                  })
-                  .catch(fail);
-              }
-            }}
-          />
-        </div>
-
-        {preview && (
-          <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50/60 p-4 space-y-3 text-sm">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-teal-950">
-                {preview.format === "pdf" ? "📄 Extracted PDF Medical Report" : "📊 Order Spreadsheet Preview"}
-              </span>
-              <span className="text-xs font-mono font-medium text-slate-600">{file?.name}</span>
-            </div>
-
-            {/* Display Patient Name and Number when uploaded */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <div className="rounded-lg bg-white p-3 border border-teal-100 shadow-xs">
-                <span className="text-xs text-slate-500 font-medium">Patient Name</span>
-                <p className="text-sm font-bold text-slate-900">{preview.patient_name || preview.patients?.[0]?.patient_name || "Aakash Verma"}</p>
-              </div>
-              <div className="rounded-lg bg-white p-3 border border-teal-100 shadow-xs">
-                <span className="text-xs text-slate-500 font-medium">Patient Contact Number</span>
-                <p className="text-sm font-mono font-bold text-slate-900">{preview.mobile || preview.patients?.[0]?.mobile || "9876543210"}</p>
-              </div>
-              <div className="rounded-lg bg-white p-3 border border-teal-100 shadow-xs">
-                <span className="text-xs text-slate-500 font-medium">Order ID</span>
-                <p className="text-sm font-mono font-semibold text-slate-700">{preview.order_id || preview.patients?.[0]?.order_id || "ORD-PDF-9201"}</p>
-              </div>
-              <div className="rounded-lg bg-white p-3 border border-teal-100 shadow-xs">
-                <span className="text-xs text-slate-500 font-medium">Format / Source</span>
-                <p className="text-sm font-semibold text-teal-800 uppercase">{preview.format || "PDF Report"}</p>
-              </div>
-            </div>
-
-            {preview.format !== "pdf" && preview.columns && (
-              <div className="pt-1">
-                <label className="text-xs font-medium text-slate-700">Select Order ID Column: </label>
-                <select className="rounded border bg-white p-1 text-sm ml-2" value={column} onChange={(e) => setColumn(e.target.value)}>
-                  {preview.columns.map((c: string) => <option key={c}>{c}</option>)}
-                </select>
-              </div>
-            )}
-
-            <button
-              className="rounded-lg bg-teal-800 px-4 py-2 font-semibold text-white shadow hover:bg-teal-900 transition disabled:opacity-50"
-              disabled={pending}
-              onClick={() => runImport(() => upload("/imports/file", { column }))}
-            >
-              {pending ? "Processing Report…" : (preview.format === "pdf" ? "Upload & Process Medical Report (PDF)" : "Import Order File")}
-            </button>
-          </div>
-        )}
-      </section>
-
       {/* SECTION 3: Pull from Lab */}
       <section className="space-y-3 rounded-2xl bg-white p-5 shadow-sm border border-slate-200">
-        <h2 className="text-base font-bold text-slate-900">3. Pull serviced orders from partner lab</h2>
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <input type="date" aria-label="From date" className="rounded-lg border border-slate-300 p-1.5 text-sm" value={range.start} onChange={(e) => setRange({ ...range, start: e.target.value })} />
-          <span className="text-slate-500">to</span>
-          <input type="date" aria-label="To date" className="rounded-lg border border-slate-300 p-1.5 text-sm" value={range.end} onChange={(e) => setRange({ ...range, end: e.target.value })} />
+        <h2 className="text-base font-bold text-slate-900">2. Pull ready reports from LabTrace</h2>
+        {status && !status.labtrace.connected && (
+          <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-950">
+            LabTrace is not connected yet. An administrator must set the LABTRACE_LOGIN_ID and LABTRACE_PASSWORD Worker secrets.
+          </p>
+        )}
+        {status?.labtrace.last_pull && (
+          <p className="text-xs text-slate-500">
+            Last pull {new Date(status.labtrace.last_pull.at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}: {status.labtrace.last_pull.message}
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-3 text-sm">
           <button
-            className="rounded-lg bg-slate-900 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 transition disabled:opacity-50"
-            disabled={pending || !range.start || !range.end || range.end < range.start}
-            onClick={() => runImport(() => api("/imports/pull", { method: "POST", body: range }))}
+            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 transition disabled:opacity-50"
+            disabled={pending || (status && !status.labtrace?.connected)}
+            onClick={() => runImport(() => api("/imports/pull", { method: "POST", body: {} }))}
           >
-            Pull now
+            {pending ? "Pulling reports…" : "Pull now"}
           </button>
+          <span className="text-xs text-slate-500">
+            Pulls ready reports from the last 7 days.
+          </span>
         </div>
-        {range.start && range.end && range.end < range.start && <p role="alert" className="text-xs text-red-700">The end date must be on or after the start date.</p>}
       </section>
 
       {/* SECTION 4: Recent Batches */}
       <section className="space-y-3">
         <h2 className="font-bold text-slate-900 text-base">Recent Import Batches</h2>
+        {callMsg && (
+          <div role="status" className="flex items-center justify-between rounded-xl border border-teal-200 bg-teal-50 p-3 text-xs text-teal-950">
+            <div className="flex items-center gap-2 font-medium">
+              <span>📞</span>
+              <span>{callMsg}</span>
+            </div>
+            <button onClick={() => setCallMsg("")} className="font-bold text-teal-800 hover:underline">Dismiss</button>
+          </div>
+        )}
         {pending && <p role="status" className="text-sm text-slate-600">Importing orders…</p>}
         <RequestState loading={!history.data} error={history.error} retry={history.reload} empty={history.data?.length === 0 ? "No batches imported yet." : undefined} />
         {!history.error && !!history.data?.length && (
@@ -274,12 +206,12 @@ export default function Import() {
               <tbody>
                 {history.data?.map((b) => {
                   const isPdf = b.source === "pdf" || (b.file_name && b.file_name.toLowerCase().endsWith(".pdf"));
-                  const source = isPdf ? "PDF" : "Labtrace app";
-                  const name = b.patient_name || b.patients?.[0]?.patient_name || "Aakash Verma";
-                  const mobile = b.mobile || b.patients?.[0]?.mobile || "9876543210";
+                  const source = b.source_label || (isPdf ? "PDF" : "Labtrace app");
+                  const name = b.patient_name || b.patients?.[0]?.patient_name || "—";
+                  const mobile = b.mobile || b.patients?.[0]?.mobile || "";
                   const labtraceId = b.labtrace_id || b.patients?.[0]?.order_id || `LT-${1000 + b.id}`;
                   const status = b.status || (isPdf ? "Followup pending" : "Call pending");
-                  const reportId = b.report_id || b.patients?.[0]?.report_id || 1;
+                  const reportId = b.report_id || b.patients?.[0]?.report_id || null;
 
                   let statusClass = "bg-amber-100 text-amber-900 border-amber-300";
                   if (status === "Call initiated") statusClass = "bg-blue-100 text-blue-900 border-blue-300";
@@ -312,12 +244,22 @@ export default function Import() {
                       </td>
                       <td className="text-right p-3">
                         <div className="flex items-center justify-end gap-2">
-                          <Link
+                          <button
+                            type="button"
+                            disabled={callingBatchId === b.id || !reportId || !mobile}
+                            onClick={() => reportId && handleCallCustomer(name, mobile, reportId, b.id)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-teal-700 px-2.5 py-1 text-xs font-bold text-white shadow-xs hover:bg-teal-800 transition disabled:opacity-50"
+                            title="Call customer via MyOperator"
+                          >
+                            <span>📞</span>
+                            <span>{callingBatchId === b.id ? "Calling…" : "Call"}</span>
+                          </button>
+                          {reportId && <Link
                             href={`/reports/view?id=${reportId}`}
                             className="rounded-lg bg-sky-50 px-2.5 py-1 text-xs font-bold text-sky-800 border border-sky-300 hover:bg-sky-100 transition"
                           >
                             View Report
-                          </Link>
+                          </Link>}
                           {isAdmin && (
                             <button
                               className="rounded bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 border border-rose-200 hover:bg-rose-100 transition"

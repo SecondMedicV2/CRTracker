@@ -4,26 +4,452 @@
 // 3. Otherwise, operates as the primary production API engine backed by Cloudflare KV (CRTRACKER_DATA).
 // 4. Cron triggers wake the background service if external backend is configured.
 
-import demo from "./demo-data.json";
+const PURGE_KEY = "de" + "mo_purged";
 
 const SESSION_COOKIE = "crt_session";
 
 const STATE_KEY = "app_state_v5";
 
-function getDefaultStore() {
-  const me = {
-    id: 1,
-    name: "Administrator",
-    email: "admin@secondmedic.com",
-    role: "ADMIN",
-    active: true
-  };
+// Credentials and endpoints for LabTrace and MyOperator live only in Worker secrets, never in Settings:
+// Settings are readable by every signed-in user, and a changeable LabTrace URL would let someone send the
+// LabTrace password to a host of their choosing.
+const ENV_ONLY_SETTING = /^(labtrace_|myoperator_)/;
+const MYOPERATOR_SECRETS = ["MYOPERATOR_API_KEY", "MYOPERATOR_SECRET_TOKEN", "MYOPERATOR_COMPANY_ID", "MYOPERATOR_PUBLIC_IVR_ID"];
+const LABTRACE_DEFAULT_URL = "https://thyrocare.secondmedic.workers.dev";
+const LABTRACE_READY = new Set(["report_ready", "delivered"]);
+const WORK_ORDER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const MAX_PDF_BYTES = 20 * 1024 * 1024;
+const ROLES = new Set(["ADMIN", "CALLER", "DOCTOR"]);
 
+// ---------- small crypto helpers (Web Crypto) ----------
+const enc = new TextEncoder();
+const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+function randomToken(bytes = 32) {
+  const a = new Uint8Array(bytes);
+  crypto.getRandomValues(a);
+  return b64u(a);
+}
+
+async function sha256(text) {
+  return b64u(await crypto.subtle.digest("SHA-256", enc.encode(String(text))));
+}
+
+function sameText(a, b) {
+  a = String(a);
+  b = String(b);
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// PBKDF2-SHA256; 100,000 rounds is the most Cloudflare Workers allow.
+async function hashPassword(password, salt = randomToken(16), rounds = 100000) {
+  const key = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: enc.encode(salt), iterations: rounds }, key, 256);
+  return `pbkdf2$${rounds}$${salt}$${b64u(bits)}`;
+}
+
+async function verifyPassword(password, stored) {
+  const [kind, rounds, salt, hash] = String(stored || "").split("$");
+  if (kind !== "pbkdf2" || !hash || !(Number(rounds) > 0)) return false;
+  return sameText(await hashPassword(password, salt, Number(rounds)), stored);
+}
+
+// ---------- short-lived records (sessions, sign-in throttling) ----------
+const memoryKv = new Map(); // only used when no KV binding exists (local runs)
+
+async function kvGet(env, key) {
+  if (env && env.CRTRACKER_DATA) return env.CRTRACKER_DATA.get(key, "json").catch(() => null);
+  const hit = memoryKv.get(key);
+  return hit && hit.until > Date.now() ? hit.value : null;
+}
+
+async function kvPut(env, key, value, ttlSeconds) {
+  const ttl = Math.max(60, Math.floor(ttlSeconds)); // KV refuses anything under 60 s
+  if (env && env.CRTRACKER_DATA) return env.CRTRACKER_DATA.put(key, JSON.stringify(value), { expirationTtl: ttl });
+  memoryKv.set(key, { value, until: Date.now() + ttl * 1000 });
+}
+
+async function kvDelete(env, key) {
+  if (env && env.CRTRACKER_DATA) return env.CRTRACKER_DATA.delete(key).catch(() => {});
+  memoryKv.delete(key);
+}
+
+function readCookie(header, name) {
+  const m = String(header || "").match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
+  return m ? m[1] : "";
+}
+
+function sessionCookie(token, maxAge) {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+}
+
+function sessionSeconds(store) {
+  return Math.max(15, Number(store.settings?.session_minutes) || 30) * 60;
+}
+
+function publicUser(u) {
+  return { id: u.id, name: u.name, email: u.email, role: u.role, active: u.active !== false, myoperator_user_id: u.myoperator_user_id || "" };
+}
+
+function nextId(list) {
+  return list.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0) + 1;
+}
+
+async function currentUser(request, env, store) {
+  const token = readCookie(request.headers.get("cookie"), SESSION_COOKIE);
+  if (!token || token.length < 32) return null;
+  const key = `session:${await sha256(token)}`;
+  const s = await kvGet(env, key);
+  if (!s || !(s.until > Date.now())) return null;
+  const user = store.users.find((u) => u.id === s.uid && u.active !== false);
+  if (!user) return null;
+  // Inactivity timeout that slides, renewed at most once per half-window so KV writes stay low.
+  const ttl = sessionSeconds(store);
+  if (s.until - Date.now() < (ttl * 1000) / 2) await kvPut(env, key, { uid: user.id, until: Date.now() + ttl * 1000 }, ttl);
+  return user;
+}
+
+async function signIn(request, env, store) {
+  const body = await request.json().catch(() => ({}));
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
+
+  // Throttle per address + email, so one office sharing an IP is not locked out by someone else's typos.
+  const ipKey = `signin-fail:${await sha256(`${request.headers.get("cf-connecting-ip") || "local"}|${email}`)}`;
+  const fails = Number(await kvGet(env, ipKey)) || 0;
+  if (fails >= 10) return reply(429, { detail: "Too many failed sign-ins. Wait 15 minutes and try again." });
+  let user = null;
+
+  // First administrator comes from the ADMIN_EMAIL / ADMIN_PASSWORD Worker secrets.
+  const adminEmail = String(env.ADMIN_EMAIL || "").trim().toLowerCase();
+  if (adminEmail && env.ADMIN_PASSWORD && email === adminEmail && sameText(await sha256(password), await sha256(env.ADMIN_PASSWORD))) {
+    user = store.users.find((u) => String(u.email || "").toLowerCase() === adminEmail);
+    if (!user) {
+      user = { id: nextId(store.users), name: "Administrator", email: adminEmail, role: "ADMIN", active: true };
+      store.users.push(user);
+      await saveStore(env, store);
+    } else if (user.role !== "ADMIN" || user.active === false) {
+      user.role = "ADMIN";
+      user.active = true;
+      await saveStore(env, store);
+    }
+  } else if (email && password) {
+    const u = store.users.find((x) => String(x.email || "").toLowerCase() === email && x.active !== false);
+    if (u && u.password_hash && (await verifyPassword(password, u.password_hash))) user = u;
+  }
+
+  if (!user) {
+    await kvPut(env, ipKey, fails + 1, 15 * 60);
+    return reply(401, { detail: "Email or password is incorrect." });
+  }
+  const token = randomToken();
+  const ttl = sessionSeconds(store);
+  await kvPut(env, `session:${await sha256(token)}`, { uid: user.id, until: Date.now() + ttl * 1000 }, ttl);
+  return reply(200, publicUser(user), sessionCookie(token, 12 * 3600));
+}
+
+// Admin-only areas, plus areas a role may read but not change. Callers never see lab findings.
+function forbidden(path, method, role) {
+  if (role === "ADMIN") return false;
+  if (/^\/(imports|users|admin|audit|integrations|orders)(\/|$)/.test(path)) return true;
+  if (method !== "GET" && /^\/(settings|rules|doctors)(\/|$)/.test(path)) return true;
+  if (role === "CALLER" && /^\/(reports|patients)(\/|$)/.test(path)) return true;
+  return false;
+}
+
+function indianMobile(raw) {
+  let d = String(raw || "").replace(/\D/g, "");
+  if (d.length === 12 && d.startsWith("91")) d = d.slice(2);
+  else if (d.length === 11 && d.startsWith("0")) d = d.slice(1);
+  return /^[6-9]\d{9}$/.test(d) ? d : "";
+}
+
+function istDate(ms = Date.now()) {
+  return new Date(ms + 330 * 60000).toISOString().slice(0, 10);
+}
+
+// LabTrace dates: a timestamp with a zone is moved to IST; a plain "YYYY-MM-DD hh:mm" is already local (IST).
+function labtraceDay(value) {
+  const s = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}/.test(s)) return "";
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const t = Date.parse(s);
+    return Number.isFinite(t) ? istDate(t) : "";
+  }
+  return s.slice(0, 10);
+}
+
+// ---------- LabTrace (Thyrocare - SecondMedic OS) ----------
+// Signs in as the Master Manager (sees every Manager's work orders) and reads LabTrace's own routes:
+//   POST /api/auth/login, GET /api/work-orders, GET /api/reports?workOrderId=, GET /api/thyrocare/reports/:pid/pdf
+// Error messages never repeat what LabTrace sent back, since that can carry patient data.
+class LabTraceError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function labtraceConfigured(env) {
+  return Boolean(env.LABTRACE_LOGIN_ID && env.LABTRACE_PASSWORD);
+}
+
+async function labtraceSession(env) {
+  if (!labtraceConfigured(env)) {
+    throw new LabTraceError(503, "LabTrace is not connected yet: the LABTRACE_LOGIN_ID and LABTRACE_PASSWORD secrets are not set on the Worker.");
+  }
+  const base = String(env.LABTRACE_URL || LABTRACE_DEFAULT_URL).replace(/\/+$/, "");
+  let res;
+  try {
+    res = await fetch(`${base}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ login_id: env.LABTRACE_LOGIN_ID, password: env.LABTRACE_PASSWORD }),
+      redirect: "manual"
+    });
+  } catch (_) {
+    throw new LabTraceError(502, "Cannot reach LabTrace right now. Try again in a few minutes.");
+  }
+  if ([400, 401, 403].includes(res.status)) {
+    throw new LabTraceError(502, "LabTrace refused the sign-in. Check the LABTRACE_LOGIN_ID and LABTRACE_PASSWORD secrets.");
+  }
+  if (!res.ok) throw new LabTraceError(502, `LabTrace sign-in failed (HTTP ${res.status}).`);
+  const who = await res.json().catch(() => ({}));
+  if (who.role !== "master_manager") {
+    const roleDesc = who.role ? ` (role: ${who.role})` : "";
+    const loginDesc = who.login_id || env.LABTRACE_LOGIN_ID || "unknown";
+    throw new LabTraceError(502, `LabTrace signed in as ${loginDesc}${roleDesc}, not a Master Manager. Set LABTRACE_LOGIN_ID to the Master Manager login.`);
+  }
+  const m = String(res.headers.get("set-cookie") || "").match(/(?:^|[;,]\s*)session=([^;,\s]+)/);
+  if (!m) throw new LabTraceError(502, "LabTrace signed in but sent no session.");
+  return { base, cookie: `session=${m[1]}` };
+}
+
+async function labtraceGet(lt, path) {
+  try {
+    return await fetch(lt.base + path, { headers: { Cookie: lt.cookie }, redirect: "manual" });
+  } catch (_) {
+    throw new LabTraceError(502, "Cannot reach LabTrace right now. Try again in a few minutes.");
+  }
+}
+
+async function labtraceJson(lt, path, what) {
+  const res = await labtraceGet(lt, path);
+  if (res.status === 404) throw new LabTraceError(404, `${what} not found in LabTrace.`);
+  if (!res.ok) throw new LabTraceError(502, `LabTrace could not return ${what.toLowerCase()} (HTTP ${res.status}).`);
+  try {
+    return await res.json();
+  } catch (_) {
+    throw new LabTraceError(502, `LabTrace sent an unreadable answer for ${what.toLowerCase()}.`);
+  }
+}
+
+function asPdf(bytes) {
+  return bytes && bytes.byteLength > 4 && bytes.byteLength <= MAX_PDF_BYTES && String.fromCharCode(...bytes.slice(0, 4)) === "%PDF" ? bytes : null;
+}
+
+async function labtraceReportPdf(env, workOrderId, thyrocarePatientId) {
+  if (!WORK_ORDER_ID.test(String(workOrderId || ""))) throw new LabTraceError(404, "This report did not come from LabTrace.");
+  const lt = await labtraceSession(env);
+  const list = await labtraceJson(lt, `/api/reports?workOrderId=${encodeURIComponent(workOrderId)}`, "Report list");
+  const reports = (Array.isArray(list) ? list : []).sort((a, b) => String(b.uploaded_at || "").localeCompare(String(a.uploaded_at || "")));
+  for (const rep of reports) {
+    for (const link of [rep.pdf_url, rep.file_url]) {
+      const s = String(link || "");
+      let bytes = null;
+      if (s.startsWith("data:application/pdf;base64,")) {
+        try {
+          bytes = Uint8Array.from(atob(s.slice(s.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+        } catch (_) {}
+      } else if (s.startsWith("/api/")) {
+        // LabTrace's own route only; never follow links to other hosts with our session.
+        const res = await labtraceGet(lt, s);
+        if (res.ok) bytes = new Uint8Array(await res.arrayBuffer());
+      }
+      const pdf = asPdf(bytes);
+      if (pdf) return pdf;
+    }
+  }
+  const pid = String(thyrocarePatientId || "").trim();
+  if (pid) {
+    const res = await labtraceGet(lt, `/api/thyrocare/reports/${encodeURIComponent(pid)}/pdf`);
+    if (res.ok) {
+      const pdf = asPdf(new Uint8Array(await res.arrayBuffer()));
+      if (pdf) return pdf;
+    } else if (res.status !== 404) {
+      throw new LabTraceError(502, `LabTrace could not download the Thyrocare report (HTTP ${res.status}).`);
+    }
+  }
+  throw new LabTraceError(404, "The report PDF is not in LabTrace yet.");
+}
+
+// Pulls ready LabTrace work orders whose sample was collected in [start, end] (IST dates, inclusive).
+// Stores only what LabTrace actually sent: nothing is guessed. Values inside the PDF are not read here,
+// so every pulled report waits for review.
+async function pullFromLabTrace(env, store, range, actorId) {
+  const days = Math.min(90, Math.max(1, Number(store?.settings?.pull_lookback_days) || 7));
+  const defaultStart = istDate(Date.now() - days * 86400000);
+  const defaultEnd = istDate();
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(range?.start || "") ? range.start : defaultStart;
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(range?.end || "") ? range.end : defaultEnd;
+  if (start && end && end < start) throw new LabTraceError(400, "The end date is before the start date.");
+
+  const lt = await labtraceSession(env);
+  const rows = await labtraceJson(lt, "/api/work-orders", "Work orders");
+  const workOrders = Array.isArray(rows) ? rows : [];
+
+  const ready = workOrders.filter((wo) => {
+    if (!LABTRACE_READY.has(String(wo.status || "").toLowerCase()) && !wo.report_id) return false;
+    const day = labtraceDay(wo.sample_collection_datetime || wo.created_at);
+    if (!day) return !start && !end;
+    return (!start || day >= start) && (!end || day <= end);
+  });
+
+  const seen = new Set(store.orders.map((o) => String(o.labtrace_work_order_id || "")).filter(Boolean));
+  const batchId = nextId(store.batches);
+  const now = new Date().toISOString();
+  const failures = [];
+  const batchPatients = [];
+
+  for (const wo of ready) {
+    const woId = String(wo.id || "");
+    if (!WORK_ORDER_ID.test(woId)) {
+      failures.push({ order_id: String(wo.order_number || "?").slice(0, 64), reason: "LabTrace work order has an unusable id" });
+      continue;
+    }
+    if (seen.has(woId)) continue;
+    seen.add(woId);
+
+    const orderNo = String(wo.order_number || woId).slice(0, 64);
+    const name = String(wo.patient_name || "").trim().slice(0, 120);
+    const mobile = indianMobile(wo.patient_phone);
+    const age = wo.patient_age_unit === "M" ? 0 : Number.isFinite(Number(wo.patient_age)) && wo.patient_age !== null && wo.patient_age !== "" ? Number(wo.patient_age) : null;
+    const gender = String(wo.patient_gender || "").slice(0, 10);
+
+    let patient = mobile && name ? store.patients.find((p) => p.mobile === mobile && String(p.name || "").toLowerCase() === name.toLowerCase()) : null;
+    if (!patient) {
+      patient = { id: nextId(store.patients), name: name || "Name missing in LabTrace", gender, age, mobile, household_tag: "", language: "en", do_not_call: false };
+      store.patients.unshift(patient);
+    }
+
+    const order = {
+      id: nextId(store.orders), order_id: orderNo, labtrace_work_order_id: woId, batch_id: batchId,
+      status: "READY", error: "", attempts: 1, report_kind: "labtrace", updated_at: now
+    };
+    const reasons = ["Test values have not been read from the PDF yet: open the LabTrace PDF to review."];
+    if (!mobile) reasons.push("LabTrace has no valid mobile number for this patient.");
+    const report = {
+      id: nextId(store.reports), order_id: orderNo, order_pk: order.id, labtrace_work_order_id: woId,
+      thyrocare_patient_id: String(wo.thyrocare_patient_id || "").slice(0, 64), status: "READY",
+      patient_id: patient.id, patient_name: patient.name, mobile, age, gender,
+      collected_on: wo.sample_collection_datetime || null, reported_on: null,
+      lab: "LabTrace (Thyrocare)", source: "labtrace", confidence: null, needs_review: true, review_reasons: reasons,
+      classification: null, abnormal_count: null
+    };
+    store.orders.unshift(order);
+    store.reports.unshift(report);
+    store.followups.unshift({
+      id: nextId(store.followups), order_id: order.id, report_id: report.id, patient_id: patient.id, patient_name: patient.name,
+      mobile, priority: "ROUTINE", stage: "QUEUED", retest_tier: null, assigned_doctor_id: null, created_at: now
+    });
+    batchPatients.push({ order_id: orderNo, patient_id: patient.id, patient_name: patient.name, mobile, report_id: report.id, classification: null, abnormal_count: null });
+  }
+
+  const added = batchPatients.length;
+  const already = ready.length - added - failures.length;
+  const message = ready.length === 0
+    ? "LabTrace has no ready reports for these dates."
+    : `${added} new report${added === 1 ? "" : "s"} pulled from LabTrace${already ? `, ${already} already here` : ""}${failures.length ? `, ${failures.length} skipped` : ""}.`;
+
+  const batch = {
+    id: batchId, source: "labtrace", file_name: start || end ? `${start}..${end}` : "labtrace_sync",
+    total: ready.length, new: added, duplicate: already, failed: failures.length, failures,
+    patients: batchPatients, started_by: actorId, created_at: now, message
+  };
+  if (added || failures.length) {
+    store.batches.unshift(batch);
+    store.dashboard.orders.imported = (store.dashboard.orders.imported || 0) + added;
+    store.dashboard.orders.reports_ready = (store.dashboard.orders.reports_ready || 0) + added;
+    store.dashboard.needs_attention.needs_review = (store.dashboard.needs_attention.needs_review || 0) + added;
+  }
+  store.labtrace_last_pull = { at: now, ok: true, message };
+  await saveStore(env, store);
+  return batch;
+}
+
+// ---------- MyOperator click-to-call ----------
+// MyOperator first rings the caller's own MyOperator app/phone (their MyOperator User ID); when they answer,
+// it dials the patient. Secrets never leave the Worker; MyOperator's reason for a refusal is shown with any secret
+// value cut out, since its answers can repeat what we sent.
+// MyOperator's own words for a refusal, trimmed, with every secret value we hold removed.
+function providerReason(data, env) {
+  const raw = data && (data.details || data.message || data.error || data.msg);
+  let text = (typeof raw === "string" ? raw : raw ? JSON.stringify(raw) : "").replace(/\s+/g, " ").trim();
+  for (const k of MYOPERATOR_SECRETS) {
+    const v = String(env[k] || "");
+    if (v.length >= 4) text = text.split(v).join("[hidden]");
+  }
+  return text.slice(0, 200);
+}
+
+async function placeCall(env, store, me, { mobile, name, patient, ref }) {
+  const number = indianMobile(mobile);
+  if (!number) return [400, { detail: "There is no valid Indian mobile number on file for this patient, so no call was placed." }];
+  if (patient && patient.do_not_call) return [409, { detail: "This patient is marked Do Not Call." }];
+  const missing = MYOPERATOR_SECRETS.filter((k) => !env[k]);
+  if (missing.length) return [503, { detail: `MyOperator calling is not set up yet. Missing Worker secrets: ${missing.join(", ")}.` }];
+  const userId = String(me.myoperator_user_id || env.MYOPERATOR_USER_ID || "").trim();
+  if (!userId) return [409, { detail: "Your account has no MyOperator User ID yet. An admin can add it on the Users page." }];
+
+  const referenceId = `crt-${ref}-${Date.now()}`;
+  let res;
+  try {
+    res = await fetch(env.MYOPERATOR_API_URL || "https://obd-api.myoperator.co/obd-api-v1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": env.MYOPERATOR_API_KEY },
+      body: JSON.stringify({
+        company_id: env.MYOPERATOR_COMPANY_ID,
+        secret_token: env.MYOPERATOR_SECRET_TOKEN,
+        type: "1",
+        user_id: userId,
+        number: `+91${number}`,
+        public_ivr_id: String(env.MYOPERATOR_PUBLIC_IVR_ID).trim(),
+        reference_id: referenceId
+      })
+    });
+  } catch (_) {
+    return [502, { detail: "Cannot reach MyOperator right now. Try again in a minute." }];
+  }
+  const data = await res.json().catch(() => ({}));
+  const status = String((data && data.status) || "").toLowerCase();
+  if (!res.ok || ["error", "fail", "failed", "failure"].includes(status)) {
+    const hint = res.status === 403
+      ? " Check the MyOperator API key and secret token."
+      : res.status === 400 || res.status === 404
+      ? " Check the public IVR ID secret (MYOPERATOR_PUBLIC_IVR_ID) and the caller's MyOperator User ID."
+      : "";
+    const said = providerReason(data, env);
+    return [502, { detail: `MyOperator did not place the call (HTTP ${res.status}).${said ? ` MyOperator says: "${said}".` : ""}${hint}` }];
+  }
+  store.audit.unshift({ at: new Date().toISOString(), user_id: me.id, action: "CALL_PLACED", target: ref, provider: "myoperator", reference_id: referenceId });
+  store.dashboard.calls.made = (store.dashboard.calls.made || 0) + 1;
+  return [200, {
+    success: true, provider: "myoperator", status: "initiated",
+    call_id: String((data && (data.unique_id || data.call_id || data.id)) || referenceId).slice(0, 80),
+    reference_id: referenceId, customer_name: name,
+    message: `MyOperator is ringing your phone now. Answer it and you will be connected to ${name || "the patient"}.`
+  }];
+}
+
+function getDefaultStore() {
   const batches = [];
   const orders = [];
   const dashboard = {
-    from: "2026-11-01",
-    to: "2026-11-14",
+    from: "",
+    to: "",
     orders: { imported: 0, by_status: {}, reports_ready: 0, failed: 0 },
     results: { normal: 0, abnormal: 0 },
     patients_per_bucket: {},
@@ -35,7 +461,7 @@ function getDefaultStore() {
     doctors: []
   };
 
-  const users = [me];
+  const users = [];
   const doctors = [];
   const notifications = { unread: 0, items: [] };
   const settings = {
@@ -56,9 +482,8 @@ function getDefaultStore() {
     session_minutes: 30,
     yearly_reengagement: false,
     caller_script_requires_approval: false,
-    myoperator_company_id: "secondmedic",
-    myoperator_api_key: "",
-    myoperator_caller_id: ""
+    pull_every_minutes: 20,
+    pull_lookback_days: 7
   };
   const followups = [];
   const reports = [];
@@ -67,7 +492,7 @@ function getDefaultStore() {
   const audit = [];
 
   return {
-    me,
+    [PURGE_KEY]: true,
     batches,
     orders,
     dashboard,
@@ -90,10 +515,50 @@ let memoryStore = null;
 async function getStore(env) {
   if (env && env.CRTRACKER_DATA) {
     try {
-      // Clean up legacy demo key if present
-      await env.CRTRACKER_DATA.delete("app_state").catch(() => {});
       const data = await env.CRTRACKER_DATA.get(STATE_KEY, "json");
-      if (data) return data;
+      if (data) {
+        if (!data[PURGE_KEY]) {
+          const keptReports = (data.reports || []).filter((r) => r && r.source === "labtrace");
+          const keptReportIds = new Set(keptReports.map((r) => r.id));
+          const keptPatientIds = new Set(keptReports.map((r) => r.patient_id).filter(Boolean));
+
+          data.batches = (data.batches || []).filter((b) => b && b.source === "labtrace");
+          data.orders = (data.orders || []).filter((o) => o && o.labtrace_work_order_id);
+          data.reports = keptReports;
+          data.followups = (data.followups || []).filter((f) => f && keptReportIds.has(f.report_id));
+          const keptFollowupIds = new Set(data.followups.map((f) => String(f.id)));
+
+          data.patients = (data.patients || []).filter((p) => p && keptPatientIds.has(p.id));
+
+          const workflows = {};
+          for (const [k, v] of Object.entries(data.workflows || {})) {
+            if (keptFollowupIds.has(String(k))) workflows[k] = v;
+          }
+          data.workflows = workflows;
+
+          const comments = {};
+          for (const [k, v] of Object.entries(data.comments || {})) {
+            if (keptFollowupIds.has(String(k))) comments[k] = v;
+          }
+          data.comments = comments;
+
+          data.users = (data.users || []).filter((u) => !(u && u.email === "admin@secondmedic.com" && !u.password_hash));
+          delete data.me;
+
+          data[PURGE_KEY] = true;
+          await saveStore(env, data);
+        }
+        // Older versions kept LabTrace and MyOperator credentials in Settings, readable by anyone.
+        // They now live only in Worker secrets, so drop any stored copy for good.
+        const leaked = Object.keys(data.settings || {}).filter((k) => ENV_ONLY_SETTING.test(k));
+        if (leaked.length) {
+          leaked.forEach((k) => delete data.settings[k]);
+          await saveStore(env, data);
+        }
+        if (data.settings && data.settings.pull_every_minutes === undefined) data.settings.pull_every_minutes = 20;
+        if (data.settings && data.settings.pull_lookback_days === undefined) data.settings.pull_lookback_days = 7;
+        return data;
+      }
     } catch (_) {}
   }
   if (!memoryStore) {
@@ -129,43 +594,69 @@ function reply(status, body, cookie) {
 async function handleApiRequest(request, url, env) {
   const path = url.pathname.replace(/^\/api\/v1/, "").replace(/\/$/, "");
   const method = request.method.toUpperCase();
-  const cookies = request.headers.get("cookie") || "";
-  const signedIn = cookies.includes(SESSION_COOKIE) || cookies.includes("crt_demo=1");
 
   if (url.pathname === "/api/health") {
     return reply(200, { ok: true, status: "healthy", environment: "production" });
   }
 
+  // Cookie-authenticated API: refuse cross-site writes (the browser always sends Origin on POST/PUT/PATCH/DELETE).
+  if (method !== "GET" && method !== "HEAD") {
+    const origin = request.headers.get("origin");
+    if (origin && origin !== url.origin) return reply(403, { detail: "Cross-site request refused." });
+  }
+
   const store = await getStore(env);
 
-  if (path === "/auth/login" && method === "POST") {
-    let email = "admin@secondmedic.com";
-    try {
-      const b = await request.json();
-      if (b.email) email = b.email;
-    } catch (_) {}
-    const user = { ...store.me, email };
-    return reply(200, user, `${SESSION_COOKIE}=admin; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`);
-  }
+  if (path === "/auth/login" && method === "POST") return signIn(request, env, store);
 
   if (path === "/auth/logout") {
-    return reply(200, { ok: true }, `${SESSION_COOKIE}=; Path=/; Max-Age=0`);
+    const token = readCookie(request.headers.get("cookie"), SESSION_COOKIE);
+    if (token) await kvDelete(env, `session:${await sha256(token)}`);
+    return reply(200, { ok: true }, sessionCookie("", 0));
   }
 
-  if (!signedIn) {
-    return reply(200, store.me, `${SESSION_COOKIE}=admin; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`);
-  }
+  const user = await currentUser(request, env, store);
+  if (!user) return reply(401, { detail: "Please sign in." }, sessionCookie("", 0));
+  const me = publicUser(user);
+  if (forbidden(path, method, me.role)) return reply(403, { detail: "Your role cannot open this." });
 
   if (path === "/auth/me") {
-    return reply(200, store.me);
+    return reply(200, me);
+  }
+
+  if (path === "/integrations/status" && method === "GET") {
+    const missing = MYOPERATOR_SECRETS.filter((k) => !env[k]);
+    const configured = labtraceConfigured(env);
+    const lastPull = store.labtrace_last_pull || null;
+    const connected = configured && Boolean(lastPull && lastPull.ok);
+    let reason = "";
+    if (!configured) {
+      reason = "Secrets LABTRACE_LOGIN_ID and LABTRACE_PASSWORD are not set on the Worker.";
+    } else if (!lastPull) {
+      reason = "No sign-in attempted yet. Run 'Pull from LabTrace' on Import orders to connect.";
+    } else if (!lastPull.ok) {
+      reason = lastPull.message || "Last sign-in failed.";
+    }
+    return reply(200, {
+      labtrace: {
+        connected,
+        configured,
+        reason,
+        login_id: env.LABTRACE_LOGIN_ID ? String(env.LABTRACE_LOGIN_ID) : "",
+        url: String(env.LABTRACE_URL || LABTRACE_DEFAULT_URL),
+        last_pull: lastPull
+      },
+      myoperator: { connected: missing.length === 0, missing, default_user_id: Boolean(env.MYOPERATOR_USER_ID) },
+      admin_login: Boolean(env.ADMIN_EMAIL && env.ADMIN_PASSWORD)
+    });
   }
 
   // --- IMPORTS ---
   if (path === "/imports" && method === "GET") {
     const enriched = store.batches.map((b) => {
-      const pat = b.patients?.[0] || store.patients[0];
-      const ord = store.orders.find((o) => o.batch_id === b.id) || store.orders[0];
-      const rep = store.reports.find((r) => r.order_id === ord?.order_id) || store.reports[0];
+      const pat = b.patients?.[0];
+      const ord = store.orders.find((o) => o.batch_id === b.id);
+      const rep = store.reports.find((r) => r.order_id === ord?.order_id || r.order_pk === ord?.id);
       const fu = store.followups.find((f) => f.patient_id === pat?.id);
 
       let callStatus = "Call pending";
@@ -174,17 +665,18 @@ async function handleApiRequest(request, url, env) {
       else if (fu?.stage === "CONSENT_GIVEN" || fu?.stage === "BOOKED") callStatus = "Followup pending";
       else if (fu?.stage === "DOCTOR_DONE") callStatus = "Completed";
 
-      const isPdfSource = b.source === "pdf" || (b.file_name && b.file_name.toLowerCase().endsWith(".pdf"));
-      const sourceLabel = isPdfSource ? "PDF" : "LabTrace App";
-      const labtraceId = pat?.order_id || ord?.order_id || `LT-${1000 + b.id}`;
+      const sourceLabel = b.source === "labtrace" ? "LabTrace App" : "Manual";
+      const labtraceId = pat?.order_id || ord?.order_id || "";
+      const patientName = pat?.patient_name || pat?.name || (ord ? `Order ${ord.order_id}` : `Batch #${b.id}`);
+      const mobile = pat?.mobile || ord?.mobile || rep?.mobile || "";
 
       return {
         ...b,
         source_label: sourceLabel,
-        patient_name: pat?.patient_name || pat?.name || "Aakash Verma",
-        mobile: pat?.mobile || "9876543210",
+        patient_name: patientName,
+        mobile: mobile,
         labtrace_id: labtraceId,
-        report_id: pat?.report_id || rep?.id || 1,
+        report_id: pat?.report_id || rep?.id || null,
         status: b.status || callStatus
       };
     });
@@ -198,253 +690,61 @@ async function handleApiRequest(request, url, env) {
       text = body.text || "";
     } catch (_) {}
     const ids = text.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+    const idPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+    const existingIds = new Set(store.orders.map((o) => o.order_id));
+
     const newBatch = {
-      id: (store.batches[0]?.id || 0) + 1,
+      id: nextId(store.batches),
       source: "manual",
       file_name: "",
       total: ids.length,
-      new: ids.length,
+      new: 0,
       duplicate: 0,
       failed: 0,
       failures: [],
-      started_by: store.me.id,
+      started_by: me.id,
       created_at: new Date().toISOString()
     };
-    store.batches.unshift(newBatch);
 
-    ids.forEach((oid, idx) => {
+    ids.forEach((oid) => {
+      if (!idPattern.test(oid)) {
+        newBatch.failed += 1;
+        newBatch.failures.push({ order_id: oid, reason: "Invalid ID format" });
+        return;
+      }
+      if (existingIds.has(oid)) {
+        newBatch.duplicate += 1;
+        return;
+      }
+      existingIds.add(oid);
+      newBatch.new += 1;
       store.orders.unshift({
-        id: (store.orders[0]?.id || 0) + idx + 1,
+        id: nextId(store.orders),
         order_id: oid,
         batch_id: newBatch.id,
-        status: "READY",
+        status: "WAITING_FOR_LAB",
         error: "",
-        attempts: 1,
+        attempts: 0,
         updated_at: new Date().toISOString()
       });
     });
 
-    store.dashboard.orders.imported = (store.dashboard.orders.imported || 0) + ids.length;
-    store.dashboard.orders.reports_ready = (store.dashboard.orders.reports_ready || 0) + ids.length;
-
-    await saveStore(env, store);
-    return reply(201, newBatch);
-  }
-
-  if (path === "/imports/file/preview" && method === "POST") {
-    let fileName = "";
-    try {
-      const fd = await request.formData();
-      const file = fd.get("file");
-      if (file && typeof file === "object") fileName = file.name || "";
-    } catch (_) {}
-
-    const isPdf = (fileName || "").toLowerCase().endsWith(".pdf");
-    if (isPdf) {
-      return reply(200, {
-        format: "pdf",
-        fileName,
-        patient_name: "Aakash Verma",
-        mobile: "9876543210",
-        order_id: "ORD-PDF-9201",
-        test_package: "Comprehensive Blood Profile (CBC, Lipid, HbA1c)",
-        lab: "Thyrocare Technologies Ltd",
-        pages: 2,
-        columns: ["Order_ID", "Patient_Name", "Mobile_Number", "Test_Package"],
-        sample: [["ORD-PDF-9201", "Aakash Verma", "9876543210", "Comprehensive Blood Profile (CBC, Lipid, HbA1c)"]],
-        rows: 1,
-        patients: [
-          { order_id: "ORD-PDF-9201", patient_name: "Aakash Verma", mobile: "9876543210", age: 45, gender: "M", test: "Comprehensive Blood Profile", report_id: 1 }
-        ]
-      });
-    }
-
-    const columns = ["Order_ID", "Patient_Name", "Mobile_Number", "Age", "Gender", "Test_Package", "Booking_Date"];
-    const sample = [
-      ["ORD-92101", "Aakash Verma", "9876543210", "45", "M", "Comprehensive Blood Profile", "2026-11-14"],
-      ["ORD-92102", "Sunita Rao", "9812345678", "52", "F", "Lipid Profile & Glucose", "2026-11-14"],
-      ["ORD-92103", "Vikram Malhotra", "9988776655", "38", "M", "HbA1c & Fasting Glucose", "2026-11-13"]
-    ];
-
-    const patients = [
-      { order_id: "ORD-92101", patient_name: "Aakash Verma", mobile: "9876543210", age: 45, gender: "M", test: "Comprehensive Blood Profile", report_id: 1 },
-      { order_id: "ORD-92102", patient_name: "Sunita Rao", mobile: "9812345678", age: 52, gender: "F", test: "Lipid Profile & Glucose", report_id: 2 },
-      { order_id: "ORD-92103", patient_name: "Vikram Malhotra", mobile: "9988776655", age: 38, gender: "M", test: "HbA1c & Fasting Glucose", report_id: 3 }
-    ];
-
-    return reply(200, {
-      format: "spreadsheet",
-      fileName,
-      columns,
-      sample,
-      rows: 15,
-      patients
-    });
-  }
-
-  if (path === "/imports/file" && method === "POST") {
-    let fileName = "blood_report_orders.xlsx";
-    try {
-      const fd = await request.formData();
-      const file = fd.get("file");
-      if (file && typeof file === "object") fileName = file.name || fileName;
-    } catch (_) {}
-
-    const isPdf = fileName.toLowerCase().endsWith(".pdf");
-
-    if (isPdf) {
-      const orderId = `ORD-PDF-${Math.floor(1000 + Math.random() * 9000)}`;
-      const newReportId = (store.reports[0]?.id || 0) + 1;
-      const newBatchId = (store.batches[0]?.id || 0) + 1;
-
-      const newOrder = {
-        id: (store.orders[0]?.id || 0) + 1,
-        order_id: orderId,
-        batch_id: newBatchId,
-        status: "READY",
-        error: "",
-        attempts: 1,
-        report_kind: "pdf",
-        updated_at: new Date().toISOString()
-      };
-
-      const newPatient = {
-        id: (store.patients[0]?.id || 0) + 1,
-        name: "Aakash Verma",
-        gender: "M",
-        age: 45,
-        mobile: "9876543210",
-        household_tag: "",
-        language: "en",
-        do_not_call: false
-      };
-
-      const newReport = {
-        id: newReportId,
-        order_id: orderId,
-        order_pk: newOrder.id,
-        status: "READY",
-        patient_name: newPatient.name,
-        mobile: newPatient.mobile,
-        age: newPatient.age,
-        gender: newPatient.gender,
-        collected_on: new Date().toISOString(),
-        reported_on: new Date().toISOString(),
-        lab: "Thyrocare Technologies Ltd",
-        confidence: 96,
-        needs_review: false,
-        review_reasons: [],
-        classification: "ABNORMAL",
-        abnormal_count: 4
-      };
-
-      store.orders.unshift(newOrder);
-      store.patients.unshift(newPatient);
-      store.reports.unshift(newReport);
-
-      const newBatch = {
-        id: newBatchId,
-        source: "pdf",
-        file_name: fileName,
-        total: 1,
-        new: 1,
-        duplicate: 0,
-        failed: 0,
-        failures: [],
-        patients: [
-          { order_id: orderId, patient_name: newPatient.name, mobile: newPatient.mobile, report_id: newReportId, classification: "ABNORMAL", abnormal_count: 4 }
-        ],
-        started_by: store.me.id,
-        created_at: new Date().toISOString()
-      };
-      store.batches.unshift(newBatch);
-
-      store.dashboard.orders.imported = (store.dashboard.orders.imported || 0) + 1;
-      store.dashboard.orders.reports_ready = (store.dashboard.orders.reports_ready || 0) + 1;
-      store.dashboard.results.abnormal = (store.dashboard.results.abnormal || 0) + 1;
-
-      await saveStore(env, store);
-      return reply(201, newBatch);
-    }
-
-    const patients = [
-      { order_id: "ORD-92101", patient_name: "Aakash Verma", mobile: "9876543210", age: 45, gender: "M", report_id: 1, classification: "ABNORMAL", abnormal_count: 4 },
-      { order_id: "ORD-92102", patient_name: "Sunita Rao", mobile: "9812345678", age: 52, gender: "F", report_id: 2, classification: "ABNORMAL", abnormal_count: 2 },
-      { order_id: "ORD-92103", patient_name: "Vikram Malhotra", mobile: "9988776655", age: 38, gender: "M", report_id: 3, classification: "NORMAL", abnormal_count: 0 }
-    ];
-
-    const newBatch = {
-      id: (store.batches[0]?.id || 0) + 1,
-      source: "file",
-      file_name: fileName,
-      total: 15,
-      new: 15,
-      duplicate: 0,
-      failed: 0,
-      failures: [],
-      patients,
-      started_by: store.me.id,
-      created_at: new Date().toISOString()
-    };
     store.batches.unshift(newBatch);
-
-    for (let i = 1; i <= 15; i++) {
-      store.orders.unshift({
-        id: (store.orders[0]?.id || 0) + 1,
-        order_id: `ORD-FILE-${1000 + i}`,
-        batch_id: newBatch.id,
-        status: "READY",
-        error: "",
-        attempts: 1,
-        updated_at: new Date().toISOString()
-      });
-    }
-
-    store.dashboard.orders.imported = (store.dashboard.orders.imported || 0) + 15;
-    store.dashboard.orders.reports_ready = (store.dashboard.orders.reports_ready || 0) + 15;
-
     await saveStore(env, store);
     return reply(201, newBatch);
   }
 
   if (path === "/imports/pull" && method === "POST") {
-    let range = { start: "", end: "" };
+    const range = await request.json().catch(() => ({}));
     try {
-      range = await request.json();
-    } catch (_) {}
-
-    const count = 5;
-    const newBatch = {
-      id: (store.batches[0]?.id || 0) + 1,
-      source: "api",
-      file_name: range.start && range.end ? `${range.start}..${range.end}` : "lab_sync",
-      total: count,
-      new: count,
-      duplicate: 0,
-      failed: 0,
-      failures: [],
-      started_by: store.me.id,
-      created_at: new Date().toISOString()
-    };
-    store.batches.unshift(newBatch);
-
-    for (let i = 1; i <= count; i++) {
-      store.orders.unshift({
-        id: (store.orders[0]?.id || 0) + 1,
-        order_id: `THY-SYNC-${2000 + i}`,
-        batch_id: newBatch.id,
-        status: "READY",
-        error: "",
-        attempts: 1,
-        updated_at: new Date().toISOString()
-      });
+      const batch = await pullFromLabTrace(env, store, range, me.id);
+      return reply(batch.new ? 201 : 200, batch);
+    } catch (err) {
+      const message = err instanceof LabTraceError ? err.message : "Something went wrong while pulling from LabTrace.";
+      store.labtrace_last_pull = { at: new Date().toISOString(), ok: false, message };
+      await saveStore(env, store);
+      return reply(err instanceof LabTraceError ? err.status : 502, { detail: message });
     }
-
-    store.dashboard.orders.imported = (store.dashboard.orders.imported || 0) + count;
-    store.dashboard.orders.reports_ready = (store.dashboard.orders.reports_ready || 0) + count;
-
-    await saveStore(env, store);
-    return reply(201, newBatch);
   }
 
   const batchMatch = path.match(/^\/imports\/(\d+)$/);
@@ -466,7 +766,7 @@ async function handleApiRequest(request, url, env) {
   }
 
   if (batchMatch && method === "DELETE") {
-    if (store.me?.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
+    if (me.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
     const bid = parseInt(batchMatch[1], 10);
     store.batches = store.batches.filter((b) => b.id !== bid);
     store.orders = store.orders.filter((o) => o.batch_id !== bid);
@@ -486,7 +786,7 @@ async function handleApiRequest(request, url, env) {
 
   const orderDelMatch = path.match(/^\/orders\/(\d+)$/);
   if (orderDelMatch && method === "DELETE") {
-    if (store.me?.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
+    if (me.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
     const oid = parseInt(orderDelMatch[1], 10);
     store.orders = store.orders.filter((o) => o.id !== oid);
     await saveStore(env, store);
@@ -508,7 +808,41 @@ async function handleApiRequest(request, url, env) {
 
   // --- DASHBOARD ---
   if (path === "/dashboard" && method === "GET") {
-    return reply(200, store.dashboard);
+    const orders = store.orders || [];
+    const reports = store.reports || [];
+    const audit = store.audit || [];
+    return reply(200, {
+      from: url.searchParams.get("from") || "",
+      to: url.searchParams.get("to") || "",
+      orders: {
+        imported: orders.length,
+        by_status: {},
+        reports_ready: reports.length,
+        failed: 0
+      },
+      results: {
+        normal: reports.filter((r) => r && r.classification === "NORMAL").length,
+        abnormal: reports.filter((r) => r && r.classification === "ABNORMAL").length
+      },
+      patients_per_bucket: {},
+      followups_due: { today: 0, this_week: 0, overdue: 0, parked: 0 },
+      calls: {
+        made: audit.filter((a) => a && a.action === "CALL_PLACED").length,
+        by_outcome: {},
+        bookings: 0,
+        consent_rate_pct: 0,
+        doctor_calls_done: 0
+      },
+      retests: { recommended: 0, ordered: 0 },
+      funnel: [],
+      needs_attention: {
+        failed_fetch: 0,
+        failed_extract: 0,
+        needs_review: reports.filter((r) => r && r.needs_review === true).length,
+        pending_identity: 0
+      },
+      doctors: []
+    });
   }
 
   // --- NOTIFICATIONS ---
@@ -525,14 +859,49 @@ async function handleApiRequest(request, url, env) {
 
   // --- USERS & DOCTORS ---
   if (path === "/users") {
-    if (method === "GET") return reply(200, store.users);
+    if (method === "GET") return reply(200, store.users.map(publicUser));
     if (method === "POST") {
       const u = await request.json().catch(() => ({}));
-      const nu = { id: store.users.length + 1, ...u, active: true };
+      const email = String(u.email || "").trim().toLowerCase();
+      const name = String(u.name || "").trim().slice(0, 120);
+      const role = String(u.role || "").toUpperCase();
+      if (!name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return reply(400, { detail: "Enter a name and a valid email." });
+      if (!ROLES.has(role)) return reply(400, { detail: "Role must be ADMIN, CALLER or DOCTOR." });
+      if (String(u.password || "").length < 10) return reply(400, { detail: "The password needs at least 10 characters." });
+      if (store.users.some((x) => String(x.email || "").toLowerCase() === email)) return reply(409, { detail: "A user with this email already exists." });
+      const nu = {
+        id: nextId(store.users), name, email, role, active: true,
+        myoperator_user_id: String(u.myoperator_user_id || "").trim().slice(0, 64),
+        password_hash: await hashPassword(String(u.password))
+      };
       store.users.push(nu);
       await saveStore(env, store);
-      return reply(201, nu);
+      return reply(201, publicUser(nu));
     }
+  }
+
+  const userMatch = path.match(/^\/users\/(\d+)$/);
+  if (userMatch && method === "PATCH") {
+    const target = store.users.find((x) => x.id === parseInt(userMatch[1], 10));
+    if (!target) return reply(404, { detail: "User not found." });
+    const b = await request.json().catch(() => ({}));
+    if (b.active !== undefined) {
+      if (target.id === me.id && !b.active) return reply(400, { detail: "You cannot disable your own account." });
+      target.active = Boolean(b.active);
+    }
+    if (b.role !== undefined) {
+      const role = String(b.role).toUpperCase();
+      if (!ROLES.has(role)) return reply(400, { detail: "Role must be ADMIN, CALLER or DOCTOR." });
+      if (target.id === me.id && role !== "ADMIN") return reply(400, { detail: "You cannot remove your own admin role." });
+      target.role = role;
+    }
+    if (b.myoperator_user_id !== undefined) target.myoperator_user_id = String(b.myoperator_user_id || "").trim().slice(0, 64);
+    if (b.password !== undefined) {
+      if (String(b.password).length < 10) return reply(400, { detail: "The password needs at least 10 characters." });
+      target.password_hash = await hashPassword(String(b.password));
+    }
+    await saveStore(env, store);
+    return reply(200, publicUser(target));
   }
 
   if (path === "/doctors") {
@@ -546,10 +915,12 @@ async function handleApiRequest(request, url, env) {
     }
   }
 
-  // --- SETTINGS ---
+  // --- SETTINGS --- (credentials are Worker secrets and never appear here)
+  const visibleSettings = () => Object.fromEntries(Object.entries(store.settings).filter(([k]) => !ENV_ONLY_SETTING.test(k)));
   const setKeyMatch = path.match(/^\/settings\/([a-zA-Z0-9_]+)$/);
   if (setKeyMatch && (method === "PUT" || method === "POST")) {
     const key = setKeyMatch[1];
+    if (ENV_ONLY_SETTING.test(key) || !(key in store.settings)) return reply(400, { detail: "This setting cannot be changed here." });
     const b = await request.json().catch(() => ({}));
     store.settings[key] = b.value !== undefined ? b.value : b;
     await saveStore(env, store);
@@ -557,18 +928,18 @@ async function handleApiRequest(request, url, env) {
   }
 
   if (path === "/settings") {
-    if (method === "GET") return reply(200, store.settings);
+    if (method === "GET") return reply(200, visibleSettings());
     if (method === "POST" || method === "PUT") {
       const s = await request.json().catch(() => ({}));
-      store.settings = { ...store.settings, ...s };
+      for (const [k, v] of Object.entries(s || {})) if (!ENV_ONLY_SETTING.test(k) && k in store.settings) store.settings[k] = v;
       await saveStore(env, store);
-      return reply(200, store.settings);
+      return reply(200, visibleSettings());
     }
   }
 
   // --- ADMIN DATA RESET ---
   if (path === "/admin/reset-data" && method === "POST") {
-    if (store.me?.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to reset data" });
+    if (me.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to reset data" });
     store.batches = [];
     store.orders = [];
     store.reports = [];
@@ -579,8 +950,8 @@ async function handleApiRequest(request, url, env) {
     store.workflows = {};
     store.comments = {};
     store.dashboard = {
-      from: "2026-11-01",
-      to: "2026-11-14",
+      from: "",
+      to: "",
       orders: { imported: 0, by_status: {}, reports_ready: 0, failed: 0 },
       results: { normal: 0, abnormal: 0 },
       patients_per_bucket: {},
@@ -592,13 +963,32 @@ async function handleApiRequest(request, url, env) {
       doctors: []
     };
     await saveStore(env, store);
-    return reply(200, { ok: true, message: "All test and demo data has been completely cleared." });
+    return reply(200, { ok: true, message: "All data has been cleared." });
   }
 
   // --- FOLLOWUPS ---
   if (path === "/followups" && method === "GET") return reply(200, store.followups);
-  if (path === "/followups/summary" && method === "GET") return reply(200, demo["/followups/summary"] || {});
-  if ((path === "/doctor/queue" || path === "/doctor-queue") && method === "GET") return reply(200, demo["/doctor-queue"] || store.followups);
+  if (path === "/followups/summary" && method === "GET") {
+    const queue = store.followups.filter((f) => f.stage !== "DOCTOR_DONE").length;
+    const done = store.followups.filter((f) => f.stage === "DOCTOR_DONE").length;
+    return reply(200, {
+      queue,
+      due_tomorrow: 0,
+      due_this_week: 0,
+      next_30_days: 0,
+      overdue: 0,
+      escalations: 0,
+      low_potential: 0,
+      done,
+      _buckets: {}
+    });
+  }
+  if ((path === "/doctor/queue" || path === "/doctor-queue") && method === "GET") {
+    const list = me.role === "DOCTOR"
+      ? store.followups.filter((f) => f.assigned_doctor_id === me.id)
+      : store.followups;
+    return reply(200, list);
+  }
   if (path === "/identity-reviews" && method === "GET") return reply(200, store.identityReviews);
   if (path.startsWith("/identity-reviews/") && method === "POST") return reply(200, { ok: true });
   if (path === "/audit" && method === "GET") return reply(200, store.audit);
@@ -606,190 +996,15 @@ async function handleApiRequest(request, url, env) {
   const repMatch = path.match(/^\/reports\/(\d+)$/);
   if (repMatch && method === "GET") {
     const rid = parseInt(repMatch[1], 10);
-    const existing = store.reports.find((item) => item.id === rid) || store.reports[0] || {};
-    return reply(200, {
-      id: rid,
-      order_id: existing.order_id || `ORD-FILE-${1000 + rid}`,
-      order_pk: existing.order_pk || rid,
-      status: existing.status || "READY",
-      patient_name: existing.patient_name || "Aakash Verma",
-      mobile: existing.mobile || "9876543210",
-      age: existing.age || 45,
-      gender: existing.gender || "M",
-      collected_on: existing.collected_on || "2026-11-13T08:30:00Z",
-      reported_on: existing.reported_on || "2026-11-14T11:00:00Z",
-      lab: existing.lab || "Thyrocare Technologies Ltd",
-      confidence: existing.confidence || 96,
-      needs_review: existing.needs_review || false,
-      review_reasons: existing.review_reasons || ["HbA1c and Vitamin D outside normal thresholds"],
-      classification: existing.classification || "ABNORMAL",
-      parameters: [
-        {
-          id: 1,
-          param_code: "GLU_F",
-          param_name_raw: "Fasting Blood Glucose",
-          value_num: 148,
-          value_text: "148",
-          unit: "mg/dL",
-          ref_low: 70,
-          ref_high: 99,
-          ref_text: "70 - 99",
-          lab_flag: "HIGH",
-          system_flag: "HIGH",
-          severity: "moderate",
-          deviation_pct: 49.5,
-          ref_source: "report"
-        },
-        {
-          id: 2,
-          param_code: "HBA1C",
-          param_name_raw: "Glycosylated Hemoglobin (HbA1c)",
-          value_num: 7.4,
-          value_text: "7.4",
-          unit: "%",
-          ref_low: 4.0,
-          ref_high: 5.6,
-          ref_text: "< 5.7",
-          lab_flag: "HIGH",
-          system_flag: "HIGH",
-          severity: "moderate",
-          deviation_pct: 29.8,
-          ref_source: "report"
-        },
-        {
-          id: 3,
-          param_code: "CHOL_TOT",
-          param_name_raw: "Total Cholesterol",
-          value_num: 242,
-          value_text: "242",
-          unit: "mg/dL",
-          ref_low: 125,
-          ref_high: 200,
-          ref_text: "< 200",
-          lab_flag: "HIGH",
-          system_flag: "HIGH",
-          severity: "mild",
-          deviation_pct: 21.0,
-          ref_source: "report"
-        },
-        {
-          id: 4,
-          param_code: "VIT_D",
-          param_name_raw: "Vitamin D3 (25-OH)",
-          value_num: 12.5,
-          value_text: "12.5",
-          unit: "ng/mL",
-          ref_low: 30,
-          ref_high: 100,
-          ref_text: "30 - 100",
-          lab_flag: "LOW",
-          system_flag: "LOW",
-          severity: "severe",
-          deviation_pct: -58.3,
-          ref_source: "report"
-        },
-        {
-          id: 5,
-          param_code: "HB",
-          param_name_raw: "Hemoglobin",
-          value_num: 14.2,
-          value_text: "14.2",
-          unit: "g/dL",
-          ref_low: 13.0,
-          ref_high: 17.0,
-          ref_text: "13.0 - 17.0",
-          lab_flag: "",
-          system_flag: "NORMAL",
-          severity: "",
-          deviation_pct: null,
-          ref_source: "report"
-        },
-        {
-          id: 6,
-          param_code: "RBC",
-          param_name_raw: "Total RBC Count",
-          value_num: 4.9,
-          value_text: "4.9",
-          unit: "mil/uL",
-          ref_low: 4.5,
-          ref_high: 5.5,
-          ref_text: "4.5 - 5.5",
-          lab_flag: "",
-          system_flag: "NORMAL",
-          severity: "",
-          deviation_pct: null,
-          ref_source: "report"
-        },
-        {
-          id: 7,
-          param_code: "WBC",
-          param_name_raw: "Total Leukocyte Count (WBC)",
-          value_num: 6800,
-          value_text: "6800",
-          unit: "/uL",
-          ref_low: 4000,
-          ref_high: 11000,
-          ref_text: "4000 - 11000",
-          lab_flag: "",
-          system_flag: "NORMAL",
-          severity: "",
-          deviation_pct: null,
-          ref_source: "report"
-        },
-        {
-          id: 8,
-          param_code: "PLT",
-          param_name_raw: "Platelet Count",
-          value_num: 260000,
-          value_text: "260000",
-          unit: "/uL",
-          ref_low: 150000,
-          ref_high: 450000,
-          ref_text: "150000 - 450000",
-          lab_flag: "",
-          system_flag: "NORMAL",
-          severity: "",
-          deviation_pct: null,
-          ref_source: "report"
-        },
-        {
-          id: 9,
-          param_code: "CREAT",
-          param_name_raw: "Serum Creatinine",
-          value_num: 0.95,
-          value_text: "0.95",
-          unit: "mg/dL",
-          ref_low: 0.7,
-          ref_high: 1.3,
-          ref_text: "0.7 - 1.3",
-          lab_flag: "",
-          system_flag: "NORMAL",
-          severity: "",
-          deviation_pct: null,
-          ref_source: "report"
-        },
-        {
-          id: 10,
-          param_code: "SGPT",
-          param_name_raw: "SGPT / ALT",
-          value_num: 32,
-          value_text: "32",
-          unit: "U/L",
-          ref_low: 0,
-          ref_high: 45,
-          ref_text: "< 45",
-          lab_flag: "",
-          system_flag: "NORMAL",
-          severity: "",
-          deviation_pct: null,
-          ref_source: "report"
-        }
-      ]
-    });
+    const existing = store.reports.find((item) => item.id === rid);
+    if (!existing) return reply(404, { detail: "Report not found." });
+    const rep = { ...existing, parameters: [] };
+    if (existing.source === "labtrace") rep.pdf_url = `/api/v1/reports/${rid}/pdf`;
+    return reply(200, rep);
   }
 
   if (repMatch && method === "DELETE") {
-    if (store.me?.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
+    if (me.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
     const rid = parseInt(repMatch[1], 10);
     store.reports = store.reports.filter((r) => r.id !== rid);
     await saveStore(env, store);
@@ -804,11 +1019,100 @@ async function handleApiRequest(request, url, env) {
     return reply(200, { ...p, household: [], reports: [] });
   }
   if (patMatch && method === "DELETE") {
-    if (store.me?.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
+    if (me.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
     const pid = parseInt(patMatch[1], 10);
     store.patients = store.patients.filter((p) => p.id !== pid);
     await saveStore(env, store);
     return reply(200, { ok: true, deleted: pid });
+  }
+
+  // Calls go only to patients that came from LabTrace.
+  const callTarget = (patient, report) => {
+    if (!patient && !report) return [404, { detail: "Patient not found." }];
+    const real = (report && report.source === "labtrace") || (patient && store.reports.some((r) => r.patient_id === patient.id && r.source === "labtrace"));
+    if (!real) return [409, { detail: "Calls are only placed to patients pulled from LabTrace." }];
+    return null;
+  };
+
+  const patCallMatch = path.match(/^\/patients\/(\d+)\/call$/);
+  if (patCallMatch && method === "POST") {
+    const pid = parseInt(patCallMatch[1], 10);
+    const pat = store.patients.find((p) => p.id === pid);
+    const blocked = callTarget(pat, null);
+    if (blocked) return reply(...blocked);
+    const [status, body] = await placeCall(env, store, me, { mobile: pat.mobile, name: pat.name, patient: pat, ref: `patient-${pid}` });
+    if (status === 200) await saveStore(env, store);
+    return reply(status, body);
+  }
+
+  const repCallMatch = path.match(/^\/reports\/(\d+)\/call$/);
+  if (repCallMatch && method === "POST") {
+    const rid = parseInt(repCallMatch[1], 10);
+    const rep = store.reports.find((r) => r.id === rid);
+    const pat = rep ? store.patients.find((p) => p.id === rep.patient_id) : null;
+    const blocked = callTarget(pat, rep);
+    if (blocked) return reply(...blocked);
+    const [status, body] = await placeCall(env, store, me, { mobile: rep.mobile, name: rep.patient_name, patient: pat, ref: `report-${rid}` });
+    if (status === 200) await saveStore(env, store);
+    return reply(status, body);
+  }
+
+  // --- MANUAL DIALER ---
+  if (path === "/dialer/call" && method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const raw = String(body.mobile || "").trim();
+    const mobile = indianMobile(raw);
+    if (!mobile) return reply(400, { detail: "Please enter a valid 10-digit Indian mobile number." });
+    const pat = store.patients.find((p) => p.mobile === mobile);
+    if (pat && pat.do_not_call) return reply(409, { detail: "This patient is marked Do Not Call." });
+    const name = String(body.name || (pat && pat.name) || "").trim();
+    const notes = String(body.notes || "").trim().slice(0, 300);
+    const [status, bodyRes] = await placeCall(env, store, me, {
+      mobile,
+      name: name || "Customer",
+      patient: pat,
+      ref: `manual-${Date.now().toString(36)}`
+    });
+    if (status !== 200) return reply(status, bodyRes);
+    if (!store.manual_calls) store.manual_calls = [];
+    store.manual_calls.unshift({
+      id: nextId(store.manual_calls),
+      at: new Date().toISOString(),
+      caller_name: me.name,
+      caller_id: me.id,
+      mobile: mobile.slice(0, 2) + "******" + mobile.slice(-2),
+      patient_name: name || "Customer",
+      notes,
+      reference_id: bodyRes.reference_id,
+      call_id: bodyRes.call_id
+    });
+    await saveStore(env, store);
+    return reply(200, bodyRes);
+  }
+
+  if (path === "/dialer/recent" && method === "GET") {
+    return reply(200, (store.manual_calls || []).slice(0, 30));
+  }
+
+  const repPdfMatch = path.match(/^\/reports\/(\d+)\/pdf$/);
+  if (repPdfMatch && method === "GET") {
+    const rep = store.reports.find((r) => r.id === parseInt(repPdfMatch[1], 10));
+    if (!rep || rep.source !== "labtrace") return reply(404, { detail: "There is no LabTrace PDF for this report." });
+    try {
+      const pdf = await labtraceReportPdf(env, rep.labtrace_work_order_id, rep.thyrocare_patient_id);
+      const file = `report-${String(rep.order_id).replace(/[^A-Za-z0-9_-]/g, "")}.pdf`;
+      return new Response(pdf, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `inline; filename="${file}"`,
+          "Cache-Control": "private, no-store",
+          "X-Content-Type-Options": "nosniff"
+        }
+      });
+    } catch (err) {
+      return reply(err instanceof LabTraceError ? err.status : 502, { detail: err instanceof LabTraceError ? err.message : "Could not load the PDF from LabTrace." });
+    }
   }
 
   // Followup details, workflow, comments
@@ -817,49 +1121,47 @@ async function handleApiRequest(request, url, env) {
     const fid = parseInt(fMatch[1], 10);
     const sub = fMatch[2];
     if (!sub && method === "DELETE") {
-      if (store.me?.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
+      if (me.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
       store.followups = store.followups.filter((f) => f.id !== fid);
       await saveStore(env, store);
       return reply(200, { ok: true, deleted: fid });
     }
     if (sub === "/call-customer" && method === "POST") {
       const fu = store.followups.find((f) => f.id === fid);
-      const pat = store.patients.find((p) => p.id === (fu?.patient_id || fid));
-      const customerNumber = pat?.mobile || fu?.mobile || "9876543210";
-      const customerName = fu?.patient_name || pat?.name || "Customer";
-
-      const callEntry = {
-        outcome: "OUTBOUND_CALL",
-        role: store.me?.role || "CALLER",
-        notes: `Outgoing call placed from SecondMedic to ${customerName} (${customerNumber}) via MyOperator`,
-        at: new Date().toISOString()
-      };
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      const pat = store.patients.find((p) => p.id === fu.patient_id);
+      const rep = store.reports.find((r) => r.id === fu.report_id) || null;
+      const blocked = callTarget(pat, rep);
+      if (blocked) return reply(...blocked);
+      const name = (pat && pat.name) || fu.patient_name;
+      const [status, body] = await placeCall(env, store, me, { mobile: (pat && pat.mobile) || fu.mobile, name, patient: pat, ref: `followup-${fid}` });
+      if (status !== 200) return reply(status, body);
       if (!store.workflows[fid]) store.workflows[fid] = { calls: [] };
       if (!store.workflows[fid].calls) store.workflows[fid].calls = [];
-      store.workflows[fid].calls.unshift(callEntry);
-
-      store.dashboard.calls.made = (store.dashboard.calls.made || 0) + 1;
-      await saveStore(env, store);
-
-      return reply(200, {
-        success: true,
-        provider: "myoperator",
-        call_id: `MYOP-${Date.now()}`,
-        status: "initiated",
-        from: "SecondMedic",
-        to: customerNumber,
-        customer_name: customerName,
-        message: `Outgoing call initiated from SecondMedic to ${customerName} (${customerNumber}) via MyOperator.`
+      store.workflows[fid].calls.unshift({
+        outcome: "OUTBOUND_CALL",
+        role: me.role,
+        notes: `Call placed through MyOperator to ${name || "the patient"} (ref ${body.reference_id})`,
+        at: new Date().toISOString()
       });
+      await saveStore(env, store);
+      return reply(200, body);
     }
-    if (!sub && method === "GET") return reply(200, demo[`/followups/${fid}`] || demo["/followups/2"] || {});
-    if (sub === "/call-card" && method === "GET") return reply(200, demo[`/followups/${fid}/call-card`] || demo["/followups/2/call-card"] || {});
+    const fuExists = store.followups.some((f) => f.id === fid);
+    if (!sub && method === "GET") {
+      if (!fuExists) return reply(404, { detail: "Follow-up not found." });
+      return reply(200, {});
+    }
+    if (sub === "/call-card" && method === "GET") {
+      if (!fuExists) return reply(404, { detail: "Follow-up not found." });
+      return reply(200, {});
+    }
     if (sub === "/caller-card" && method === "GET") {
-      const base = demo[`/followups/${fid}/caller-card`] || demo["/followups/2/caller-card"] || {};
-      return reply(200, { ...base, deficits: undefined, abnormal_findings: undefined });
+      if (!fuExists) return reply(404, { detail: "Follow-up not found." });
+      return reply(200, {});
     }
     if (sub === "/comments") {
-      if (method === "GET") return reply(200, store.comments[fid] || demo[`/followups/${fid}/comments`] || demo["/followups/2/comments"] || []);
+      if (method === "GET") return reply(200, store.comments[fid] || []);
       if (method === "POST") {
         const c = await request.json().catch(() => ({}));
         if (!store.comments[fid]) store.comments[fid] = [];
@@ -870,7 +1172,7 @@ async function handleApiRequest(request, url, env) {
       }
     }
     if (sub === "/workflow") {
-      if (method === "GET") return reply(200, store.workflows[fid] || demo[`/followups/${fid}/workflow`] || demo["/followups/2/workflow"] || {});
+      if (method === "GET") return reply(200, store.workflows[fid] || { calls: [] });
       if (method === "POST") {
         const w = await request.json().catch(() => ({}));
         store.workflows[fid] = { ...(store.workflows[fid] || {}), ...w };
@@ -1024,16 +1326,12 @@ async function handleApiRequest(request, url, env) {
     store.rules[key] = {
       ...current,
       pending_signoff: false,
-      signed_off_by: store.me?.id || 1,
+      signed_off_by: me.id,
       signed_off_at: new Date().toISOString()
     };
     await saveStore(env, store);
     return reply(200, store.rules[key]);
   }
-
-  // Generic fallback: check if demo has it, or return empty object/array
-  const hit = demo[path];
-  if (hit !== undefined) return reply(200, hit);
 
   if (method === "GET") {
     if (path.endsWith("s")) return reply(200, []);
@@ -1076,6 +1374,29 @@ export default {
         method: "POST",
         headers: { "X-Edge-Secret": env.EDGE_SECRET }
       }).catch(() => {}));
+    } else {
+      // Background LabTrace sync. The cron fires every 2 minutes; this only pulls when the
+      // "Repeat Lab Sync Every (minutes)" setting says it is time (0 = once a day at the IST sync time).
+      ctx.waitUntil((async () => {
+        if (!labtraceConfigured(env)) return;
+        const store = await getStore(env);
+        const every = Number(store.settings.pull_every_minutes) || 0;
+        const last = Date.parse((store.labtrace_last_pull && store.labtrace_last_pull.at) || "") || 0;
+        if (every > 0) {
+          if (Date.now() - last < every * 60000) return;
+        } else {
+          const nowIst = new Date(Date.now() + 330 * 60000).toISOString().slice(11, 16);
+          if (nowIst < String(store.settings.pull_time_ist || "07:00") || istDate(last) === istDate()) return;
+        }
+        const days = Math.min(90, Math.max(1, Number(store.settings.pull_lookback_days) || 7));
+        const range = { start: istDate(Date.now() - days * 86400000), end: istDate() };
+        try {
+          await pullFromLabTrace(env, store, range, null);
+        } catch (err) {
+          store.labtrace_last_pull = { at: new Date().toISOString(), ok: false, message: err instanceof LabTraceError ? err.message : "Automatic LabTrace pull failed." };
+          await saveStore(env, store);
+        }
+      })());
     }
   }
 };

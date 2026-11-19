@@ -26,21 +26,6 @@ const SETTINGS_MAP: Record<string, SettingMeta> = {
     description: "Duration before inactive staff accounts are automatically logged out.",
     category: "General & Organization"
   },
-  myoperator_company_id: {
-    label: "MyOperator Company ID",
-    description: "SecondMedic company identifier for authenticating outbound calls with MyOperator.",
-    category: "Telephony & Outbound Calling (MyOperator)"
-  },
-  myoperator_api_key: {
-    label: "MyOperator API Token",
-    description: "Secret API token used to place outgoing click-to-call requests to customers.",
-    category: "Telephony & Outbound Calling (MyOperator)"
-  },
-  myoperator_caller_id: {
-    label: "MyOperator Outbound Virtual Number",
-    description: "The official SecondMedic caller ID / DID number displayed on customer phones.",
-    category: "Telephony & Outbound Calling (MyOperator)"
-  },
   caller_can_view_results: {
     label: "Allow Callers to View Clinical Results",
     description: "When enabled, calling agents can view numerical test values and out-of-range indicators.",
@@ -54,6 +39,16 @@ const SETTINGS_MAP: Record<string, SettingMeta> = {
   pull_time_ist: {
     label: "Automated Daily Lab Sync Time (IST)",
     description: "Time of day (HH:MM IST) when completed reports are fetched from partner laboratories.",
+    category: "Lab & Data Intake"
+  },
+  pull_every_minutes: {
+    label: "Repeat Lab Sync Every (minutes)",
+    description: "0 = sync once a day. Setting e.g. 20 or 60 minutes automatically pulls newly ready reports throughout the day.",
+    category: "Lab & Data Intake"
+  },
+  pull_lookback_days: {
+    label: "Lab Sync Look-back Window (days)",
+    description: "Number of days back from sample collection date to pull ready reports (default: 7 days).",
     category: "Lab & Data Intake"
   },
   fetch_max_attempts: {
@@ -115,6 +110,7 @@ const SETTINGS_MAP: Record<string, SettingMeta> = {
 
 export default function Settings() {
   const { data, error, reload } = useApi<Record<string, any>>("/settings");
+  const { data: status } = useApi<any>("/integrations/status");
   const [msg, setMsg] = useState("");
   const [success, setSuccess] = useState("");
   const [resetting, setResetting] = useState(false);
@@ -134,14 +130,14 @@ export default function Settings() {
   }
 
   async function resetAllData() {
-    if (!confirm("Are you sure you want to completely clear all demo and test data (orders, reports, patients, batches)? This cannot be undone.")) {
+    if (!confirm("Are you sure you want to completely clear all data (orders, reports, patients, batches, call history)? This cannot be undone.")) {
       return;
     }
     setResetting(true);
     setMsg("");
     try {
       await api("/admin/reset-data", { method: "POST" });
-      setSuccess("All demo and test data has been successfully cleared!");
+      setSuccess("All data has been cleared.");
       reload();
     } catch (e: any) {
       setMsg(e.message);
@@ -164,8 +160,50 @@ export default function Settings() {
     <div className="space-y-6 max-w-4xl">
       <div>
         <h1 className="text-xl font-semibold text-slate-900">System Settings</h1>
-        <p className="mt-1 text-sm text-slate-600">Configure business rules, MyOperator calling credentials, and operational thresholds.</p>
+        <p className="mt-1 text-sm text-slate-600">Configure business rules and operational thresholds.</p>
       </div>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
+        <h2 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2.5">Connections</h2>
+        <p className="text-xs text-slate-500">
+          Passwords and API keys are stored as Cloudflare Worker secrets, never on this page, so no one using CRTracker can read them.
+        </p>
+        {!status && <p role="status" className="text-sm text-slate-500">Checking…</p>}
+        {status && (
+          <ul className="space-y-2 text-sm">
+            <li className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                <strong>LabTrace</strong>{" "}
+                <span className="text-slate-500">
+                  ({status.labtrace.url}
+                  {status.labtrace.login_id ? ` · login: ${status.labtrace.login_id}` : ""})
+                </span>
+              </span>
+              <span className={status.labtrace.connected ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>
+                {status.labtrace.connected ? "Connected" : "Needs attention"}
+              </span>
+            </li>
+            {status.labtrace.last_pull ? (
+              <li className={`text-xs ${status.labtrace.connected ? "text-slate-600" : "text-amber-800 font-medium"}`}>
+                Last pull {new Date(status.labtrace.last_pull.at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}: {status.labtrace.last_pull.message}
+              </li>
+            ) : (
+              !status.labtrace.connected && status.labtrace.reason && (
+                <li className="text-xs text-amber-800 font-medium">
+                  {status.labtrace.reason}
+                </li>
+              )
+            )}
+            <li className="flex flex-wrap items-center justify-between gap-2">
+              <strong>MyOperator calling</strong>
+              <span className={status.myoperator.connected ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>
+                {status.myoperator.connected ? "Connected" : `Not set up: ${status.myoperator.missing.join(", ")}`}
+              </span>
+            </li>
+            <li className="text-xs text-slate-600">Each caller also needs their MyOperator User ID, set on the Users page.</li>
+          </ul>
+        )}
+      </section>
 
       <RequestState loading={!data} error={error} retry={reload} />
       {msg && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{msg}</p>}
@@ -205,8 +243,7 @@ export default function Settings() {
                       <input
                         id={`setting-${k}`}
                         className="rounded-lg border border-slate-300 p-2 text-sm font-medium text-slate-800 focus:border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-600 min-w-44"
-                        type={k === "myoperator_api_key" ? "password" : "text"}
-                        autoComplete={k === "myoperator_api_key" ? "new-password" : undefined}
+                        type="text"
                         defaultValue={v ?? ""}
                         placeholder="Not configured"
                         onBlur={(e) => e.target.value !== String(v ?? "") && set(k, e.target.value, v)}
@@ -224,7 +261,7 @@ export default function Settings() {
       <section className="rounded-2xl border border-rose-200 bg-rose-50/50 p-5 shadow-sm space-y-3">
         <h2 className="text-base font-bold text-rose-950">Data Reset & Maintenance</h2>
         <p className="text-xs text-rose-800">
-          Administrator privilege: Purge all existing demo batches, orders, reports, patients, and calling records from the system for a fresh start.
+          Administrator privilege: Delete all batches, orders, reports, patients and call records for a fresh start. LabTrace reports can be pulled again afterwards.
         </p>
         <button
           type="button"
@@ -232,7 +269,7 @@ export default function Settings() {
           onClick={resetAllData}
           className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-800 transition disabled:opacity-50"
         >
-          {resetting ? "Clearing data…" : "Clear All Demo & Test Data"}
+          {resetting ? "Clearing data…" : "Clear All Data"}
         </button>
       </section>
     </div>

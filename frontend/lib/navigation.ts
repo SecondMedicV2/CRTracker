@@ -22,6 +22,7 @@ export const NAV: { label: string; items: NavItem[] }[] = [
     { href: "/orders", label: "Orders", roles: ["ADMIN"] },
     { href: "/reports", label: "Reports", roles: ["ADMIN", "DOCTOR"], description: "Open lab reports and see which need review." },
     { href: "/patients", label: "Patients", roles: ["ADMIN", "DOCTOR"] },
+    { href: "/dialer", label: "Manual dialer", roles: ["ADMIN", "CALLER", "DOCTOR"], description: "Manual outbound dialing via MyOperator." },
   ] },
   { label: "Administration", items: [
     { href: "/users", label: "Users", roles: ["ADMIN"] },

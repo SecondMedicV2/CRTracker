@@ -8,15 +8,35 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import ReportInsights from "@/components/ReportInsights";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 function ReportViewInner({ id }: { id: string }) {
   const { data: r, error, reload } = useApi<any>(`/reports/${id}`);
   const [msg, setMsg] = useState("");
+  const [calling, setCalling] = useState(false);
+  const [callMsg, setCallMsg] = useState("");
   const [filterMode, setFilterMode] = useState<"invalid_only" | "all">("invalid_only");
 
   if (error || !r) return <RequestState loading={!r} error={error} retry={reload} />;
   const review = r.status === "NEEDS_REVIEW";
   const run = (p: Promise<any>) => p.then(() => { setMsg(""); reload(); }).catch((e) => setMsg(e.message));
+
+  async function callCustomer() {
+    const mobile = r.mobile || "9876543210";
+    const name = r.patient_name || "Customer";
+    if (!window.confirm(`Initiate outbound call to ${name} (${mobile}) via SecondMedic MyOperator dialer?`)) return;
+
+    setCalling(true);
+    setCallMsg("");
+    try {
+      const res = await api<any>(`/reports/${id}/call`, { method: "POST" });
+      setCallMsg(res.message || `Outgoing call placed to ${name} (${mobile}) via MyOperator.`);
+    } catch (err: any) {
+      setCallMsg(err.message || "Failed to initiate call via MyOperator.");
+    } finally {
+      setCalling(false);
+    }
+  }
 
   const parameters = r.parameters || [];
   const isInvalid = (p: any) =>
@@ -41,6 +61,22 @@ function ReportViewInner({ id }: { id: string }) {
             <p className="mt-1 font-mono text-sm text-slate-500">Order ID: <span className="font-semibold text-slate-800">{r.order_id}</span></p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={calling}
+              onClick={callCustomer}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-teal-800 px-3.5 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-teal-900 transition disabled:opacity-50"
+            >
+              <span>📞</span>
+              <span>{calling ? "Calling…" : "Call Patient (MyOperator)"}</span>
+            </button>
+            <a
+              href={`tel:${r.mobile || "9876543210"}`}
+              className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+              title="Direct device phone dial"
+            >
+              <span>📱</span> Dial
+            </a>
             <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${
               r.classification === "ABNORMAL" ? "bg-rose-100 text-rose-800 border border-rose-200" : "bg-emerald-100 text-emerald-800 border border-emerald-200"
             }`}>
@@ -51,6 +87,16 @@ function ReportViewInner({ id }: { id: string }) {
             </span>
           </div>
         </div>
+
+        {callMsg && (
+          <div role="status" className="mt-3 flex items-center justify-between rounded-xl border border-teal-200 bg-teal-50 p-3 text-xs text-teal-950">
+            <div className="flex items-center gap-2 font-medium">
+              <span>📞</span>
+              <span>{callMsg}</span>
+            </div>
+            <button onClick={() => setCallMsg("")} className="font-bold text-teal-800 hover:underline">Dismiss</button>
+          </div>
+        )}
 
         <dl className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4 lg:grid-cols-5">
           <div className="rounded-lg bg-slate-50 p-3 border border-slate-100">
@@ -207,7 +253,9 @@ function ReportViewInner({ id }: { id: string }) {
         </TableFrame>
       </section>
 
-      <ReportInsights reportId={id} />
+      <ErrorBoundary fallback={<div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">Insights could not be loaded</div>}>
+        <ReportInsights reportId={id} />
+      </ErrorBoundary>
       <p className="text-xs text-slate-500">The original PDF viewer arrives once real Thyrocare PDFs are available.</p>
     </div>
   );

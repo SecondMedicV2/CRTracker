@@ -149,6 +149,7 @@ export default function Import() {
 
       {/* SECTION 3: Pull from Lab */}
       <section className="space-y-3 rounded-2xl bg-white p-5 shadow-sm border border-slate-200">
+<<<<<<< HEAD
         <h2 className="text-base font-bold text-slate-900">2. Pull ready reports from LabTrace</h2>
         {status && !status.labtrace.connected && (
           <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-950">
@@ -161,6 +162,14 @@ export default function Import() {
           </p>
         )}
         <div className="flex flex-wrap items-center gap-3 text-sm">
+=======
+        <h2 className="text-base font-bold text-slate-900">3. Pull ready reports from LabTrace</h2>
+        <p className="text-xs text-slate-600">Picks up every work order with a ready report whose sample was collected in these dates. This also runs automatically on the schedule in Settings.</p>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <input type="date" aria-label="From date" className="rounded-lg border border-slate-300 p-1.5 text-sm" value={range.start} onChange={(e) => setRange({ ...range, start: e.target.value })} />
+          <span className="text-slate-500">to</span>
+          <input type="date" aria-label="To date" className="rounded-lg border border-slate-300 p-1.5 text-sm" value={range.end} onChange={(e) => setRange({ ...range, end: e.target.value })} />
+>>>>>>> claude/crtracker-labtrace-integration-b53a67
           <button
             className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 transition disabled:opacity-50"
             disabled={pending || (status && !status.labtrace?.connected)}
@@ -206,18 +215,20 @@ export default function Import() {
               <tbody>
                 {history.data?.map((b) => {
                   const isPdf = b.source === "pdf" || (b.file_name && b.file_name.toLowerCase().endsWith(".pdf"));
-                  const source = b.source_label || (isPdf ? "PDF" : "Labtrace app");
-                  const name = b.patient_name || b.patients?.[0]?.patient_name || "—";
-                  const mobile = b.mobile || b.patients?.[0]?.mobile || "";
-                  const labtraceId = b.labtrace_id || b.patients?.[0]?.order_id || `LT-${1000 + b.id}`;
+                  const source = isPdf ? "PDF" : b.source === "api" ? "LabTrace" : b.source_label || (b.source === "manual" ? "Manual" : "File");
+                  const first = b.patients?.[0];
+                  const more = (b.orders_count ?? b.patients?.length ?? 0) > 1 ? ` +${(b.orders_count ?? b.patients.length) - 1} more` : "";
+                  const name = (b.patient_name || first?.patient_name || "—") + (first?.patient_name ? more : "");
+                  const mobile = b.mobile || first?.mobile || "";
+                  const labtraceId = b.labtrace_id || first?.lab_ref || first?.order_id || (b.id ? `LT-${1000 + b.id}` : "—");
                   const status = b.status || (isPdf ? "Followup pending" : "Call pending");
-                  const reportId = b.report_id || b.patients?.[0]?.report_id || null;
+                  const reportId = b.report_id || first?.report_id || null;
 
                   let statusClass = "bg-amber-100 text-amber-900 border-amber-300";
                   if (status === "Call initiated") statusClass = "bg-blue-100 text-blue-900 border-blue-300";
-                  else if (status === "Followup pending") statusClass = "bg-purple-100 text-purple-900 border-purple-300";
-                  else if (status === "Retry calling") statusClass = "bg-rose-100 text-rose-900 border-rose-300";
-                  else if (status === "Completed") statusClass = "bg-emerald-100 text-emerald-900 border-emerald-300";
+                  else if (status === "Followup pending" || status === "Waiting for review") statusClass = "bg-purple-100 text-purple-900 border-purple-300";
+                  else if (status === "Retry calling" || status === "Needs attention") statusClass = "bg-rose-100 text-rose-900 border-rose-300";
+                  else if (status === "Completed" || status === "Ready for calls") statusClass = "bg-emerald-100 text-emerald-900 border-emerald-300";
 
                   return (
                     <tr key={b.id} className="border-t hover:bg-slate-50/60 transition">
@@ -254,12 +265,12 @@ export default function Import() {
                             <span>📞</span>
                             <span>{callingBatchId === b.id ? "Calling…" : "Call"}</span>
                           </button>
-                          {reportId && <Link
-                            href={`/reports/view?id=${reportId}`}
+                          <Link
+                            href={reportId && !more ? `/reports/view?id=${reportId}` : `/orders?batch_id=${b.id}`}
                             className="rounded-lg bg-sky-50 px-2.5 py-1 text-xs font-bold text-sky-800 border border-sky-300 hover:bg-sky-100 transition"
                           >
-                            View Report
-                          </Link>}
+                            {reportId && !more ? "View Report" : "View Orders"}
+                          </Link>
                           {isAdmin && (
                             <button
                               className="rounded bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 border border-rose-200 hover:bg-rose-100 transition"

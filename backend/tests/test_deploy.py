@@ -48,6 +48,7 @@ def test_one_cron_call_does_all_the_background_work(monkeypatch, admin):
     monkeypatch.setattr(env, "edge_secret", SECRET)
     with dbmod.SessionLocal() as db:  # pretend today's 07:00 pull already ran, so only our 3 orders are in play
         db.merge(Setting(key="_last_pull_date", value=today_ist().isoformat()))
+        db.merge(Setting(key="pull_every_minutes", value=0))  # and no hourly repeat
         db.commit()
     admin.post(f"{API}/imports/manual", json={"text": "OK1 NORMAL1 FAIL1"}, headers={"X-Edge-Secret": SECRET})
     r = client_as().post("/api/internal/tick", headers={"X-Edge-Secret": SECRET}).json()

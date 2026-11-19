@@ -131,10 +131,10 @@ def test_missing_gender_goes_to_review_then_approve(admin):
 def test_pdf_report_fails_extraction_with_reason_and_can_retry(admin):
     import_and_run(admin, "PDF1")
     o = the_order("PDF1")
-    assert o.status == status.FAILED_EXTRACT and "not configured" in o.error
+    assert o.status == status.FAILED_EXTRACT and "Could not read this PDF" in o.error  # the mock sends a broken stub
     assert admin.post(f"{API}/orders/{o.id}/retry").json()["status"] == status.FETCHED
     tick_all()
-    assert the_order("PDF1").status == status.FAILED_EXTRACT  # still no PDF reader, but no crash or duplicate rows
+    assert the_order("PDF1").status == status.FAILED_EXTRACT  # still unreadable, but no crash or duplicate rows
     with dbmod.SessionLocal() as db:
         assert db.scalars(select(Report)).all() == []
 

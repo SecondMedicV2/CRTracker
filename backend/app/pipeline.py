@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from . import followup, identity, status, storage
 from .analysis import analyse, load_rules
-from .extract import ExtractError, build_report, pdf_to_data
+from .extract import ExtractError, build_report, merge_patient, pdf_to_data
 from .models import Order, Report, ReportParameter
 from .settings_store import get_setting
 
@@ -32,7 +32,9 @@ def extract_order(db: Session, order: Order) -> None:
     db.commit()
     try:
         raw = storage.load(order.report_path)
-        data = json.loads(raw) if order.report_kind == "json" else pdf_to_data(raw)
+        hint = json.loads(storage.decrypt_str(order.patient_hint_enc)) if order.patient_hint_enc else {}
+        data = json.loads(raw) if order.report_kind == "json" else pdf_to_data(raw, hint)
+        data["patient"] = merge_patient(data.get("patient") or {}, hint)
         rules = load_rules(db)
         old = db.scalar(select(Report).where(Report.order_id == oid))
         if old:  # re-run after retry: replace, never duplicate

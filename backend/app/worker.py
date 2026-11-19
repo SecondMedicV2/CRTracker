@@ -42,6 +42,8 @@ def fetch_one(db: Session, order: Order) -> None:
         else:
             raise LabError("Lab returned no report")
         order.collected_on, order.reported_on, order.lab, order.error = res.collected_on, res.reported_on, lab.name, ""
+        order.lab_ref = res.ref[:64]
+        order.patient_hint_enc = storage.encrypt_str(json.dumps(res.patient)) if res.patient else ""
         status.move(order, status.FETCHED)
     except Exception as e:  # one bad order must never stop the batch
         order.attempts += 1
@@ -90,14 +92,24 @@ def callcard_tick(db: Session, limit: int = 20) -> int:
 
 
 def maybe_scheduled_pull(db: Session, now: datetime | None = None) -> bool:
+    """Daily at pull_time_ist; with pull_every_minutes > 0, again every that many minutes for the rest of the day."""
     ist = (now or datetime.now(timezone.utc)).astimezone(IST)
-    marker = db.get(Setting, "_last_pull_date")
-    if ist.strftime("%H:%M") < get_setting(db, "pull_time_ist") or (marker and marker.value == ist.date().isoformat()):
+    if ist.strftime("%H:%M") < get_setting(db, "pull_time_ist"):
         return False
+    marker, last = db.get(Setting, "_last_pull_date"), db.get(Setting, "_last_pull_at")
+    if marker and marker.value == ist.date().isoformat():
+        every = get_setting(db, "pull_every_minutes")
+        if every <= 0 or (last and ist - datetime.fromisoformat(last.value) < timedelta(minutes=every)):
+            return False
     db.merge(Setting(key="_last_pull_date", value=ist.date().isoformat()))  # mark first: no retry storm on failure
+    db.merge(Setting(key="_last_pull_at", value=ist.isoformat()))
     db.commit()
     try:
-        b = pull_now(db, ist.date() - timedelta(days=1), ist.date(), None)
+        b = pull_now(db, ist.date() - timedelta(days=max(1, get_setting(db, "pull_lookback_days"))), ist.date(), None)
+        if b.new == 0 and b.failed == 0:  # nothing new since the last pull: keep the import list readable
+            db.delete(b)
+            db.commit()
+            return True
         audit(db, None, None, "scheduled_pull", "import_batch", b.id)
     except LabError as e:
         audit(db, None, None, "scheduled_pull_failed", "import_batch", str(e)[:60])

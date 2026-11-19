@@ -6,7 +6,7 @@ from openpyxl import Workbook
 
 from app import db as dbmod
 from app import status, storage, worker
-from app.models import AuditLog, Order
+from app.models import AuditLog, Order, Setting
 from sqlalchemy import select
 
 API = "/api/v1"
@@ -125,6 +125,8 @@ def test_status_machine_rejects_illegal_moves():
 def test_scheduler_pulls_once_per_day_after_configured_time():
     ist = worker.IST
     with dbmod.SessionLocal() as db:
+        db.merge(Setting(key="pull_every_minutes", value=0))  # daily-only mode
+        db.commit()
         assert worker.maybe_scheduled_pull(db, datetime(2026, 10, 30, 6, 0, tzinfo=ist)) is False  # before 07:00
         assert worker.maybe_scheduled_pull(db, datetime(2026, 10, 30, 7, 5, tzinfo=ist)) is True
         assert worker.maybe_scheduled_pull(db, datetime(2026, 10, 30, 9, 0, tzinfo=ist)) is False  # already today

@@ -12,7 +12,11 @@ class Env(BaseSettings):
     cookie_secure: bool = False  # set true behind HTTPS
     admin_email: str = ""
     admin_password: str = ""
-    lab_provider: str = "mock"  # mock | thyrocare
+    lab_provider: str = "mock"  # mock | labtrace | thyrocare
+    # LabTrace (our Thyrocare booking app). Signs in as its Master Manager to see every Manager's orders.
+    labtrace_url: str = "https://thyrocare.secondmedic.workers.dev"
+    labtrace_login_id: str = ""
+    labtrace_password: str = ""
     storage_dir: str = "./storage"
     file_encryption_key: str = ""  # Fernet key; generated per `python -m app.storage`
     llm_provider: str = "template"  # template (no AI, no key) | anthropic | gemini
@@ -20,6 +24,8 @@ class Env(BaseSettings):
     anthropic_api_key: str = ""
     google_api_key: str = ""
     ai_patient_data: str = "deidentified"  # none | deidentified
+    # Let the AI model read report PDFs (identifying lines are removed first). Off = built-in rule-based reader.
+    ai_pdf_extraction: bool = False
     # Shared secret the Cloudflare Worker adds to every request. When set, the backend refuses anything without it,
     # so nobody can bypass the Worker (and the client address it reports can be trusted). Empty = local development.
     edge_secret: str = ""
@@ -41,6 +47,8 @@ env = Env()
 SETTING_DEFAULTS = {
     "caller_can_view_results": False,
     "pull_time_ist": "07:00",
+    "pull_every_minutes": 60,  # 0 = once a day at pull_time_ist; 60 = every hour from that time until midnight
+    "pull_lookback_days": 7,  # scheduled pulls look this many days back (reports arrive days after collection)
     "default_interval_days": 90,
     "max_call_attempts": 3,
     "attempt_window_days": 7,

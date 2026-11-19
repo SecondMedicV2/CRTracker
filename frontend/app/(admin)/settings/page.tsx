@@ -43,12 +43,12 @@ const SETTINGS_MAP: Record<string, SettingMeta> = {
   },
   pull_every_minutes: {
     label: "Repeat Lab Sync Every (minutes)",
-    description: "0 = sync once a day. Setting e.g. 20 or 60 minutes automatically pulls newly ready reports throughout the day.",
+    description: "0 = sync once a day at the time above. Setting e.g. 20 or 60 minutes automatically pulls newly ready reports throughout the day.",
     category: "Lab & Data Intake"
   },
   pull_lookback_days: {
-    label: "Lab Sync Look-back Window (days)",
-    description: "Number of days back from sample collection date to pull ready reports (default: 7 days).",
+    label: "Lab Sync Look-back (days)",
+    description: "Each automatic sync picks up ready reports for samples collected this many days back (default: 7 days).",
     category: "Lab & Data Intake"
   },
   fetch_max_attempts: {

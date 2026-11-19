@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -105,6 +105,9 @@ class Order(Base, Stamped):
     lab: Mapped[str] = mapped_column(String(30), default="")
     report_path: Mapped[str] = mapped_column(String(300), default="")  # encrypted file under STORAGE_DIR
     report_kind: Mapped[str] = mapped_column(String(10), default="")  # pdf | json
+    lab_ref: Mapped[str] = mapped_column(String(64), default="")  # the lab's own order number (LabTrace WO number)
+    # Encrypted JSON {"name","age","gender","mobile"} from the lab's booking; fills what the report itself lacks.
+    patient_hint_enc: Mapped[str] = mapped_column(Text, default="")
 
 
 class Report(Base, Stamped):

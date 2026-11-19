@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -5,10 +6,10 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import intake, status
+from .. import intake, status, storage
 from ..db import get_db
 from ..labs.base import LabError
-from ..models import ImportBatch, Order, User
+from ..models import ImportBatch, Order, Report, User
 from ..security import audit, require
 
 router = APIRouter(tags=["imports"])
@@ -83,9 +84,47 @@ def import_pull(body: Pull, request: Request, db: Session = Depends(get_db), me:
     return intake.batch_out(b)
 
 
+FAILED = {status.FAILED_FETCH, status.FAILED_EXTRACT}
+WAITING = {status.NEEDS_REVIEW, status.PENDING_IDENTITY}
+
+
+def _who(o: Order, r: Report | None) -> dict:
+    """Name and mobile for the admin's import list: the extracted report if there is one, else the lab booking."""
+    hint = {}
+    if o.patient_hint_enc:
+        try:
+            hint = json.loads(storage.decrypt_str(o.patient_hint_enc))
+        except Exception:
+            hint = {}
+    mobile = storage.decrypt_str(r.mobile_enc) if r and r.mobile_enc else hint.get("mobile") or ""
+    return {"order_id": o.order_id_external, "lab_ref": o.lab_ref, "patient_name": (r.patient_name if r else "") or hint.get("name") or "",
+            "mobile": mobile, "report_id": r.id if r else None, "status": o.status}
+
+
+def batch_status(statuses: list[str]) -> str:
+    if not statuses:
+        return "No orders"
+    if any(s in FAILED for s in statuses):
+        return "Needs attention"
+    if any(s in WAITING for s in statuses):
+        return "Waiting for review"
+    return "Ready for calls" if all(s == status.READY for s in statuses) else "Processing"
+
+
 @router.get("/imports")
 def list_batches(db: Session = Depends(get_db), _: User = Depends(admin)):
-    return [intake.batch_out(b) for b in db.scalars(select(ImportBatch).order_by(ImportBatch.id.desc()).limit(50))]
+    batches = list(db.scalars(select(ImportBatch).order_by(ImportBatch.id.desc()).limit(50)))
+    rows = db.execute(select(Order, Report).outerjoin(Report, Report.order_id == Order.id)
+                      .where(Order.batch_id.in_([b.id for b in batches])).order_by(Order.id)).all() if batches else []
+    by_batch: dict[int, list] = {}
+    for o, r in rows:
+        by_batch.setdefault(o.batch_id, []).append((o, r))
+    out = []
+    for b in batches:
+        items = by_batch.get(b.id, [])
+        out.append({**intake.batch_out(b), "orders_count": len(items), "status": batch_status([o.status for o, _ in items]),
+                    "patients": [_who(o, r) for o, r in items[:3]]})
+    return out
 
 
 @router.get("/imports/{bid}")
@@ -113,8 +152,8 @@ def delete_batch(bid: int, request: Request, db: Session = Depends(get_db), me: 
 
 
 def order_out(o: Order) -> dict:
-    return {"id": o.id, "order_id": o.order_id_external, "batch_id": o.batch_id, "status": o.status, "error": o.error,
-            "attempts": o.attempts, "updated_at": o.updated_at}
+    return {"id": o.id, "order_id": o.order_id_external, "lab_ref": o.lab_ref, "batch_id": o.batch_id, "status": o.status,
+            "error": o.error, "attempts": o.attempts, "updated_at": o.updated_at}
 
 
 @router.get("/orders")

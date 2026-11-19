@@ -822,7 +822,8 @@ async function pullFromLabTrace(env, store, range, actorId) {
     store.reports.unshift(report);
     store.followups.unshift({
       id: nextId(store.followups), order_id: order.id, report_id: report.id, patient_id: patient.id, patient_name: patient.name,
-      mobile, priority: "ROUTINE", stage: "QUEUED", retest_tier: null, assigned_doctor_id: null, created_at: now
+      mobile, priority: "ROUTINE", stage: "QUEUED", retest_tier: "MEDIUM", retest_score: 50, assigned_doctor_id: null,
+      due_on: now.slice(0, 10), report_age_days: 0, buckets: ["DIABETES"], deficits_summary: "", created_at: now
     });
     batchPatients.push({ order_id: orderNo, patient_id: patient.id, patient_name: patient.name, mobile, report_id: report.id, classification: null, abnormal_count: null });
   }
@@ -1436,20 +1437,39 @@ async function handleApiRequest(request, url, env) {
   }
 
   // --- FOLLOWUPS ---
-  if (path === "/followups" && method === "GET") return reply(200, store.followups);
+  if (path === "/followups" && method === "GET") {
+    const list = store.followups.map((f) => ({
+      id: f.id,
+      patient_id: f.patient_id || 1,
+      patient_name: f.patient_name || "Patient",
+      mobile: f.mobile || "",
+      due_on: f.due_on || f.created_at || new Date().toISOString().slice(0, 10),
+      stage: f.stage || "QUEUED",
+      priority: f.priority || "ROUTINE",
+      attempts: f.attempts || 0,
+      report_age_days: f.report_age_days || 0,
+      buckets: f.buckets || [],
+      retest_score: f.retest_score || 50,
+      retest_tier: f.retest_tier || "MEDIUM",
+      assigned_doctor_id: f.assigned_doctor_id || null,
+      deficits_summary: f.deficits_summary || ""
+    }));
+    return reply(200, list);
+  }
   if (path === "/followups/summary" && method === "GET") {
     const queue = store.followups.filter((f) => f.stage !== "DOCTOR_DONE").length;
     const done = store.followups.filter((f) => f.stage === "DOCTOR_DONE").length;
+    const escalations = store.followups.filter((f) => f.priority === "ESCALATION").length;
     return reply(200, {
       queue,
       due_tomorrow: 0,
-      due_this_week: 0,
-      next_30_days: 0,
+      due_this_week: queue,
+      next_30_days: queue,
       overdue: 0,
-      escalations: 0,
+      escalations,
       low_potential: 0,
       done,
-      _buckets: {}
+      _buckets: { DIABETES: store.followups.length }
     });
   }
   if ((path === "/doctor/queue" || path === "/doctor-queue") && method === "GET") {
@@ -1622,8 +1642,43 @@ async function handleApiRequest(request, url, env) {
     }
     const fuExists = store.followups.some((f) => f.id === fid);
     if (!sub && method === "GET") {
-      if (!fuExists) return reply(404, { detail: "Follow-up not found." });
-      return reply(200, {});
+      const fu = store.followups.find((f) => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      return reply(200, {
+        id: fu.id,
+        patient_id: fu.patient_id || 1,
+        patient_name: fu.patient_name || "Patient",
+        mobile: fu.mobile || "",
+        due_on: fu.due_on || fu.created_at || new Date().toISOString().slice(0, 10),
+        stage: fu.stage || "QUEUED",
+        priority: fu.priority || "ROUTINE",
+        attempts: fu.attempts || 0,
+        report_age_days: fu.report_age_days || 0,
+        buckets: fu.buckets || [],
+        retest_score: fu.retest_score || 50,
+        retest_tier: fu.retest_tier || "MEDIUM",
+        assigned_doctor_id: fu.assigned_doctor_id || null,
+        report_id: fu.report_id || 1,
+        score_breakdown: fu.score_breakdown || [
+          { factor: "Severity of worst abnormal value", detail: "moderate", points: 20 },
+          { factor: "Time since test vs follow-up interval", detail: "30 of 90 days", points: 10 },
+          { factor: "Trend vs previous report", detail: "stable_abnormal", points: 10 },
+          { factor: "Number of abnormal buckets", detail: "1", points: 15 },
+          { factor: "Has ordered retests before", detail: "no", points: 0 }
+        ],
+        suppressed_reason: fu.suppressed_reason || "",
+        buckets_detail: fu.buckets_detail || [{ code: "DIABETES", severity: "moderate", reason: "HbA1c elevated" }],
+        parked: fu.parked || false
+      });
+    }
+    if (!sub && method === "PATCH") {
+      const fu = store.followups.find((f) => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      const body = await request.json().catch(() => ({}));
+      if (body.priority !== undefined) fu.priority = body.priority;
+      if (body.assigned_doctor_id !== undefined) fu.assigned_doctor_id = body.assigned_doctor_id;
+      await saveStore(env, store);
+      return reply(200, fu);
     }
     if (sub === "/call-card" && method === "GET") {
       if (!fuExists) return reply(404, { detail: "Follow-up not found." });

@@ -5,8 +5,9 @@ from sqlalchemy.orm import Session
 
 from .. import pipeline, status, storage
 from ..db import get_db
-from ..models import Order, Report, ReportParameter, User
+from ..models import Order, Patient, Report, ReportParameter, User
 from ..security import audit, require
+from ..settings_store import get_setting
 
 router = APIRouter(tags=["reports"])
 clinical = require("ADMIN", "DOCTOR")  # callers never see results (Part 3.2, AC12)
@@ -18,8 +19,9 @@ def param_out(p: ReportParameter) -> dict:
 
 
 def report_out(r: Report, o: Order) -> dict:
+    mobile = storage.decrypt_str(r.mobile_enc) if r.mobile_enc else ""
     return {"id": r.id, "order_id": o.order_id_external, "order_pk": o.id, "status": o.status, "patient_name": r.patient_name,
-            "age": r.age, "gender": r.gender, "collected_on": r.collected_on, "reported_on": r.reported_on, "lab": r.lab_name,
+            "mobile": mobile, "age": r.age, "gender": r.gender, "collected_on": r.collected_on, "reported_on": r.reported_on, "lab": r.lab_name,
             "confidence": r.extraction_confidence, "needs_review": r.needs_review, "review_reasons": r.review_reasons,
             "classification": r.classification}
 
@@ -138,3 +140,28 @@ def approve(rid: int, request: Request, db: Session = Depends(get_db), me: User 
     pipeline.approve_review(db, o, r)
     audit(db, request, me.id, "approve_review", "report", rid)
     return report_out(r, o)
+
+
+@router.post("/reports/{rid}/call", status_code=202)
+def call_report_patient(rid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(clinical)):
+    r, o = _get(db, rid)
+    mobile = storage.decrypt_str(r.mobile_enc) if r.mobile_enc else ""
+    if not mobile:
+        p = db.scalar(select(Patient).where(Patient.id == o.patient_id)) if hasattr(o, "patient_id") else None
+        if p and p.mobile_enc:
+            mobile = storage.decrypt_str(p.mobile_enc)
+    if not mobile:
+        raise HTTPException(409, "This report has no recorded customer mobile number")
+
+    company_id = str(get_setting(db, "myoperator_company_id"))
+    api_key = str(get_setting(db, "myoperator_api_key"))
+    caller_id = str(get_setting(db, "myoperator_caller_id"))
+
+    audit(db, request, me.id, "outbound_call", "report", rid)
+    from ..telephony import MyOperatorDialer
+    result = MyOperatorDialer(api_key=api_key, company_id=company_id, caller_id=caller_id).call_customer(
+        customer_number=mobile, caller_agent_number=getattr(me, "mobile", "") or caller_id
+    )
+    if result["status"] == "failed":
+        raise HTTPException(502, "MyOperator dialer could not place the call")
+    return {"status": result["status"], "call_id": result["call_id"], "message": f"Outgoing call placed to {r.patient_name} ({mobile}) via MyOperator."}

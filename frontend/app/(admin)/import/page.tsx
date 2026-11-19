@@ -149,27 +149,18 @@ export default function Import() {
 
       {/* SECTION 3: Pull from Lab */}
       <section className="space-y-3 rounded-2xl bg-white p-5 shadow-sm border border-slate-200">
-<<<<<<< HEAD
         <h2 className="text-base font-bold text-slate-900">2. Pull ready reports from LabTrace</h2>
-        {status && !status.labtrace.connected && (
+        {status && !status.labtrace?.connected && (
           <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-950">
             LabTrace is not connected yet. An administrator must set the LABTRACE_LOGIN_ID and LABTRACE_PASSWORD Worker secrets.
           </p>
         )}
-        {status?.labtrace.last_pull && (
+        {status?.labtrace?.last_pull && (
           <p className="text-xs text-slate-500">
             Last pull {new Date(status.labtrace.last_pull.at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}: {status.labtrace.last_pull.message}
           </p>
         )}
         <div className="flex flex-wrap items-center gap-3 text-sm">
-=======
-        <h2 className="text-base font-bold text-slate-900">3. Pull ready reports from LabTrace</h2>
-        <p className="text-xs text-slate-600">Picks up every work order with a ready report whose sample was collected in these dates. This also runs automatically on the schedule in Settings.</p>
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <input type="date" aria-label="From date" className="rounded-lg border border-slate-300 p-1.5 text-sm" value={range.start} onChange={(e) => setRange({ ...range, start: e.target.value })} />
-          <span className="text-slate-500">to</span>
-          <input type="date" aria-label="To date" className="rounded-lg border border-slate-300 p-1.5 text-sm" value={range.end} onChange={(e) => setRange({ ...range, end: e.target.value })} />
->>>>>>> claude/crtracker-labtrace-integration-b53a67
           <button
             className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 transition disabled:opacity-50"
             disabled={pending || (status && !status.labtrace?.connected)}

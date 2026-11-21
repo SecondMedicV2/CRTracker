@@ -23,8 +23,8 @@ function FollowupViewInner({ id }: { id: string }) {
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{f.patient_name}</h1>
       <div className="text-sm">
-        Due {new Date(f.due_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })} · report {f.report_age_days} days old ·
-        stage {f.stage} · <Link className="underline" href={`/reports/view?id=${f.report_id}`}>see report</Link>
+        Due {f.due_on && !isNaN(Date.parse(f.due_on)) ? new Date(f.due_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "-"} · report {f.report_age_days} days old ·
+        stage {f.stage}{f.report_id && <> · <Link className="underline" href={`/reports/view?id=${f.report_id}`}>see report</Link></>}
       </div>
       {f.parked && <div className="rounded border border-slate-300 bg-slate-100 p-2 text-sm">Parked: low retest potential. Not in the callers' queue.</div>}
       {f.suppressed_reason && <div className="rounded border border-amber-400 bg-amber-50 p-2 text-sm">Not needed: {f.suppressed_reason}</div>}
@@ -37,23 +37,23 @@ function FollowupViewInner({ id }: { id: string }) {
         </label>
         <label>Doctor{" "}
           <select className="rounded border p-1" value={f.assigned_doctor_id ?? ""} onChange={(e) => e.target.value && patch({ assigned_doctor_id: Number(e.target.value) })}>
-            <option value="">Not assigned</option>{doctors.data?.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            <option value="">Not assigned</option>{(doctors.data ?? []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
         </label>
       </div>
       {me.data && <CallCard fid={id} role={me.data.role} />}
-      <Trends patientId={f.patient_id} />
+      {f.patient_id && <Trends patientId={f.patient_id} />}
       <DoctorActions fid={id} />
       <section>
         <h2 className="mb-1 font-medium">Why this patient is in these buckets</h2>
-        <ul className="list-disc pl-5 text-sm">{f.buckets_detail.map((b: any) => <li key={b.code}><b>{b.code}</b> ({b.severity || "n/a"}): {b.reason}</li>)}</ul>
+        <ul className="list-disc pl-5 text-sm">{(f.buckets_detail ?? []).map((b: any) => <li key={b.code}><b>{b.code}</b> ({b.severity || "n/a"}): {b.reason}</li>)}</ul>
       </section>
       <section>
-        <h2 className="mb-1 font-medium">Why this score: {f.retest_score} ({f.retest_tier})</h2>
+        <h2 className="mb-1 font-medium">Why this score: {f.retest_score ?? "N/A"} ({f.retest_tier ?? "N/A"})</h2>
         <TableFrame label="Retest score breakdown">
           <table className="w-full bg-white text-left text-sm shadow">
             <thead><tr><th className="p-2">Factor</th><th>Detail</th><th>Points</th></tr></thead>
-            <tbody>{f.score_breakdown.map((s: any) => <tr key={s.factor} className="border-t"><td className="p-2">{s.factor}</td><td>{s.detail}</td><td>{s.points}</td></tr>)}</tbody>
+            <tbody>{(f.score_breakdown ?? []).map((s: any) => <tr key={s.factor} className="border-t"><td className="p-2">{s.factor}</td><td>{s.detail}</td><td>{s.points}</td></tr>)}</tbody>
           </table>
         </TableFrame>
       </section>

@@ -822,8 +822,8 @@ async function pullFromLabTrace(env, store, range, actorId) {
     store.reports.unshift(report);
     store.followups.unshift({
       id: nextId(store.followups), order_id: order.id, report_id: report.id, patient_id: patient.id, patient_name: patient.name,
-      mobile, priority: "ROUTINE", stage: "QUEUED", retest_tier: "MEDIUM", retest_score: 50, assigned_doctor_id: null,
-      due_on: now.slice(0, 10), report_age_days: 0, buckets: ["DIABETES"], deficits_summary: "", created_at: now
+      mobile, priority: "ROUTINE", stage: "QUEUED", retest_tier: null, retest_score: null, assigned_doctor_id: null,
+      due_on: now.slice(0, 10), report_age_days: 0, buckets: [], deficits_summary: "", created_at: now
     });
     batchPatients.push({ order_id: orderNo, patient_id: patient.id, patient_name: patient.name, mobile, report_id: report.id, classification: null, abnormal_count: null });
   }
@@ -1460,6 +1460,12 @@ async function handleApiRequest(request, url, env) {
     const queue = store.followups.filter((f) => f.stage !== "DOCTOR_DONE").length;
     const done = store.followups.filter((f) => f.stage === "DOCTOR_DONE").length;
     const escalations = store.followups.filter((f) => f.priority === "ESCALATION").length;
+    const _buckets = {};
+    for (const f of store.followups) {
+      for (const b of (f.buckets || [])) {
+        _buckets[b] = (_buckets[b] || 0) + 1;
+      }
+    }
     return reply(200, {
       queue,
       due_tomorrow: 0,
@@ -1469,7 +1475,7 @@ async function handleApiRequest(request, url, env) {
       escalations,
       low_potential: 0,
       done,
-      _buckets: { DIABETES: store.followups.length }
+      _buckets
     });
   }
   if ((path === "/doctor/queue" || path === "/doctor-queue") && method === "GET") {
@@ -1646,7 +1652,7 @@ async function handleApiRequest(request, url, env) {
       if (!fu) return reply(404, { detail: "Follow-up not found." });
       return reply(200, {
         id: fu.id,
-        patient_id: fu.patient_id || 1,
+        patient_id: fu.patient_id ?? null,
         patient_name: fu.patient_name || "Patient",
         mobile: fu.mobile || "",
         due_on: fu.due_on || fu.created_at || new Date().toISOString().slice(0, 10),
@@ -1655,19 +1661,13 @@ async function handleApiRequest(request, url, env) {
         attempts: fu.attempts || 0,
         report_age_days: fu.report_age_days || 0,
         buckets: fu.buckets || [],
-        retest_score: fu.retest_score || 50,
-        retest_tier: fu.retest_tier || "MEDIUM",
+        retest_score: fu.retest_score ?? null,
+        retest_tier: fu.retest_tier ?? null,
         assigned_doctor_id: fu.assigned_doctor_id || null,
-        report_id: fu.report_id || 1,
-        score_breakdown: fu.score_breakdown || [
-          { factor: "Severity of worst abnormal value", detail: "moderate", points: 20 },
-          { factor: "Time since test vs follow-up interval", detail: "30 of 90 days", points: 10 },
-          { factor: "Trend vs previous report", detail: "stable_abnormal", points: 10 },
-          { factor: "Number of abnormal buckets", detail: "1", points: 15 },
-          { factor: "Has ordered retests before", detail: "no", points: 0 }
-        ],
+        report_id: fu.report_id ?? null,
+        score_breakdown: fu.score_breakdown || [],
         suppressed_reason: fu.suppressed_reason || "",
-        buckets_detail: fu.buckets_detail || [{ code: "DIABETES", severity: "moderate", reason: "HbA1c elevated" }],
+        buckets_detail: fu.buckets_detail || [],
         parked: fu.parked || false
       });
     }
@@ -1682,11 +1682,19 @@ async function handleApiRequest(request, url, env) {
     }
     if (sub === "/call-card" && method === "GET") {
       if (!fuExists) return reply(404, { detail: "Follow-up not found." });
-      return reply(200, {});
+      const card = store.callcards?.[fid] || store.call_cards?.[fid];
+      if (!card) return reply(404, { detail: "No call card yet" });
+      return reply(200, card);
+    }
+    if (sub === "/call-card/generate" && method === "POST") {
+      if (!fuExists) return reply(404, { detail: "Follow-up not found." });
+      return reply(501, { detail: "Call card generation needs the Python backend (BACKEND_URL)." });
     }
     if (sub === "/caller-card" && method === "GET") {
       if (!fuExists) return reply(404, { detail: "Follow-up not found." });
-      return reply(200, {});
+      const card = store.callcards?.[fid] || store.call_cards?.[fid];
+      if (!card) return reply(404, { detail: "No call card yet" });
+      return reply(200, card);
     }
     if (sub === "/comments") {
       if (method === "GET") return reply(200, store.comments[fid] || []);
@@ -1861,12 +1869,7 @@ async function handleApiRequest(request, url, env) {
     return reply(200, store.rules[key]);
   }
 
-  if (method === "GET") {
-    if (path.endsWith("s")) return reply(200, []);
-    return reply(200, {});
-  }
-
-  return reply(200, { ok: true, status: "saved" });
+  return reply(404, { detail: "Not available in this deployment." });
 }
 
 export default {

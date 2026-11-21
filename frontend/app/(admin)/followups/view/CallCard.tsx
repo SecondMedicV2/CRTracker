@@ -15,16 +15,15 @@ export default function CallCard({ fid, role }: { fid: string; role: string }) {
   const run = (p: Promise<any>) => p.then(() => { setMsg(""); setEditing(null); reload(); }).catch((e) => setMsg(e.message));
   const generate = () => run(api(`/followups/${fid}/call-card/generate`, { method: "POST" }));
 
-  if (error && !c) return (
-    <section className="space-y-2"><h2 className="font-medium">Call Card</h2>
+  if (error || !c || !c.content) return (
+    <section className="space-y-2 rounded bg-white p-4 text-sm shadow"><h2 className="font-medium text-lg">Call Card</h2>
       <p className="text-sm text-slate-600">No call card yet.</p>
       <button className="rounded bg-slate-900 px-3 py-1 text-sm text-white" onClick={generate}>Generate call card</button>
       {msg && <p role="alert" className="text-sm text-red-600">{msg}</p>}
     </section>
   );
-  if (!c) return null;
   const b = c.content;
-  const s = b.doctor_script;
+  const s = b.doctor_script || {};
 
   return (
     <section className="space-y-4 rounded bg-white p-4 text-sm shadow print:shadow-none">
@@ -41,33 +40,39 @@ export default function CallCard({ fid, role }: { fid: string; role: string }) {
       <div className={c.approved ? "text-green-700" : "text-amber-700"}>{c.label} · {c.language} · {c.model}</div>
       {c.notice && <div role="alert" className="rounded border border-amber-400 bg-amber-50 p-2">{c.notice}</div>}
       {c.validation_status !== "VALID" && (
-        <div role="alert" className="rounded border border-red-400 bg-red-50 p-2">Needs review: {c.validation_errors.join("; ")}</div>
+        <div role="alert" className="rounded border border-red-400 bg-red-50 p-2">Needs review: {(c.validation_errors ?? []).join("; ")}</div>
       )}
       {msg && <p role="alert" className="text-red-600">{msg}</p>}
 
-      <div><b>{b.summary.headline}</b> · report {b.summary.report_age_days} days old · {b.summary.lab}</div>
+      {b.summary && (
+        <div><b>{b.summary.headline}</b> · report {b.summary.report_age_days} days old · {b.summary.lab}</div>
+      )}
 
-      <div>
-        <h3 className="font-medium">Retest scope · {b.retest.tier} ({b.retest.score}) · confidence {b.retest.confidence}</h3>
-        <TableFrame label="Call card results">
-          <table className="mt-1 w-full text-left">
-            <thead><tr><th className="p-1">Test</th><th>Why</th></tr></thead>
-            <tbody>{b.retest.recommended_tests.map((t: any) => <tr key={t.test_code} className="border-t"><td className="p-1">{t.name}</td><td>{t.rationale}</td></tr>)}</tbody>
-          </table>
-        </TableFrame>
-        <div className="mt-1 text-slate-600">Ideal window: {b.retest.ideal_window.from} to {b.retest.ideal_window.to}</div>
-      </div>
+      {b.retest && (
+        <div>
+          <h3 className="font-medium">Retest scope · {b.retest.tier} ({b.retest.score}) · confidence {b.retest.confidence}</h3>
+          <TableFrame label="Call card results">
+            <table className="mt-1 w-full text-left">
+              <thead><tr><th className="p-1">Test</th><th>Why</th></tr></thead>
+              <tbody>{(b.retest.recommended_tests ?? []).map((t: any) => <tr key={t.test_code} className="border-t"><td className="p-1">{t.name}</td><td>{t.rationale}</td></tr>)}</tbody>
+            </table>
+          </TableFrame>
+          {b.retest.ideal_window && (
+            <div className="mt-1 text-slate-600">Ideal window: {b.retest.ideal_window.from} to {b.retest.ideal_window.to}</div>
+          )}
+        </div>
+      )}
 
       <details open>
         <summary className="cursor-pointer font-medium">Doctor script</summary>
         <div className="mt-2 space-y-2">
           <p>{s.opening}</p>
-          <List title="Findings" items={s.scientific_talking_points} />
-          <List title="Discussion points" items={s.discussion_points} />
-          <List title="Questions to ask" items={s.questions_to_ask} />
-          <List title="Counselling" items={s.counselling_points} />
-          <List title="Tests to suggest" items={s.tests_to_suggest} />
-          <List title="Red flags" items={s.red_flags} />
+          <List title="Findings" items={s.scientific_talking_points ?? []} />
+          <List title="Discussion points" items={s.discussion_points ?? []} />
+          <List title="Questions to ask" items={s.questions_to_ask ?? []} />
+          <List title="Counselling" items={s.counselling_points ?? []} />
+          <List title="Tests to suggest" items={s.tests_to_suggest ?? []} />
+          <List title="Red flags" items={s.red_flags ?? []} />
           <p>{s.closing} {s.next_followup_suggestion}</p>
         </div>
       </details>
@@ -76,7 +81,7 @@ export default function CallCard({ fid, role }: { fid: string; role: string }) {
         <summary className="cursor-pointer font-medium">Caller script (what the caller will read)</summary>
         <div className="mt-2 space-y-1">
           {["opening", "identity_check", "free_followup_pitch", "consent_request", "slot_offer", "urgent_symptom_protocol", "closing"].map((k) => (
-            <p key={k}><span className="text-slate-500">{k.replaceAll("_", " ")}:</span> {b.caller_script[k]}</p>
+            <p key={k}><span className="text-slate-500">{k.replaceAll("_", " ")}:</span> {b.caller_script?.[k] ?? ""}</p>
           ))}
         </div>
       </details>

@@ -102,7 +102,7 @@ export default function ManualDialer() {
       {status && !myoperatorReady && (
         <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-950 space-y-1">
           <p className="font-bold">⚠️ MyOperator calling is not fully configured.</p>
-          <p>An administrator must set the MyOperator Worker secrets (API Key, Secret Token, Company ID).</p>
+          <p>An administrator must set all four required MyOperator Worker secrets: API Key, Secret Token, Company ID, and Public IVR ID (MYOPERATOR_PUBLIC_IVR_ID){status.myoperator?.missing?.length ? ` (Missing: ${status.myoperator.missing.join(", ")})` : ""}.</p>
         </div>
       )}
 

@@ -15,7 +15,7 @@ export default function Trends({ patientId }: { patientId: number | string }) {
 
   // start with the (up to four) tests that are out of range
   useEffect(() => {
-    if (params.data && codes.length === 0) setCodes(params.data.filter((p) => p.abnormal > 0).slice(0, 4).map((p) => p.code));
+    if (params.data && codes.length === 0) setCodes((params.data ?? []).filter((p) => p.abnormal > 0).slice(0, 4).map((p) => p.code));
   }, [params.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -40,7 +40,7 @@ export default function Trends({ patientId }: { patientId: number | string }) {
         </div>
       </div>
       <div className="flex flex-wrap gap-3 print:hidden">
-        {params.data.map((p) => (
+        {(params.data ?? []).map((p) => (
           <label key={p.code} className={`flex items-center gap-1 ${p.abnormal ? "font-medium" : ""}`}>
             <input type="checkbox" checked={codes.includes(p.code)} disabled={!codes.includes(p.code) && codes.length >= 4} onChange={() => toggle(p.code)} />
             {p.name} ({p.count}){p.abnormal > 0 && <span className="text-red-700"> ●</span>}
@@ -51,7 +51,7 @@ export default function Trends({ patientId }: { patientId: number | string }) {
       {error && <p role="alert" className="text-red-600">{error}</p>}
       {data?.history_starts && <p className="text-slate-600">History starts from {new Date(data.history_starts).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}: earlier reports are not in the system.</p>}
       {codes.length === 0 && <p className="text-slate-600">Pick a test to see its history.</p>}
-      <div className="grid gap-3 md:grid-cols-2">{data?.series.map((s: any) => <TrendChart key={s.code} s={s} />)}</div>
+      <div className="grid gap-3 md:grid-cols-2">{(data?.series ?? []).map((s: any) => <TrendChart key={s.code} s={s} />)}</div>
       <p className="text-xs text-slate-500">Red dots are outside the normal range; the green band is the normal range. Click a dot to open that report.</p>
     </section>
   );

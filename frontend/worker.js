@@ -1415,6 +1415,7 @@ async function handleApiRequest(request, url, env) {
       if (String(b.password).length < 10) return reply(400, { detail: "The password needs at least 10 characters." });
       target.password_hash = await hashPassword(String(b.password));
     }
+    if (["active", "role", "myoperator_user_id", "password"].some((k) => b[k] !== undefined)) recordAudit(store, me, "update", "user", target.id);
     await saveStore(env, store);
     return reply(200, publicUser(target));
   }

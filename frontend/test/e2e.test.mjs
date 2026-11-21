@@ -1429,4 +1429,22 @@ describe("Tier 4: Real-World Application Scenarios (S1 to S5)", () => {
     assert.strictEqual(callerPayload.caller_safe, true);
     assert.strictEqual(callerPayload.defects, undefined);
   });
+
+  it("S6: Call card generation, role denials, and caller data privacy compliance", async () => {
+    const env = createMockEnv();
+    const { doctorCookie, callerCookie } = await getAuthCookies(worker, env);
+
+    const genDenied = await fetchRoute(worker, env, "POST", "/api/v1/followups/1/call-card/generate", { cookie: callerCookie });
+    assert.strictEqual(genDenied.status, 403);
+
+    const genRes = await fetchRoute(worker, env, "POST", "/api/v1/followups/1/call-card/generate", { cookie: doctorCookie });
+    assert.strictEqual(genRes.status, 201);
+    const cardData = await genRes.json();
+    assert.ok(cardData.content);
+
+    const callerCardRes = await fetchRoute(worker, env, "GET", "/api/v1/followups/1/caller-card", { cookie: callerCookie });
+    assert.strictEqual(callerCardRes.status, 200);
+    const ccBody = await callerCardRes.json();
+    assert.ok(ccBody.script);
+  });
 });

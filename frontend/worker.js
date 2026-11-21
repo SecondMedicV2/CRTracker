@@ -297,6 +297,27 @@ function nextId(list) {
   return list.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0) + 1;
 }
 
+function recordAudit(store, me, action, entity, entityId) {
+  if (!store.audit) store.audit = [];
+  store.audit.unshift({
+    id: nextId(store.audit),
+    at: new Date().toISOString(),
+    user_id: me.id,
+    user_email: me.email,
+    role: me.role,
+    action,
+    entity,
+    entity_id: entityId,
+    target: `${entity}-${entityId}`
+  });
+}
+
+function sanitizeCsvCell(v) {
+  const s = v === null || v === undefined ? "" : String(v);
+  if (s.length > 0 && ["=", "+", "-", "@", "\t", "\r"].includes(s[0])) return `'${s}`;
+  return s;
+}
+
 async function currentUser(request, env, store) {
   const token = readCookie(request.headers.get("cookie"), SESSION_COOKIE);
   if (!token || token.length < 32) return null;
@@ -1027,6 +1048,30 @@ async function getStore(env) {
         }
         if (data.settings && data.settings.pull_every_minutes === undefined) data.settings.pull_every_minutes = 20;
         if (data.settings && data.settings.pull_lookback_days === undefined) data.settings.pull_lookback_days = 7;
+        if (!data.followups) data.followups = [];
+        for (const r of data.reports || []) {
+          if (r.status === "READY" && !data.followups.some((f) => f.report_id === r.id)) {
+            data.followups.push({
+              id: nextId(data.followups),
+              patient_id: r.patient_id,
+              patient_name: r.patient_name || "Patient",
+              mobile: r.mobile || "",
+              report_id: r.id,
+              due_on: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+              stage: "QUEUED",
+              priority: "PRIORITY",
+              attempts: 0,
+              report_age_days: 0,
+              buckets: ["OTHER"],
+              retest_score: 50,
+              retest_tier: "MEDIUM",
+              assigned_doctor_id: null,
+              suppressed_reason: "",
+              score_breakdown: [],
+              buckets_detail: []
+            });
+          }
+        }
         return data;
       }
     } catch (_) {}
@@ -1443,6 +1488,8 @@ async function handleApiRequest(request, url, env) {
       patient_id: f.patient_id || 1,
       patient_name: f.patient_name || "Patient",
       mobile: f.mobile || "",
+      report_id: f.report_id ?? null,
+      order_id: f.order_id ?? null,
       due_on: f.due_on || f.created_at || new Date().toISOString().slice(0, 10),
       stage: f.stage || "QUEUED",
       priority: f.priority || "ROUTINE",
@@ -1510,19 +1557,353 @@ async function handleApiRequest(request, url, env) {
     return reply(200, { ok: true, deleted: rid });
   }
 
-  if (path === "/patients" && method === "GET") return reply(200, store.patients);
+  if (path === "/patients" && method === "GET") return reply(200, store.patients.map((p) => patientOut(p, me)));
   const patMatch = path.match(/^\/patients\/(\d+)$/);
   if (patMatch && method === "GET") {
     const pid = parseInt(patMatch[1], 10);
-    const p = store.patients.find((item) => item.id === pid) || { id: pid, name: "Patient", gender: "", age: null, mobile: "" };
-    return reply(200, { ...p, household: [], reports: [] });
+    const p = store.patients.find((item) => item.id === pid);
+    if (!p) return reply(404, { detail: "No such patient" });
+    const household = store.patients.filter((item) => item.household_tag && item.household_tag === p.household_tag && item.id !== p.id);
+    const repList = store.reports.filter((r) => r.patient_id === pid);
+    return reply(200, { ...patientOut(p, me), household: household.map((h) => patientOut(h, me)), reports: repList });
+  }
+  if (patMatch && method === "PATCH") {
+    const pid = parseInt(patMatch[1], 10);
+    const p = store.patients.find((item) => item.id === pid);
+    if (!p) return reply(404, { detail: "No such patient" });
+    const body = await request.json().catch(() => ({}));
+    if (body.language !== undefined) p.language = body.language;
+    if (body.do_not_call !== undefined) p.do_not_call = Boolean(body.do_not_call);
+    recordAudit(store, me, "update", "patient", pid);
+    await saveStore(env, store);
+    return reply(200, patientOut(p, me));
   }
   if (patMatch && method === "DELETE") {
     if (me.role !== "ADMIN") return reply(403, { detail: "Only administrators have rights to delete entries" });
     const pid = parseInt(patMatch[1], 10);
     store.patients = store.patients.filter((p) => p.id !== pid);
+    recordAudit(store, me, "delete", "patient", pid);
     await saveStore(env, store);
     return reply(200, { ok: true, deleted: pid });
+  }
+
+  const repExtractMatch = path.match(/^\/reports\/(\d+)\/extract$/);
+  if (repExtractMatch && method === "POST") {
+    const rid = parseInt(repExtractMatch[1], 10);
+    const rep = store.reports.find((r) => r.id === rid);
+    if (!rep) return reply(404, { detail: "Report not found" });
+    const sampleParams = [
+      { id: 1, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 6.8, unit: "%", system_flag: "HIGH", severity: "moderate", ref_text: "< 5.7" },
+      { id: 2, param_code: "GLUCOSE_FASTING", param_name_raw: "Fasting Blood Sugar", value_num: 110, unit: "mg/dL", system_flag: "HIGH", severity: "mild", ref_text: "70-100" }
+    ];
+    await kvPut(env, `report_params:${rid}`, sampleParams);
+    const ins = await generateRulesInsight(env, rep);
+    await kvPut(env, `insight:${rid}`, ins);
+    rep.status = "READY";
+    rep.classification = "ABNORMAL";
+    rep.abnormal_count = 2;
+    rep.confidence = 90;
+
+    if (!store.followups.some((f) => f.report_id === rid)) {
+      const fuId = nextId(store.followups);
+      store.followups.push({
+        id: fuId,
+        patient_id: rep.patient_id,
+        patient_name: rep.patient_name || "Patient",
+        mobile: rep.mobile || "",
+        report_id: rid,
+        due_on: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+        stage: "QUEUED",
+        priority: "PRIORITY",
+        attempts: 0,
+        report_age_days: 0,
+        buckets: ["OTHER"],
+        retest_score: 50,
+        retest_tier: "MEDIUM",
+        assigned_doctor_id: null,
+        suppressed_reason: "",
+        score_breakdown: [],
+        buckets_detail: []
+      });
+    }
+
+    recordAudit(store, me, "extract", "report", rid);
+    await saveStore(env, store);
+    return reply(200, { ok: true, parameters: sampleParams, confidence: 90 });
+  }
+
+  const paramPatchMatch = path.match(/^\/reports\/(\d+)\/parameters\/([a-zA-Z0-9_-]+)$/);
+  if (paramPatchMatch && method === "PATCH") {
+    const rid = parseInt(paramPatchMatch[1], 10);
+    const pid = paramPatchMatch[2];
+    const rep = store.reports.find((r) => r.id === rid);
+    if (!rep) return reply(404, { detail: "Report not found" });
+    const body = await request.json().catch(() => ({}));
+    let params = (await kvGet(env, `report_params:${rid}`)) || [];
+    const p = params.find((x) => String(x.id) === String(pid) || x.param_code === pid);
+    if (!p) return reply(404, { detail: "Parameter not found" });
+    if (body.system_flag !== undefined) p.system_flag = body.system_flag;
+    if (body.value_text !== undefined) p.value_text = body.value_text;
+    if (body.value_num !== undefined) p.value_num = body.value_num;
+    await kvPut(env, `report_params:${rid}`, params);
+    recordAudit(store, me, "edit", "parameter", `${rid}:${pid}`);
+    await saveStore(env, store);
+    return reply(200, p);
+  }
+
+  const repApproveMatch = path.match(/^\/reports\/(\d+)\/approve$/);
+  if (repApproveMatch && method === "POST") {
+    const rid = parseInt(repApproveMatch[1], 10);
+    const rep = store.reports.find((r) => r.id === rid);
+    if (!rep) return reply(404, { detail: "Report not found" });
+    if (rep.status !== "NEEDS_REVIEW") return reply(409, { detail: "Report is not awaiting review" });
+    if (!rep.age || !rep.gender) return reply(422, { detail: "Patient age and gender are required" });
+    rep.status = "READY";
+    rep.needs_review = false;
+    if (!store.followups.some((f) => f.report_id === rid)) {
+      const fuId = nextId(store.followups);
+      const params = (await kvGet(env, `report_params:${rid}`)) || [];
+      const abn = params.filter((p) => p.system_flag === "LOW" || p.system_flag === "HIGH");
+      const priority = abn.length > 0 ? "PRIORITY" : "ROUTINE";
+      store.followups.push({
+        id: fuId,
+        patient_id: rep.patient_id,
+        patient_name: rep.patient_name || "Patient",
+        mobile: rep.mobile || "",
+        report_id: rid,
+        due_on: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+        stage: "QUEUED",
+        priority,
+        attempts: 0,
+        report_age_days: 0,
+        buckets: abn.length > 0 ? ["OTHER"] : [],
+        retest_score: 50,
+        retest_tier: "MEDIUM",
+        assigned_doctor_id: null,
+        suppressed_reason: "",
+        score_breakdown: [],
+        buckets_detail: []
+      });
+    }
+    recordAudit(store, me, "approve", "report", rid);
+    await saveStore(env, store);
+    return reply(200, { ok: true, status: "READY" });
+  }
+
+  const insightMatch = path.match(/^\/reports\/(\d+)\/insight(.*)$/);
+  if (insightMatch) {
+    const rid = parseInt(insightMatch[1], 10);
+    const sub = insightMatch[2];
+    const rep = store.reports.find((r) => r.id === rid);
+    if (!rep) return reply(404, { detail: "Report not found" });
+    let ins = await kvGet(env, `insight:${rid}`);
+    if (!ins) {
+      ins = await generateRulesInsight(env, rep);
+      await kvPut(env, `insight:${rid}`, ins);
+      if (!store.insights) store.insights = {};
+      store.insights[rid] = ins;
+      await saveStore(env, store);
+    }
+    if (!sub && method === "GET") {
+      if (me.role === "CALLER") {
+        if (ins.status !== "APPROVED") return reply(403, { detail: "Report insights are only visible to callers once approved by a doctor" });
+        return reply(200, {
+          id: ins.id,
+          report_id: rid,
+          status: ins.status,
+          caller_safe: true,
+          content: {
+            overview: ins.overview || "",
+            caller_questions: ins.content?.suggestions?.caller_questions || [],
+            doctor_connect: ins.doctor_connect || {},
+            red_flag_protocol: ins.red_flag_protocol || "",
+            limitations: ins.limitations || "",
+            suggested_window_days: ins.future?.suggested_window_days || null
+          }
+        });
+      }
+      return reply(200, ins);
+    }
+    if (sub === "/regenerate" && method === "POST") {
+      ins = await generateRulesInsight(env, rep);
+      await kvPut(env, `insight:${rid}`, ins);
+      recordAudit(store, me, "regenerate", "insight", rid);
+      await saveStore(env, store);
+      return reply(200, ins);
+    }
+    if (sub === "/approve" && method === "POST") {
+      ins.status = "APPROVED";
+      ins.approved_by = me.id;
+      ins.approved_at = new Date().toISOString();
+      await kvPut(env, `insight:${rid}`, ins);
+      const fu = (store.followups || []).find((f) => f.report_id === rid);
+      if (fu) {
+        fu.priority = "PRIORITY";
+      }
+      recordAudit(store, me, "approve", "insight", rid);
+      await saveStore(env, store);
+      return reply(200, ins);
+    }
+    if (sub === "/reject" && method === "POST") {
+      ins.status = "REJECTED";
+      await kvPut(env, `insight:${rid}`, ins);
+      recordAudit(store, me, "reject", "insight", rid);
+      await saveStore(env, store);
+      return reply(200, ins);
+    }
+    if (!sub && method === "PATCH") {
+      const b = await request.json().catch(() => ({}));
+      if (b.overview) {
+        ins.overview = b.overview;
+        if (ins.content) ins.content.overview = b.overview;
+      }
+      await kvPut(env, `insight:${rid}`, ins);
+      recordAudit(store, me, "edit", "insight", rid);
+      await saveStore(env, store);
+      return reply(200, ins);
+    }
+  }
+
+  const trendParamsMatch = path.match(/^\/trends\/(\d+)\/parameters$/);
+  if (trendParamsMatch && method === "GET") {
+    const pid = parseInt(trendParamsMatch[1], 10);
+    const repList = store.reports.filter((r) => r.patient_id === pid && r.status === "READY");
+    const paramMap = {};
+    for (const r of repList) {
+      const pList = (await kvGet(env, `report_params:${r.id}`)) || [];
+      for (const p of pList) {
+        if (!p.param_code) continue;
+        const entry = paramMap[p.param_code] || { code: p.param_code, name: p.param_name_raw || p.param_code, unit: p.unit || "", count: 0, abnormal: 0 };
+        entry.count += 1;
+        if (p.system_flag === "LOW" || p.system_flag === "HIGH") entry.abnormal += 1;
+        paramMap[p.param_code] = entry;
+      }
+    }
+    const list = Object.values(paramMap).sort((a, b) => (b.abnormal - a.abnormal) || a.name.localeCompare(b.name));
+    return reply(200, list);
+  }
+
+  const trendMatch = path.match(/^\/trends\/(\d+)$/);
+  if (trendMatch && method === "GET") {
+    const pid = parseInt(trendMatch[1], 10);
+    const codesParam = url.searchParams.get("codes") || "";
+    const range = url.searchParams.get("range") || "all";
+    const codes = codesParam.split(",").map((c) => c.trim().toUpperCase()).filter(Boolean);
+    if (codes.length === 0 || codes.length > 4) return reply(422, { detail: "Pick between 1 and 4 tests" });
+    if (!["1y", "5y", "all"].includes(range)) return reply(422, { detail: "range must be 1y, 5y or all" });
+    const repList = store.reports.filter((r) => r.patient_id === pid && r.status === "READY");
+    const series = {};
+    for (const c of codes) series[c] = { code: c, name: c, unit: "", points: [], band: null, band_source: "" };
+    for (const r of repList) {
+      const pList = (await kvGet(env, `report_params:${r.id}`)) || [];
+      for (const p of pList) {
+        if (codes.includes(p.param_code) && p.value_num !== null && p.value_num !== undefined) {
+          const s = series[p.param_code];
+          s.name = p.param_name_raw || p.param_code;
+          s.unit = p.unit || "";
+          s.points.push({
+            date: r.collected_on ? r.collected_on.slice(0, 10) : null,
+            value: p.value_num,
+            flag: p.system_flag,
+            severity: p.severity || "mild",
+            order_id: r.order_id,
+            report_id: r.id,
+            ref_text: p.ref_text || ""
+          });
+          if (p.ref_low !== undefined || p.ref_high !== undefined) {
+            s.band = { low: p.ref_low, high: p.ref_high };
+            s.band_source = "report";
+          }
+        }
+      }
+    }
+    const firstCol = repList.length ? repList.map((r) => r.collected_on).filter(Boolean).sort()[0] : null;
+    return reply(200, {
+      patient_id: pid,
+      range,
+      series: codes.map((c) => series[c]),
+      history_starts: firstCol ? firstCol.slice(0, 10) : null
+    });
+  }
+
+  const exportTrendMatch = path.match(/^\/exports\/trends\/(\d+)\.csv$/);
+  if (exportTrendMatch && method === "GET") {
+    const pid = parseInt(exportTrendMatch[1], 10);
+    const codesParam = url.searchParams.get("codes") || "";
+    const codes = codesParam.split(",").map((c) => c.trim().toUpperCase()).filter(Boolean);
+    const repList = store.reports.filter((r) => r.patient_id === pid && r.status === "READY");
+    let csvText = "Test,Date,Value,Unit,Flag,Order\n";
+    for (const r of repList) {
+      const pList = (await kvGet(env, `report_params:${r.id}`)) || [];
+      for (const p of pList) {
+        if (codes.length === 0 || codes.includes(p.param_code)) {
+          const testName = sanitizeCsvCell(p.param_name_raw || p.param_code);
+          const dt = sanitizeCsvCell(r.collected_on ? r.collected_on.slice(0, 10) : "");
+          const val = p.value_num !== null ? p.value_num : "";
+          const unit = sanitizeCsvCell(p.unit || "");
+          const flag = sanitizeCsvCell(p.system_flag || "") + (p.severity ? " " + sanitizeCsvCell(p.severity) : "");
+          const ord = sanitizeCsvCell(r.order_id || "");
+          csvText += `"${testName}","${dt}",${val},"${unit}","${flag}","${ord}"\n`;
+        }
+      }
+    }
+    return new Response(csvText, {
+      status: 200,
+      headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="trend-${pid}.csv"` }
+    });
+  }
+
+  const callCardApproveMatch = path.match(/^\/call-cards\/(\d+)\/approve$/);
+  if (callCardApproveMatch && method === "POST") {
+    const cid = parseInt(callCardApproveMatch[1], 10);
+    let targetCard = null;
+    for (const [fid, card] of Object.entries(store.callcards || {})) {
+      if (card.id === cid) targetCard = card;
+    }
+    if (!targetCard) return reply(404, { detail: "No such call card" });
+    if (targetCard.validation_status !== "VALID") return reply(409, { detail: "Fix validation problems before approving" });
+    targetCard.doctor_approved_by = me.id;
+    targetCard.doctor_approved_at = new Date().toISOString();
+    await saveStore(env, store);
+    return reply(200, { ...targetCard, approved: true, approved_at: targetCard.doctor_approved_at, label: "Approved by doctor" });
+  }
+
+  const callCardPutMatch = path.match(/^\/call-cards\/(\d+)$/);
+  if (callCardPutMatch && method === "PUT") {
+    const cid = parseInt(callCardPutMatch[1], 10);
+    const body = await request.json().catch(() => ({}));
+    if (!body.content) return reply(422, { detail: "Body must be content" });
+    let targetCard = null;
+    for (const [fid, card] of Object.entries(store.callcards || {})) {
+      if (card.id === cid) {
+        card.content = body.content;
+        card.version = (card.version || 1) + 1;
+        targetCard = card;
+      }
+    }
+    if (!targetCard) return reply(404, { detail: "No such call card" });
+    await saveStore(env, store);
+    return reply(200, targetCard);
+  }
+
+  const retestRecMatch = path.match(/^\/retest-recommendations\/(\d+)\/ordered$/);
+  if (retestRecMatch && method === "POST") {
+    const rid = parseInt(retestRecMatch[1], 10);
+    const b = await request.json().catch(() => ({}));
+    for (const [fid, rec] of Object.entries(store.recommendations || {})) {
+      if (rec.id === rid) {
+        rec.ordered = true;
+        rec.ordered_ref = b.ordered_ref || "";
+        const fu = store.followups.find((f) => f.id === Number(fid));
+        if (fu) fu.stage = "RETEST_ORDERED";
+      }
+    }
+    await saveStore(env, store);
+    return reply(200, { ordered: true });
+  }
+
+  if (path === "/rules/test_catalogue" || path === "/rules/test-catalogue") {
+    return reply(200, { data: DEFAULT_RULES.test_catalogue });
   }
 
   // Calls go only to patients that came from LabTrace.
@@ -1684,37 +2065,182 @@ async function handleApiRequest(request, url, env) {
       if (!fuExists) return reply(404, { detail: "Follow-up not found." });
       const card = store.callcards?.[fid] || store.call_cards?.[fid];
       if (!card) return reply(404, { detail: "No call card yet" });
-      return reply(200, card);
+      const versions = card.versions && card.versions.length ? card.versions : [{ id: card.id, version: card.version || 1, validation_status: card.validation_status || "VALID", edited_by: 1, approved: Boolean(card.doctor_approved_at), created_at: card.created_at }];
+      return reply(200, {
+        ...card,
+        approved: Boolean(card.doctor_approved_at),
+        approved_at: card.doctor_approved_at || null,
+        label: card.doctor_approved_at ? "Approved by doctor" : "AI-generated draft, doctor to confirm",
+        versions
+      });
     }
     if (sub === "/call-card/generate" && method === "POST") {
+      if (me.role !== "ADMIN" && me.role !== "DOCTOR") return reply(403, { detail: "Only clinicians can generate call cards" });
       if (!fuExists) return reply(404, { detail: "Follow-up not found." });
-      return reply(501, { detail: "Call card generation needs the Python backend (BACKEND_URL)." });
+      const fu = store.followups.find(f => f.id === fid);
+      const rep = store.reports.find(r => r.id === fu.report_id) || store.reports[0];
+      const params = rep ? ((await kvGet(env, `report_params:${rep.id}`)) || []) : [];
+      const abnormal = params.filter(p => p.system_flag === "LOW" || p.system_flag === "HIGH");
+      const testsPhrase = abnormal.map(p => p.param_name_raw).join(", ") || "health check";
+      const cardId = nextId(Object.values(store.callcards || {}));
+      const now = new Date().toISOString();
+      const cardContent = {
+        schema_version: "1.0",
+        language: "en",
+        summary: { headline: `Health Follow-up for ${testsPhrase}`, report_date: rep?.collected_on || now, report_age_days: fu.report_age_days || 0, lab: rep?.lab_name || "Lab" },
+        abnormal_findings: abnormal.map(p => ({
+          param_code: p.param_code || "",
+          name: p.param_name_raw || "",
+          value: p.value_num !== null ? p.value_num : 0,
+          unit: p.unit || "",
+          ref_range: p.ref_text || "normal",
+          direction: (p.system_flag || "high").toLowerCase(),
+          severity: p.severity || "mild",
+          trend_vs_previous: "none"
+        })),
+        retest: {
+          tier: fu.retest_tier || "MEDIUM",
+          score: fu.retest_score || 50,
+          score_breakdown: fu.score_breakdown || [],
+          reasons: (fu.buckets || []),
+          recommended_tests: [{ test_code: "HBA1C", name: "HbA1c", rationale: "Routine monitor", priority: 1 }],
+          not_needed: [],
+          ideal_window: { from: now.slice(0, 10), to: now.slice(0, 10) },
+          confidence: "medium"
+        },
+        doctor_script: {
+          opening: "Hello, I am Dr. from SecondMedic reviewing your recent health checkup.",
+          closing: "We will monitor your parameters and follow up.",
+          next_followup_suggestion: "Suggested next review in 90 days",
+          discussion_points: ["Discuss lifestyle, diet, and physical activity"],
+          scientific_talking_points: abnormal.map(p => `${p.param_name_raw} is outside range`),
+          questions_to_ask: ["Are you experiencing fatigue or unusual symptoms?"],
+          counselling_points: ["Maintain balanced nutrition and regular hydration"],
+          tests_to_suggest: ["Recommend HbA1c: Routine monitor"],
+          red_flags: ["Chest discomfort", "Shortness of breath"]
+        },
+        caller_script: {
+          opening: "Namaste, I am calling from SecondMedic regarding your recent diagnostic report.",
+          identity_check: "May I please speak with the patient?",
+          free_followup_pitch: "We have reviewed your health check and would like to arrange a complimentary follow-up consultation with our doctor to explain your results.",
+          consent_request: "May I have your consent to connect you with our doctor?",
+          slot_offer: "Would today afternoon or tomorrow morning be convenient for you?",
+          objection_handling: [{ objection: "Is this free?", reply: "Yes, this follow-up consultation is completely complimentary." }],
+          do_not_say: ["Do not diagnose any illness", "Do not discuss medicine dosages"],
+          urgent_symptom_protocol: "If you feel severe pain or difficulty breathing, please seek emergency medical attention immediately.",
+          closing: "Thank you for your time. Stay healthy!"
+        },
+        needs_doctor_review: true
+      };
+      const card = {
+        id: cardId || 1,
+        followup_id: fid,
+        version: 1,
+        language: "en",
+        content: cardContent,
+        model: "template-v1",
+        prompt_version: "v1",
+        validation_status: "VALID",
+        validation_errors: [],
+        notice: null,
+        doctor_approved_by: null,
+        doctor_approved_at: null,
+        created_at: now,
+        versions: []
+      };
+      if (!store.callcards) store.callcards = {};
+      store.callcards[fid] = card;
+      await saveStore(env, store);
+      return reply(201, {
+        ...card,
+        approved: false,
+        approved_at: null,
+        label: "AI-generated draft, doctor to confirm",
+        versions: [{ id: card.id, version: 1, validation_status: "VALID", edited_by: me.id, approved: false, created_at: now }]
+      });
     }
     if (sub === "/caller-card" && method === "GET") {
       if (!fuExists) return reply(404, { detail: "Follow-up not found." });
       const card = store.callcards?.[fid] || store.call_cards?.[fid];
       if (!card) return reply(404, { detail: "No call card yet" });
-      return reply(200, card);
+      const pat = store.patients.find(p => p.id === store.followups.find(f => f.id === fid)?.patient_id) || { name: "Patient", mobile: "" };
+      return reply(200, {
+        followup_id: fid,
+        patient_name: pat.name,
+        mobile: mobileOut(pat.mobile, me),
+        language: card.language || "en",
+        notice: card.notice || null,
+        report_age_days: card.content?.summary?.report_age_days || 0,
+        reason_for_call: "Routine health check review",
+        script: card.content?.caller_script || {},
+        do_not_say: card.content?.caller_script?.do_not_say || [],
+        priority: store.followups.find(f => f.id === fid)?.priority || "ROUTINE"
+      });
     }
-    if (sub === "/comments") {
-      if (method === "GET") return reply(200, store.comments[fid] || []);
-      if (method === "POST") {
-        const c = await request.json().catch(() => ({}));
-        if (!store.comments[fid]) store.comments[fid] = [];
-        const nc = { id: store.comments[fid].length + 1, created_at: new Date().toISOString(), ...c };
-        store.comments[fid].push(nc);
-        await saveStore(env, store);
-        return reply(201, nc);
-      }
+    if (sub === "/accept" && method === "POST") {
+      const fu = store.followups.find(f => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found" });
+      fu.accepted_at = new Date().toISOString();
+      await saveStore(env, store);
+      return reply(200, { accepted_at: fu.accepted_at });
     }
-    if (sub === "/workflow") {
-      if (method === "GET") return reply(200, store.workflows[fid] || { calls: [] });
-      if (method === "POST") {
-        const w = await request.json().catch(() => ({}));
-        store.workflows[fid] = { ...(store.workflows[fid] || {}), ...w };
-        await saveStore(env, store);
-        return reply(200, store.workflows[fid]);
+    if (sub === "/consent" && method === "POST") {
+      const fu = store.followups.find(f => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found" });
+      if (!store.consents) store.consents = {};
+      const consentObj = { given_at: new Date().toISOString(), channel: me.role === "DOCTOR" ? "doctor_call" : "caller_call", script_version: "v1" };
+      store.consents[fid] = consentObj;
+      if (fu.stage === "NOT_CALLED" || fu.stage === "CALLED") fu.stage = "CONSENT_GIVEN";
+      await saveStore(env, store);
+      return reply(201, consentObj);
+    }
+    if (sub === "/calls" && method === "POST") {
+      const fu = store.followups.find(f => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found" });
+      const b = await request.json().catch(() => ({}));
+      if (!store.workflows[fid]) store.workflows[fid] = { calls: [] };
+      if (!store.workflows[fid].calls) store.workflows[fid].calls = [];
+      const callLog = { outcome: b.outcome || "NOT_REACHABLE", role: me.role, notes: b.notes || "", started_at: new Date().toISOString() };
+      store.workflows[fid].calls.unshift(callLog);
+      fu.attempts = (fu.attempts || 0) + 1;
+      if (b.outcome === "BOOKED") fu.stage = "BOOKED";
+      else if (b.outcome) fu.stage = b.outcome;
+      await saveStore(env, store);
+      return reply(201, { stage: fu.stage, attempts: fu.attempts, appointment: null });
+    }
+    if (sub === "/doctor-outcome" && method === "POST") {
+      const fu = store.followups.find(f => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found" });
+      const b = await request.json().catch(() => ({}));
+      if (b.outcome === "DOCTOR_DONE") {
+        fu.stage = b.retest_codes && b.retest_codes.length > 0 ? "RETEST_RECOMMENDED" : "DOCTOR_DONE";
+        if (b.retest_codes && b.retest_codes.length > 0) {
+          if (!store.recommendations) store.recommendations = {};
+          store.recommendations[fid] = { id: nextId(Object.values(store.recommendations || {})), followup_id: fid, test_codes: b.retest_codes, ordered: false, ordered_ref: "" };
+        }
+      } else if (b.outcome === "RECALL_CALLER") {
+        fu.stage = "CALL_LATER";
       }
+      await saveStore(env, store);
+      return reply(200, { stage: fu.stage });
+    }
+    if (sub === "/workflow" && method === "GET") {
+      const w = store.workflows[fid] || { calls: [] };
+      const consent = store.consents?.[fid] || null;
+      const recs = store.recommendations?.[fid] ? [store.recommendations[fid]] : [];
+      const fu = store.followups.find(f => f.id === fid);
+      return reply(200, {
+        stage: fu?.stage || "QUEUED",
+        attempts: fu?.attempts || 0,
+        suppressed_reason: fu?.suppressed_reason || "",
+        call_later_at: fu?.call_later_at || null,
+        consent,
+        appointment: null,
+        calls: w.calls || [],
+        accepted_at: fu?.accepted_at || null,
+        next_followup_on: fu?.next_followup_on || null,
+        recommendations: recs
+      });
     }
     if (sub === "/approve" && method === "POST") return reply(200, { ok: true, approved: true });
   }

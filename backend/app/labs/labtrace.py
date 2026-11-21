@@ -121,20 +121,78 @@ def _pdf(raw: bytes) -> bytes | None:
 class LabTraceLab(LabProvider):
     name = "labtrace"
 
-    def list_serviced_orders(self, start: date, end: date) -> list[str]:
-        """Work orders whose report is ready and whose sample was collected between start and end (inclusive)."""
+    def pull_details(self, start: date, end: date) -> dict:
         if end < start:
             raise LabError("End date is before start date")
         with _client() as c:
             rows = _json(_get(c, "/api/work-orders"), "Work orders")
-        out = []
-        for wo in rows if isinstance(rows, list) else []:
-            if wo.get("status") not in READY_STATUSES and not wo.get("report_id"):
+        
+        if isinstance(rows, list):
+            work_orders = rows
+        elif isinstance(rows, dict):
+            work_orders = rows.get("data") or rows.get("work_orders") or rows.get("items") or rows.get("results")
+            if not isinstance(work_orders, list):
+                raise LabError("LabTrace sent work orders in an unexpected format.")
+        else:
+            raise LabError("LabTrace sent work orders in an unexpected format.")
+
+        fetched = len(work_orders)
+        not_ready = 0
+        out_of_range = 0
+        no_date = 0
+        status_counts = {}
+        orders = []
+
+        for wo in work_orders:
+            st = str(wo.get("status") or "").lower()
+            if st:
+                status_counts[st] = status_counts.get(st, 0) + 1
+            
+            is_ready = st in READY_STATUSES or bool(wo.get("report_id"))
+            if not is_ready:
+                not_ready += 1
                 continue
+
             day = _day(wo.get("sample_collection_datetime")) or _day(wo.get("created_at"))
-            if day and start <= day <= end and ORDER_ID_RE.match(str(wo.get("id") or "")):
-                out.append(wo["id"])
-        return out
+            if not day:
+                no_date += 1
+                continue
+            
+            if not (start <= day <= end):
+                out_of_range += 1
+                continue
+
+            if ORDER_ID_RE.match(str(wo.get("id") or "")):
+                orders.append(wo["id"])
+
+        status_str = ", ".join(f"{k} {v}" for k, v in status_counts.items()) if status_counts else "none"
+        if not orders:
+            parts = [f"LabTrace returned {fetched} work order{'s' if fetched != 1 else ''}"]
+            if not_ready:
+                parts.append(f"{not_ready} not ready (statuses: {status_str})")
+            if out_of_range:
+                parts.append(f"{out_of_range} ready but collected outside {start.strftime('%d %b')} – {end.strftime('%d %b %Y')}")
+            if no_date:
+                parts.append(f"{no_date} with no collection date")
+            message = ": ".join(parts[:1]) + ("" if len(parts) == 1 else " (" + "; ".join(parts[1:]) + ").")
+            if fetched == 0:
+                message = "LabTrace has no ready reports for these dates."
+        else:
+            message = f"{len(orders)} new report(s) pulled from LabTrace."
+
+        return {
+            "orders": orders,
+            "fetched": fetched,
+            "not_ready": not_ready,
+            "out_of_range": out_of_range,
+            "no_date": no_date,
+            "status_counts": status_counts,
+            "message": message
+        }
+
+    def list_serviced_orders(self, start: date, end: date) -> list[str]:
+        """Work orders whose report is ready and whose sample was collected between start and end (inclusive)."""
+        return self.pull_details(start, end)["orders"]
 
     def fetch_report(self, order_id: str) -> FetchResult:
         if not ORDER_ID_RE.match(order_id):

@@ -87,6 +87,7 @@ class ImportBatch(Base, Stamped):
     duplicate: Mapped[int] = mapped_column(Integer, default=0)
     failed: Mapped[int] = mapped_column(Integer, default=0)
     failures: Mapped[list] = mapped_column(JSON, default=list)  # [{value, reason}]
+    message: Mapped[str] = mapped_column(Text, default="")
     started_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 

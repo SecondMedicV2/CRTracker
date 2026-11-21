@@ -784,20 +784,70 @@ async function pullFromLabTrace(env, store, range, actorId) {
   const days = Math.min(90, Math.max(1, Number(store?.settings?.pull_lookback_days) || 7));
   const defaultStart = istDate(Date.now() - days * 86400000);
   const defaultEnd = istDate();
-  const start = /^\d{4}-\d{2}-\d{2}$/.test(range?.start || "") ? range.start : defaultStart;
-  const end = /^\d{4}-\d{2}-\d{2}$/.test(range?.end || "") ? range.end : defaultEnd;
-  if (start && end && end < start) throw new LabTraceError(400, "The end date is before the start date.");
+
+  const startRaw = range?.start;
+  const endRaw = range?.end;
+  const today = istDate();
+
+  if (startRaw !== undefined || endRaw !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startRaw || "")) || !/^\d{4}-\d{2}-\d{2}$/.test(String(endRaw || ""))) {
+      throw new LabTraceError(400, "Invalid date format. Use YYYY-MM-DD.");
+    }
+  }
+
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(startRaw || "") ? startRaw : defaultStart;
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(endRaw || "") ? endRaw : defaultEnd;
+
+  if (end < start) throw new LabTraceError(400, "The end date is before the start date.");
+  if (end > today) throw new LabTraceError(400, "The end date cannot be in the future.");
+  const diffDays = Math.round((Date.parse(end) - Date.parse(start)) / 86400000);
+  if (diffDays > 90) throw new LabTraceError(400, "Date range cannot exceed 90 days.");
 
   const lt = await labtraceSession(env);
   const rows = await labtraceJson(lt, "/api/work-orders", "Work orders");
-  const workOrders = Array.isArray(rows) ? rows : [];
 
-  const ready = workOrders.filter((wo) => {
-    if (!LABTRACE_READY.has(String(wo.status || "").toLowerCase()) && !wo.report_id) return false;
+  let workOrders = [];
+  if (Array.isArray(rows)) {
+    workOrders = rows;
+  } else if (rows && typeof rows === "object") {
+    workOrders = rows.data || rows.work_orders || rows.items || rows.results || [];
+    if (!Array.isArray(workOrders)) {
+      throw new LabTraceError(502, "LabTrace sent work orders in an unexpected format.");
+    }
+  } else {
+    throw new LabTraceError(502, "LabTrace sent work orders in an unexpected format.");
+  }
+
+  const fetched = workOrders.length;
+  let not_ready = 0;
+  let out_of_range = 0;
+  let no_date = 0;
+  const status_counts = {};
+  const ready = [];
+
+  for (const wo of workOrders) {
+    const st = String(wo.status || "").trim().toLowerCase();
+    if (st) status_counts[st] = (status_counts[st] || 0) + 1;
+
+    const isReady = LABTRACE_READY.has(st) || Boolean(wo.report_id);
+    if (!isReady) {
+      not_ready++;
+      continue;
+    }
+
     const day = labtraceDay(wo.sample_collection_datetime || wo.created_at);
-    if (!day) return !start && !end;
-    return (!start || day >= start) && (!end || day <= end);
-  });
+    if (!day) {
+      no_date++;
+      continue;
+    }
+
+    if (day < start || day > end) {
+      out_of_range++;
+      continue;
+    }
+
+    ready.push(wo);
+  }
 
   const seen = new Set(store.orders.map((o) => String(o.labtrace_work_order_id || "")).filter(Boolean));
   const batchId = nextId(store.batches);
@@ -851,22 +901,32 @@ async function pullFromLabTrace(env, store, range, actorId) {
 
   const added = batchPatients.length;
   const already = ready.length - added - failures.length;
-  const message = ready.length === 0
-    ? "LabTrace has no ready reports for these dates."
-    : `${added} new report${added === 1 ? "" : "s"} pulled from LabTrace${already ? `, ${already} already here` : ""}${failures.length ? `, ${failures.length} skipped` : ""}.`;
+
+  let message = "";
+  if (ready.length === 0) {
+    const statusStr = Object.entries(status_counts).map(([k, v]) => `${k} ${v}`).join(", ") || "none";
+    const parts = [`LabTrace returned ${fetched} work order${fetched === 1 ? "" : "s"}`];
+    if (not_ready) parts.push(`${not_ready} not ready (statuses: ${statusStr})`);
+    if (out_of_range) parts.push(`${out_of_range} ready but collected outside ${start} – ${end}`);
+    if (no_date) parts.push(`${no_date} with no collection date`);
+    message = parts.length > 1 ? `${parts[0]}: ${parts.slice(1).join("; ")}.` : `${parts[0]} (none ready).`;
+    if (fetched === 0) message = "LabTrace has no ready reports for these dates.";
+  } else {
+    message = `${added} new report${added === 1 ? "" : "s"} pulled from LabTrace${already ? `, ${already} already here` : ""}${failures.length ? `, ${failures.length} skipped` : ""}.`;
+  }
 
   const batch = {
-    id: batchId, source: "labtrace", file_name: start || end ? `${start}..${end}` : "labtrace_sync",
+    id: batchId, source: "labtrace", file_name: `${start}..${end}`,
     total: ready.length, new: added, duplicate: already, failed: failures.length, failures,
     patients: batchPatients, started_by: actorId, created_at: now, message
   };
-  if (added || failures.length) {
-    store.batches.unshift(batch);
+  store.batches.unshift(batch);
+  if (added > 0) {
     store.dashboard.orders.imported = (store.dashboard.orders.imported || 0) + added;
     store.dashboard.orders.reports_ready = (store.dashboard.orders.reports_ready || 0) + added;
     store.dashboard.needs_attention.needs_review = (store.dashboard.needs_attention.needs_review || 0) + added;
   }
-  store.labtrace_last_pull = { at: now, ok: true, message };
+  store.labtrace_last_pull = { at: now, ok: true, fetched, not_ready, out_of_range, status_counts, message };
   await saveStore(env, store);
   return batch;
 }

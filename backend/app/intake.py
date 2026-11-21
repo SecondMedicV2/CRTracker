@@ -84,10 +84,23 @@ def create_batch(db: Session, source: str, values: list[str], user_id: int | Non
 
 def pull_now(db: Session, start: date, end: date, user_id: int | None) -> ImportBatch:
     """Raises LabError if the lab cannot list orders."""
-    return create_batch(db, "api", get_lab().list_serviced_orders(start, end), user_id, f"{start}..{end}")
+    lab = get_lab()
+    message = ""
+    if hasattr(lab, "pull_details"):
+        details = lab.pull_details(start, end)
+        ids = details["orders"]
+        message = details["message"]
+    else:
+        ids = lab.list_serviced_orders(start, end)
+        message = f"{len(ids)} new report(s) pulled from LabTrace." if ids else "LabTrace has no ready reports for these dates."
+    
+    batch = create_batch(db, "api", ids, user_id, f"{start}..{end}")
+    batch.message = message
+    db.commit()
+    return batch
 
 
 def batch_out(b: ImportBatch) -> dict:
     return {"id": b.id, "source": b.source, "file_name": b.file_name, "total": b.total, "new": b.new,
             "duplicate": b.duplicate, "failed": b.failed, "failures": b.failures, "started_by": b.started_by,
-            "created_at": b.created_at}
+            "created_at": b.created_at, "message": b.message}

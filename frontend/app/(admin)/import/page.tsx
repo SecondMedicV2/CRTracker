@@ -2,7 +2,7 @@
 import { TableFrame } from "@/components/TableFrame";
 import { RequestState } from "@/components/RequestState";
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
@@ -75,6 +75,7 @@ function Summary({ b }: { b: any }) {
 export default function Import() {
   const history = useApi<any[]>("/imports");
   const me = useApi<any>("/auth/me");
+  const settings = useApi<any>("/settings");
   const isAdmin = me.data?.role === "ADMIN";
 
   const [summary, setSummary] = useState<any>(null);
@@ -84,6 +85,57 @@ export default function Import() {
   const [callMsg, setCallMsg] = useState("");
   const { data: status } = useApi<any>("/integrations/status");
   const [callingBatchId, setCallingBatchId] = useState<number | null>(null);
+
+  const [rangeOption, setRangeOption] = useState("7");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+
+  useEffect(() => {
+    if (settings.data?.pull_lookback_days) {
+      const d = String(settings.data.pull_lookback_days);
+      if (["1", "3", "7", "15", "30"].includes(d)) {
+        setRangeOption(d);
+      }
+    }
+  }, [settings.data]);
+
+  function getTodayIst() {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  }
+
+  const today = getTodayIst();
+  let start = "";
+  let end = today;
+  if (rangeOption === "custom") {
+    start = customFrom;
+    end = customTo;
+  } else {
+    const days = Number(rangeOption) || Number(settings.data?.pull_lookback_days) || 7;
+    const endDate = new Date(today + "T00:00:00Z");
+    const startDate = new Date(endDate.getTime() - (days - 1) * 86400000);
+    start = startDate.toISOString().slice(0, 10);
+  }
+
+  let dateError = "";
+  if (rangeOption === "custom") {
+    if (!customFrom || !customTo) {
+      dateError = "Enter both From and To dates.";
+    } else if (customTo > today) {
+      dateError = "To date cannot be in the future.";
+    } else if (customFrom > customTo) {
+      dateError = "From date cannot be after To date.";
+    } else {
+      const diff = (new Date(customTo).getTime() - new Date(customFrom).getTime()) / 86400000;
+      if (diff > 90) dateError = "Date range cannot exceed 90 days.";
+    }
+  }
+
+  function formatDateNice(dateStr: string) {
+    if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return "";
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  }
 
   async function handleCallCustomer(name: string, mobile: string, reportId: number, batchId: number) {
     if (!window.confirm(`Initiate outbound call to ${name} (${mobile}) through MyOperator? MyOperator rings your phone first, then connects the patient.`)) return;
@@ -163,15 +215,60 @@ export default function Import() {
         <div className="flex flex-wrap items-center gap-3 text-sm">
           <button
             className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 transition disabled:opacity-50"
-            disabled={pending || (status && !status.labtrace?.connected)}
-            onClick={() => runImport(() => api("/imports/pull", { method: "POST", body: {} }))}
+            disabled={pending || (status && !status.labtrace?.connected) || Boolean(dateError)}
+            onClick={() => runImport(() => api("/imports/pull", { method: "POST", body: { start, end } }))}
           >
             {pending ? "Pulling reports…" : "Pull now"}
           </button>
-          <span className="text-xs text-slate-500">
-            Pulls ready reports from the last 7 days.
-          </span>
+          
+          <div className="flex items-center gap-2">
+            <label htmlFor="pull-range-select" className="text-xs font-semibold text-slate-700">Range:</label>
+            <select
+              id="pull-range-select"
+              className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs bg-white text-slate-800 focus:border-teal-600 focus:outline-none"
+              value={rangeOption}
+              onChange={(e) => setRangeOption(e.target.value)}
+            >
+              <option value="1">Last 1 day</option>
+              <option value="3">Last 3 days</option>
+              <option value="7">Last 7 days</option>
+              <option value="15">Last 15 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+
+          {rangeOption === "custom" && (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-slate-600">From:</span>
+              <input
+                type="date"
+                aria-label="From date"
+                className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                value={customFrom}
+                max={today}
+                onChange={(e) => setCustomFrom(e.target.value)}
+              />
+              <span className="text-slate-600">To:</span>
+              <input
+                type="date"
+                aria-label="To date"
+                className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                value={customTo}
+                max={today}
+                onChange={(e) => setCustomTo(e.target.value)}
+              />
+            </div>
+          )}
         </div>
+
+        {dateError ? (
+          <p role="alert" className="text-xs text-rose-600 font-medium">{dateError}</p>
+        ) : (
+          <span className="text-xs text-slate-500 block">
+            Pulls ready reports with samples collected {formatDateNice(start)} – {formatDateNice(end)}.
+          </span>
+        )}
       </section>
 
       {/* SECTION 4: Recent Batches */}

@@ -16,6 +16,9 @@ router = APIRouter(tags=["imports"])
 admin = require("ADMIN")
 
 
+from ..timeutil import IST, today_ist
+
+
 class Manual(BaseModel):
     text: str
 
@@ -76,11 +79,18 @@ async def import_file(request: Request, file: UploadFile = File(...), column: st
 
 @router.post("/imports/pull", status_code=201)
 def import_pull(body: Pull, request: Request, db: Session = Depends(get_db), me: User = Depends(admin)):
+    today = today_ist()
+    if body.end < body.start:
+        raise HTTPException(400, "The end date is before the start date.")
+    if body.end > today:
+        raise HTTPException(400, "The end date cannot be in the future.")
+    if (body.end - body.start).days > 90:
+        raise HTTPException(400, "Date range cannot exceed 90 days.")
     try:
         b = intake.pull_now(db, body.start, body.end, me.id)
     except LabError as e:
         raise HTTPException(502, str(e))
-    audit(db, request, me.id, "import", "import_batch", b.id)
+    audit(db, request, me.id, "manual_pull", "import_batch", f"{body.start}..{body.end} fetched={b.total} new={b.new}")
     return intake.batch_out(b)
 
 

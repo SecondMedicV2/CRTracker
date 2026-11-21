@@ -71,7 +71,7 @@ def test_ac3_pull_now_via_mock_lab_and_failure_does_not_stop_batch(admin):
     got = {o.order_id_external: o.status for o in orders()}
     assert got["GOOD1"] == got["GOOD2"] == status.FETCHED  # FAIL1 did not block them
     assert got["FAIL1"] == status.QUEUED  # scheduled for retry
-    assert admin.post(f"{API}/imports/pull", json={"start": "2026-10-05", "end": "2026-10-01"}).status_code == 502
+    assert admin.post(f"{API}/imports/pull", json={"start": "2026-10-05", "end": "2026-10-01"}).status_code == 400
 
 
 def test_ac4_retry_then_failed_with_reason_then_manual_retry(admin):

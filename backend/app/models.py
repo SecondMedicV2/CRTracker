@@ -202,9 +202,9 @@ class Consent(Base):
     __tablename__ = "consents"
     id: Mapped[int] = mapped_column(primary_key=True)
     patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
-    followup_id: Mapped[int] = mapped_column(ForeignKey("followups.id"), index=True)
+    followup_id: Mapped[int | None] = mapped_column(ForeignKey("followups.id"), nullable=True, index=True)
     given_by_user: Mapped[int] = mapped_column(Integer)  # the staff member who took it
-    channel: Mapped[str] = mapped_column(String(12))  # caller_call | doctor_call
+    channel: Mapped[str] = mapped_column(String(20))  # caller_call | doctor_call | family_link
     script_version: Mapped[str] = mapped_column(String(20), default="")  # which call card version was read out
     given_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -340,4 +340,148 @@ class CriticalRule(Base, Stamped):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     approved_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class CareTouchpoint(Base):
+    """Longitudinal patient interactions across the 7 Holistic Health Loop stages."""
+
+    __tablename__ = "care_touchpoints"
+    __table_args__ = (UniqueConstraint("patient_id", "ref_entity", "ref_id", "stage", name="uq_care_touchpoint_ref"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    stage: Mapped[str] = mapped_column(String(30), index=True)
+    service_code: Mapped[str] = mapped_column(String(60), default="")
+    occurred_on: Mapped[date] = mapped_column(Date, index=True)
+    source: Mapped[str] = mapped_column(String(10), default="AUTO")  # AUTO | MANUAL
+    ref_entity: Mapped[str] = mapped_column(String(40), default="")
+    ref_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    amount_inr: Mapped[int | None] = mapped_column(Integer, nullable=True)  # admin-only
+    health_hub_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class HealthProfile(Base):
+    """Encrypted non-lab clinical data (vitals, history, symptoms, lifestyle, reproductive, caregiver)."""
+
+    __tablename__ = "health_profiles"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), unique=True, index=True)
+    payload_enc: Mapped[str] = mapped_column(Text, default="")
+    updated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class ProgramRecommendation(Base):
+    """Personalised programme recommendations per patient/report and doctor decisions."""
+
+    __tablename__ = "program_recommendations"
+    __table_args__ = (UniqueConstraint("report_id", "program_code", name="uq_program_rec_report_code"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    followup_id: Mapped[int | None] = mapped_column(ForeignKey("followups.id"), nullable=True, index=True)
+    report_id: Mapped[int | None] = mapped_column(ForeignKey("reports.id"), nullable=True, index=True)
+    program_code: Mapped[str] = mapped_column(String(50), index=True)
+    rule_version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(20), default="SUGGESTED", index=True)
+    reason_codes: Mapped[list] = mapped_column(JSON, default=list)
+    missing_data: Mapped[list] = mapped_column(JSON, default=list)
+    notes: Mapped[list] = mapped_column(JSON, default=list)
+    decided_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decline_reason_code: Mapped[str] = mapped_column(String(40), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class PatientMedication(Base, Stamped):
+    """Patient medication history (doctor/admin only, dose and prescriber encrypted)."""
+
+    __tablename__ = "patient_medications"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    medicine_code: Mapped[str] = mapped_column(String(50), index=True)
+    dose_text_enc: Mapped[str] = mapped_column(Text, default="")
+    started_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_changed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    stopped_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    prescribed_by_enc: Mapped[str] = mapped_column(Text, default="")
+    source: Mapped[str] = mapped_column(String(20), default="DOCTOR")  # DOCTOR | PATIENT_REPORTED
+
+
+class RefillSchedule(Base):
+    """Chronic medication refill reminders and delivery confirmation tracking."""
+
+    __tablename__ = "refill_schedules"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_medication_id: Mapped[int] = mapped_column(ForeignKey("patient_medications.id"), unique=True, index=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    refill_every_days: Mapped[int] = mapped_column(Integer, default=30)
+    next_refill_on: Mapped[date] = mapped_column(Date, index=True)
+    delivery_mode: Mapped[str] = mapped_column(String(20), default="HOME_DELIVERY")  # HOME_DELIVERY | PICKUP_AT_HUB
+    delivery_ref: Mapped[str] = mapped_column(String(60), default="")
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")  # ACTIVE | PAUSED | STOPPED
+    reminder_sent_for: Mapped[date | None] = mapped_column(Date, nullable=True)
+    task_status: Mapped[str] = mapped_column(String(16), default="")  # "" | DUE | DONE
+    task_due_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class Referral(Base):
+    """Specialist referrals created by doctors; callers see only neutral booking status."""
+
+    __tablename__ = "referrals"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    followup_id: Mapped[int | None] = mapped_column(ForeignKey("followups.id"), nullable=True, index=True)
+    specialty: Mapped[str] = mapped_column(String(60))
+    reason_code: Mapped[str] = mapped_column(String(60), default="")
+    urgency: Mapped[str] = mapped_column(String(16), default="ROUTINE")  # ROUTINE | SOON | URGENT
+    status: Mapped[str] = mapped_column(String(16), default="SUGGESTED")  # SUGGESTED | BOOKED | DONE | DECLINED
+    appointment_ref: Mapped[str] = mapped_column(String(80), default="")
+    scheduled_for: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class HomeReading(Base):
+    """Home health monitoring readings (BP, glucose, weight, SpO2)."""
+
+    __tablename__ = "home_readings"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(24), index=True)  # BP | GLUCOSE_FASTING | GLUCOSE_RANDOM | WEIGHT | SPO2
+    values: Mapped[dict] = mapped_column(JSON, default=dict)
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    source: Mapped[str] = mapped_column(String(20), default="MANUAL_STAFF")  # MANUAL_STAFF | CSV_IMPORT | DEVICE
+    entered_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class HomeVisit(Base):
+    """Scheduled home visits for monitoring or caregiver support."""
+
+    __tablename__ = "home_visits"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    purpose_code: Mapped[str] = mapped_column(String(40))
+    scheduled_on: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="SCHEDULED")  # SCHEDULED | DONE | CANCELLED
+    staff_name: Mapped[str] = mapped_column(String(120), default="")
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class FamilyLink(Base):
+    """Consent-gated family links across household members."""
+
+    __tablename__ = "family_links"
+    __table_args__ = (UniqueConstraint("patient_id", "related_patient_id", name="uq_family_link_pair"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    related_patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    relationship: Mapped[str] = mapped_column(String(40))
+    consent_id: Mapped[int | None] = mapped_column(ForeignKey("consents.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

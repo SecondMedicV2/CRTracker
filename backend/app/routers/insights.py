@@ -12,7 +12,7 @@ from .. import status
 from ..analysis import NORMAL_LABELS, load_rules
 from ..db import get_db
 from ..models import (Appointment, CallLog, Consent, CriticalRule, Doctor, Followup, IdentityReview, Order, Patient, PatientBucket,
-                      Report, ReportInsight, ReportParameter, RetestRecommendation, User)
+                      ProgramRecommendation, Report, ReportInsight, ReportParameter, RetestRecommendation, User)
 from ..security import audit, current_user, require
 from .. import ai_insights, biomarkers, units
 from ..timeutil import IST, today_ist
@@ -178,7 +178,28 @@ def dashboard(frm: date | None = Query(None, alias="from"), to: date | None = No
                             "failed_extract": n(select(func.count()).select_from(Order).where(Order.status == status.FAILED_EXTRACT)),
                             "needs_review": n(select(func.count()).select_from(Order).where(Order.status == status.NEEDS_REVIEW)),
                             "pending_identity": n(select(func.count()).select_from(IdentityReview).where(IdentityReview.status == "PENDING"))},
+        "programs": _program_counts(db, start, end),
     }
+
+
+def _program_counts(db: Session, start: datetime, end: datetime) -> list[dict]:
+    rules = load_rules(db).get("care_programs", [])
+    labels = {p["code"]: p.get("clinical_label", p["code"]) for p in rules}
+    rows = db.execute(
+        select(ProgramRecommendation.program_code, ProgramRecommendation.status, func.count())
+        .where(ProgramRecommendation.created_at >= start, ProgramRecommendation.created_at < end)
+        .group_by(ProgramRecommendation.program_code, ProgramRecommendation.status)
+    ).all()
+    counts: dict[str, dict] = {}
+    for code, st, cnt in rows:
+        entry = counts.setdefault(code, {"code": code, "clinical_label": labels.get(code, code), "suggested": 0, "accepted": 0, "declined": 0})
+        if st == "SUGGESTED":
+            entry["suggested"] += cnt
+        elif st == "ACCEPTED":
+            entry["accepted"] += cnt
+        elif st == "DECLINED":
+            entry["declined"] += cnt
+    return sorted(counts.values(), key=lambda x: x["code"])
 
 
 # ---------------- CSV exports ----------------

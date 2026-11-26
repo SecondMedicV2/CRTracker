@@ -105,6 +105,16 @@ const SETTINGS_MAP: Record<string, SettingMeta> = {
     label: "Pilot Mode (Restrict to Pilot Doctors)",
     description: "When active, incoming follow-up cases are assigned only to doctors enrolled in the pilot.",
     category: "Clinical SLAs & Pilot Settings"
+  },
+  care_services: {
+    label: "Care Loop Service Catalogue (JSON)",
+    description: "Manual care touchpoint services across the 7 Holistic Health Loop stages (code, name, stage, default_amount_inr).",
+    category: "Relationship Platform"
+  },
+  relationship_thresholds: {
+    label: "Relationship Status Thresholds (JSON)",
+    description: "Day cut-offs for NEW, ACTIVE, AT_RISK, and LAPSED patient relationship states.",
+    category: "Relationship Platform"
   }
 };
 
@@ -115,7 +125,7 @@ export default function Settings() {
   const [success, setSuccess] = useState("");
   const [resetting, setResetting] = useState(false);
 
-  async function set(key: string, raw: string | boolean, current: any) {
+  async function set(key: string, raw: any, current: any) {
     const value = typeof current === "number" ? Number(raw) : raw;
     try {
       await api(`/settings/${key}`, { method: "PUT", body: { value } });
@@ -238,6 +248,21 @@ export default function Settings() {
                         className="size-5 rounded border-slate-300 text-teal-700 focus:ring-teal-600"
                         checked={v}
                         onChange={(e) => set(k, e.target.checked, v)}
+                      />
+                    ) : typeof v === "object" && v !== null ? (
+                      <textarea
+                        id={`setting-${k}`}
+                        rows={4}
+                        className="w-72 sm:w-96 rounded-lg border border-slate-300 p-2 font-mono text-xs text-slate-800 focus:border-teal-600 focus:outline-none"
+                        defaultValue={JSON.stringify(v, null, 2)}
+                        onBlur={(e) => {
+                          try {
+                            const parsed = JSON.parse(e.target.value);
+                            if (JSON.stringify(parsed) !== JSON.stringify(v)) set(k, parsed, v);
+                          } catch {
+                            setMsg(`Invalid JSON for ${k}`);
+                          }
+                        }}
                       />
                     ) : (
                       <input

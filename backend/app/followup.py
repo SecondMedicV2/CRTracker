@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from . import assign, status
 from .analysis import load_rules
-from .models import Followup, Order, PatientBucket, Report, ReportParameter
+from .models import Followup, Order, Patient, PatientBucket, Report, ReportParameter
 from .settings_store import get_setting
 from .timeutil import today_ist
 
@@ -174,3 +174,44 @@ def _suppress_older(db: Session, patient_id: int, report: Report, new_codes: lis
     for f in older:
         if set(f.abnormal_codes) <= have:
             f.suppressed_reason = "A newer report already covers these tests"
+
+
+def sync_profile_buckets(db: Session, patient_id: int, commit: bool = True) -> None:
+    """Assigns profile-driven HYPERTENSION and BONE buckets without altering lab bucket assignment."""
+    from . import programs as prog_svc, relationship as rel
+
+    root, pids = rel.patient_family_ids(db, patient_id)
+    patient = db.get(Patient, root) if hasattr(Order, "patient_id") else None
+    latest = db.scalar(
+        select(Report).join(Order, Order.id == Report.order_id)
+        .where(Order.patient_id.in_(pids), Order.status == status.READY)
+        .order_by(Report.collected_on.desc(), Report.id.desc()).limit(1)
+    )
+    if not latest:
+        return
+    profile, _, _ = prog_svc.get_profile(db, root)
+    labs: dict[str, list[ReportParameter]] = {}
+    for p in db.scalars(select(ReportParameter).where(ReportParameter.report_id == latest.id)):
+        if p.param_code:
+            labs.setdefault(p.param_code, []).append(p)
+    bp_high, _ = prog_svc.bp_is_high(profile)
+    htn = bp_high or any(c.get("code") == "HYPERTENSION" and c.get("status") == "CONFIRMED" for c in profile.get("conditions", []))
+    age = latest.age if latest.age is not None else (patient.age if patient else None)
+    gender = latest.gender or (patient.gender if patient else "")
+    bone = prog_svc.bone_risk_from_profile(age, gender, profile, labs)
+
+    for code, should_have, reason in (
+        ("HYPERTENSION", htn, "Elevated BP readings or confirmed hypertension"),
+        ("BONE", bone, "Low Vitamin D with risk factors or bone imaging/condition"),
+    ):
+        db.execute(delete(PatientBucket).where(
+            PatientBucket.patient_id.in_(pids), PatientBucket.report_id == latest.id, PatientBucket.bucket_code == code
+        ))
+        if should_have:
+            db.add(PatientBucket(
+                patient_id=root, report_id=latest.id, bucket_code=code, severity="mild", reason=reason, active=True
+            ))
+    if commit:
+        db.commit()
+    else:
+        db.flush()

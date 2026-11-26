@@ -44,7 +44,7 @@ def test_rules_seeded_pending_then_versioned_and_signoff(admin, doctor):
     rules = {r["key"]: r for r in admin.get(f"{API}/rules").json()}
     assert "buckets" in rules and all(r["pending_signoff"] for r in rules.values())
     assert admin.get(f"{API}/rules/critical_values").json()["data"] == []  # never invented
-    assert "HYPERTENSION" not in {b["code"] for b in admin.get(f"{API}/rules/buckets").json()["data"]}
+    assert {"HYPERTENSION", "BONE"} <= {b["code"] for b in admin.get(f"{API}/rules/buckets").json()["data"]}
     v2 = admin.put(f"{API}/rules/buckets", json={"data": []}).json()
     assert v2["version"] == 2 and v2["pending_signoff"]
     s = doctor.post(f"{API}/rules/buckets/signoff").json()

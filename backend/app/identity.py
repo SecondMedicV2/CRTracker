@@ -120,6 +120,8 @@ def decide(db: Session, review: IdentityReview, decision: str, user_id: int) -> 
     if order.status == status.PENDING_IDENTITY:
         status.move(order, status.READY)
         followup.build(db, order)
+    from . import relationship
+    relationship.sync_touchpoints(db, a.id if decision == "SAME" else b.id, commit=False)
     db.commit()
 
 

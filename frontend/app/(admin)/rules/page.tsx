@@ -40,6 +40,30 @@ const RULE_METADATA: Record<string, { title: string; desc: string }> = {
   script_templates: {
     title: "Doctor & Caller Dialogue Templates",
     desc: "Structured script templates for explaining reports, taking patient consent, and doctor consultations."
+  },
+  relationship_next_steps: {
+    title: "Relationship Next Best Step Rules",
+    desc: "Deterministic priority rules determining clinical and neutral caller next steps across the 7-stage Care Loop."
+  },
+  profile_codes: {
+    title: "Health Profile Controlled Codes",
+    desc: "Clinician-maintained codes for family history, symptoms, limitations, imaging findings, and decline reasons."
+  },
+  care_programs: {
+    title: "Personalised Care Programmes (1-30)",
+    desc: "Versioned triggers, offerings, loop stages, and caller-safe labels for Wellness, Disease-specific, Specialized, Medication, Diagnostic, and Family programs."
+  },
+  medicine_catalogue: {
+    title: "Medicine Catalogue",
+    desc: "Clinician-curated medicines, drug classes, chronic refill intervals, and linked treatment-response biomarkers."
+  },
+  drug_nutrient_rules: {
+    title: "Drug-Nutrient Interaction Rules",
+    desc: "Conservative pharmacist/doctor review rules matching medication classes with low/high nutritional markers."
+  },
+  referral_specialties: {
+    title: "Specialist Referral Directory",
+    desc: "Configured medical specialties mapped to neutral caller-safe appointment labels."
   }
 };
 

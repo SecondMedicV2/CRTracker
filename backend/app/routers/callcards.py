@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import callcard as cc
+from .. import callcard as cc, relationship as rel
+from ..analysis import load_rules
 from ..db import get_db
 from ..llm import LLMError
-from ..models import CallCard, Followup, Patient, User
+from ..models import CallCard, Followup, Patient, ProgramRecommendation, Referral, RefillSchedule, User
 from ..security import audit, current_user, require
 from ..settings_store import get_setting
 from .patients import mobile_out
@@ -96,8 +97,28 @@ def caller_card(fid: int, request: Request, db: Session = Depends(get_db), me: U
         raise HTTPException(409, "The call script is waiting for doctor approval")
     p = db.get(Patient, f.patient_id)
     script = cc.render_caller_script(c.content["caller_script"], p.name, me.name, get_setting(db, "company_name"))
+    root_pid = rel.canonical_patient_id(db, p.id)
+    catalogue = {item["code"]: item for item in load_rules(db).get("care_programs", [])}
+    recs = db.scalars(select(ProgramRecommendation).where(
+        ProgramRecommendation.patient_id == root_pid, ProgramRecommendation.status.in_(("SUGGESTED", "ACCEPTED"))
+    )).all()
+    program_followups = sorted({
+        catalogue[r.program_code]["caller_label"]
+        for r in recs if r.program_code in catalogue and catalogue[r.program_code].get("mode") != "DOCTOR_CONSIDER"
+    })
+    refill_due = db.scalar(select(RefillSchedule.id).where(
+        RefillSchedule.patient_id == root_pid, RefillSchedule.status == "ACTIVE", RefillSchedule.task_status == "DUE"
+    ).limit(1)) is not None
+    specs = load_rules(db).get("referral_specialties", {})
+    refs = db.scalars(select(Referral).where(Referral.patient_id == root_pid, Referral.status.in_(("SUGGESTED", "BOOKED")))).all()
+    specialist_bookings = [
+        {"id": rf.id, "label": specs.get(rf.specialty, "Specialist appointment to book"), "scheduled_for": rf.scheduled_for, "status": rf.status}
+        for rf in refs
+    ]
     audit(db, request, me.id, "view", "caller_card", fid)
-    return {"followup_id": fid, "patient_name": p.name, "mobile": mobile_out(p, me), "language": c.language,
+    return {"followup_id": fid, "patient_id": root_pid, "patient_name": p.name, "mobile": mobile_out(p, me), "language": c.language,
             "notice": c.notice, "report_age_days": c.content["summary"]["report_age_days"], "reason_for_call": cc.reason_for_call(c),
             "script": {k: v for k, v in script.items() if k != "do_not_say"}, "do_not_say": script["do_not_say"],
-            "priority": f.priority}
+            "priority": f.priority, "program_followups": program_followups,
+            "refill_reminder": "Pharmacy refill reminder call" if refill_due else None,
+            "specialist_bookings": specialist_bookings}

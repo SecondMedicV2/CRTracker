@@ -14,13 +14,17 @@ export default function DoctorQueue() {
       {!error && !!data?.length && (
         <TableFrame label="Assigned cases">
           <table className="w-full bg-white text-left text-sm shadow">
-            <thead><tr><th className="p-2">Patient</th><th>Priority</th><th>Potential</th><th>Stage</th><th>Booked slot</th><th>Comments</th><th>Accepted</th><th>Action</th></tr></thead>
+            <thead><tr><th className="p-2">Patient</th><th>Priority</th><th>Potential</th><th>Stage</th><th>Booked slot</th><th>Plans / Consider</th><th>Comments</th><th>Accepted</th><th>Action</th></tr></thead>
             <tbody>{data?.map((f) => (
               <tr key={f.id} className={`border-t ${f.priority === "ESCALATION" ? "bg-red-50" : ""}`}>
                 <td className="p-2"><Link className="underline" href={`/followups/view?id=${f.id}`}>{f.patient_name}</Link></td>
                 <td className={f.priority === "ESCALATION" ? "font-medium text-red-700" : ""}>{f.priority}</td>
                 <td>{f.retest_tier} ({f.retest_score})</td><td>{f.stage}</td>
                 <td>{f.slot_start ? new Date(f.slot_start).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) : ""}</td>
+                <td className="space-x-1">
+                  {f.pending_plans > 0 && <Link href={`/followups/view?id=${f.id}`} className="rounded bg-teal-100 px-2 py-0.5 text-xs font-semibold text-teal-900">{f.pending_plans} plan{f.pending_plans === 1 ? "" : "s"}</Link>}
+                  {f.pending_consider > 0 && <Link href={`/followups/view?id=${f.id}`} className="rounded bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-900">{f.pending_consider} consider</Link>}
+                </td>
                 <td>{f.unread_comments > 0 && <span className="rounded-full bg-red-600 px-2 py-0.5 text-xs text-white">{f.unread_comments} new</span>}</td>
                 <td>{f.accepted ? "Yes" : "No"}</td>
                 <td className="p-2">

@@ -8,6 +8,7 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import Trends from "@/components/Trends";
+import ProgramsPanel from "@/components/ProgramsPanel";
 import CallCard from "./CallCard";
 import DoctorActions from "./DoctorActions";
 
@@ -44,6 +45,7 @@ function FollowupViewInner({ id }: { id: string }) {
       {me.data && <CallCard fid={id} role={me.data.role} />}
       {f.patient_id && <Trends patientId={f.patient_id} />}
       <DoctorActions fid={id} />
+      {f.patient_id && <ProgramsPanel patientId={String(f.patient_id)} mode="followup" />}
       <section>
         <h2 className="mb-1 font-medium">Why this patient is in these buckets</h2>
         <ul className="list-disc pl-5 text-sm">{(f.buckets_detail ?? []).map((b: any) => <li key={b.code}><b>{b.code}</b> ({b.severity || "n/a"}): {b.reason}</li>)}</ul>

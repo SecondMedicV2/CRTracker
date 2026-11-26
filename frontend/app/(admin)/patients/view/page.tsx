@@ -5,6 +5,10 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { api } from "@/lib/api";
+import CareLoopCard from "@/components/CareLoopCard";
+import ExtendedCareTabs from "@/components/ExtendedCareTabs";
+import HealthProfileCard from "@/components/HealthProfileCard";
+import ProgramsPanel from "@/components/ProgramsPanel";
 import Trends from "@/components/Trends";
 import { useApi } from "@/lib/useApi";
 import { RoleContext } from "@/lib/navigation";
@@ -15,6 +19,7 @@ function PatientInner({ id }: { id: string }) {
   const role = useContext(RoleContext);
   const [calling, setCalling] = useState(false);
   const [callMessage, setCallMessage] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
   if (error || !p) return <RequestState loading={!p} error={error} retry={reload} />;
   const patch = (body: object) => api(`/patients/${id}`, { method: "PATCH", body }).then(reload);
   async function callPatient() {
@@ -70,6 +75,10 @@ function PatientInner({ id }: { id: string }) {
         </table>
       </TableFrame>
       <Trends patientId={id} />
+      <CareLoopCard patientId={id} role={role} refreshKey={refreshKey} />
+      <HealthProfileCard patientId={id} onSaved={() => setRefreshKey((n) => n + 1)} />
+      <ExtendedCareTabs patientId={id} role={role} onChanged={() => setRefreshKey((n) => n + 1)} />
+      <ProgramsPanel patientId={id} mode="patient" refreshKey={refreshKey} onChanged={() => setRefreshKey((n) => n + 1)} />
     </div>
   );
 }

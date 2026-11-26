@@ -22,6 +22,163 @@ import {
   DEFAULT_REFERENCE_RANGES,
   DEFAULT_SEVERITY
 } from "./lib/extract.js";
+import {
+  STAGES,
+  DONE_STAGES,
+  DEFAULT_CARE_SERVICES,
+  DEFAULT_RELATIONSHIP_THRESHOLDS,
+  DEFAULT_RELATIONSHIP_NEXT_STEPS,
+  DEFAULT_PROFILE_CODES,
+  DEFAULT_CARE_PROGRAMS,
+  DEFAULT_MEDICINE_CATALOGUE,
+  DEFAULT_DRUG_NUTRIENT_RULES,
+  DEFAULT_REFERRAL_SPECIALTIES,
+  HOME_KINDS,
+  MAX_HOME_CSV_BYTES,
+  todayIstStr,
+  addDaysIso,
+  cleanProfile,
+  bpIsHigh,
+  boneRiskFromProfile,
+  evaluatePrograms,
+  refillTickInStore,
+  checkHomeReadingAlert,
+  syncTouchpointsInStore,
+  relationshipStatus,
+  nextBestStep,
+} from "./lib/programs.js";
+
+function consentingFamilySummaries(store, patientId) {
+  const links = (store.family_links || []).filter((l) => l.patient_id === patientId);
+  const consents = new Set((store.family_consents || []).map((c) => c.id));
+  const out = [];
+  for (const ln of links) {
+    const rp = (store.patients || []).find((p) => p.id === ln.related_patient_id);
+    if (!rp) continue;
+    const hasConsent = Boolean(ln.consent_id && consents.has(ln.consent_id));
+    let summary = null;
+    if (hasConsent) {
+      const hp = cleanProfile(store.health_profiles?.[rp.id]);
+      const buckets = [...new Set(
+        (store.followups || []).filter((f) => f.patient_id === rp.id).flatMap((f) => f.buckets || []).filter((b) => b !== "OTHER")
+      )].sort();
+      const confirmed = [...new Set((hp.conditions || []).filter((c) => c.status === "CONFIRMED").map((c) => c.code))].sort();
+      summary = {
+        age: rp.age ?? null,
+        confirmed_conditions: confirmed,
+        active_buckets: buckets,
+        recommended_screening: confirmed.length > 0 || buckets.length > 0,
+      };
+    }
+    out.push({
+      id: ln.id,
+      related_patient_id: rp.id,
+      name: rp.name,
+      relationship: ln.relationship,
+      has_consent: hasConsent,
+      consent_id: ln.consent_id || null,
+      summary,
+    });
+  }
+  return out;
+}
+
+async function syncProgramsInStore(env, store, patientId, reportId, params, nowIso = todayIstStr()) {
+  if (!store.program_recommendations) store.program_recommendations = [];
+  if (!store.health_profiles) store.health_profiles = {};
+  const patient = (store.patients || []).find((p) => p.id === patientId);
+  if (!patient) return [];
+  const report = reportId ? (store.reports || []).find((r) => r.id === reportId) : (store.reports || []).find((r) => r.patient_id === patientId && r.status === "READY");
+  const rid = report ? report.id : null;
+  const fu = rid ? (store.followups || []).find((f) => f.report_id === rid) : null;
+  const buckets = fu?.buckets || [];
+  const rawHp = store.health_profiles[patientId];
+  const programs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
+  const byCode = Object.fromEntries(programs.map((p) => [p.code, p]));
+  const ruleVer = store.rules?.care_programs?.version || 1;
+  const medCatalogue = store.rules?.medicine_catalogue?.data || store.rules?.medicine_catalogue || DEFAULT_MEDICINE_CATALOGUE;
+  const drugNutrientRules = store.rules?.drug_nutrient_rules?.data || store.rules?.drug_nutrient_rules || DEFAULT_DRUG_NUTRIENT_RULES;
+  const referenceRanges = store.rules?.reference_ranges?.data || store.rules?.reference_ranges || DEFAULT_REFERENCE_RANGES;
+
+  const activeMeds = (store.patient_medications || []).filter((m) => m.patient_id === patientId && !m.stopped_on);
+  const otherReps = (store.reports || [])
+    .filter((r) => r.patient_id === patientId && r.status === "READY" && r.id !== rid)
+    .sort((a, b) => String(b.collected_on || "").localeCompare(String(a.collected_on || "")) || b.id - a.id);
+  const serialCodes = [];
+  const prevLabs = {};
+  for (const or of otherReps) {
+    const oParams = (env ? await kvGet(env, `report_params:${or.id}`) : store.report_params?.[or.id]) || [];
+    for (const p of oParams) {
+      if (p.param_code) {
+        serialCodes.push(p.param_code);
+        if (!prevLabs[p.param_code] && p.value_num !== null && p.value_num !== undefined) prevLabs[p.param_code] = p;
+      }
+    }
+  }
+  const openReferrals = (store.referrals || []).filter((r) => r.patient_id === patientId && (r.status === "SUGGESTED" || r.status === "BOOKED"));
+  const isEscalation = fu?.priority === "ESCALATION";
+  const hasHomeReadings = (store.home_readings || []).some((h) => h.patient_id === patientId);
+  const familyChronic = consentingFamilySummaries(store, patientId).some(
+    (s) => s.has_consent && ((s.summary?.confirmed_conditions || []).length > 0 || (s.summary?.active_buckets || []).length > 0)
+  );
+
+  const matches = evaluatePrograms({
+    patient, report, params: params || [], buckets,
+    profile: rawHp || {}, hasProfile: Boolean(rawHp), programs, todayIso: nowIso,
+    activeMeds, medCatalogue, drugNutrientRules, prevLabs, serialCodes, referenceRanges,
+    openReferrals, isEscalation, hasHomeReadings, familyChronic,
+  });
+  const byMatch = Object.fromEntries(matches.map((m) => [m.program_code, m]));
+  const existing = store.program_recommendations.filter((r) => r.patient_id === patientId && (r.report_id ?? null) === rid);
+  const existingByCode = Object.fromEntries(existing.map((r) => [r.program_code, r]));
+
+  let newConsider = false;
+  for (const m of matches) {
+    const cur = existingByCode[m.program_code];
+    if (cur) {
+      if (cur.status === "SUGGESTED") {
+        cur.reason_codes = m.matched_rules;
+        cur.missing_data = m.missing_data;
+        cur.notes = m.notes;
+        cur.rule_version = ruleVer;
+      }
+    } else {
+      store.program_recommendations.push({
+        id: nextId(store.program_recommendations),
+        patient_id: patientId,
+        followup_id: fu ? fu.id : null,
+        report_id: rid,
+        program_code: m.program_code,
+        rule_version: ruleVer,
+        status: "SUGGESTED",
+        reason_codes: m.matched_rules,
+        missing_data: m.missing_data,
+        notes: m.notes,
+        decided_by: null,
+        decided_at: null,
+        decline_reason_code: "",
+        created_at: new Date().toISOString(),
+      });
+      if (byCode[m.program_code]?.mode === "DOCTOR_CONSIDER") newConsider = true;
+    }
+  }
+  for (const cur of existing) {
+    if (!byMatch[cur.program_code] && cur.status === "SUGGESTED") cur.status = "EXPIRED";
+  }
+  if (newConsider) {
+    if (!store.notifications) store.notifications = { unread: 0, items: [] };
+    store.notifications.unread = (store.notifications.unread || 0) + 1;
+    store.notifications.items.unshift({
+      id: nextId(store.notifications.items),
+      text: "New consider item",
+      link: fu ? `/followups/view?id=${fu.id}` : `/patients/view?id=${patientId}`,
+      urgent: false,
+      read: false,
+      at: new Date().toISOString(),
+    });
+  }
+  return matches;
+}
 
 const EDGE_DEFAULT_RULES = {
   aliases: DEFAULT_ALIASES,
@@ -378,10 +535,12 @@ function forbidden(path, method, role) {
     if (path === "/audit" && role === "DOCTOR") return false;
     return true;
   }
+  if (path === "/relationship/summary") return true;
   if (method !== "GET" && /^\/(settings|rules|doctors)(\/|$)/.test(path)) return true;
-  if (role === "CALLER" && /^\/(reports|patients|trends|exports\/trends)(\/|$)/.test(path)) {
+  if (role === "CALLER") {
+    if (method === "GET" && /^\/patients\/\d+\/(relationship|programs|referrals)$/.test(path)) return false;
     if (/^\/reports\/\d+\/insight(?:\/|$)/.test(path) && method === "GET") return false;
-    return true;
+    if (/^\/(reports|patients|trends|exports\/trends|touchpoints|program-recommendations|medicines|home-visits|family-links)(\/|$)/.test(path)) return true;
   }
   return false;
 }
@@ -1034,7 +1193,9 @@ function getDefaultStore() {
     yearly_reengagement: false,
     caller_script_requires_approval: false,
     pull_every_minutes: 20,
-    pull_lookback_days: 7
+    pull_lookback_days: 7,
+    care_services: DEFAULT_CARE_SERVICES,
+    relationship_thresholds: DEFAULT_RELATIONSHIP_THRESHOLDS
   };
   const followups = [];
   const reports = [];
@@ -1057,7 +1218,17 @@ function getDefaultStore() {
     identityReviews,
     audit,
     comments: {},
-    workflows: {}
+    workflows: {},
+    care_touchpoints: [],
+    health_profiles: {},
+    program_recommendations: [],
+    patient_medications: [],
+    refill_schedules: [],
+    referrals: [],
+    home_readings: [],
+    home_visits: [],
+    family_links: [],
+    family_consents: []
   };
 }
 
@@ -1108,6 +1279,18 @@ async function getStore(env) {
         }
         if (data.settings && data.settings.pull_every_minutes === undefined) data.settings.pull_every_minutes = 20;
         if (data.settings && data.settings.pull_lookback_days === undefined) data.settings.pull_lookback_days = 7;
+        if (data.settings && data.settings.care_services === undefined) data.settings.care_services = DEFAULT_CARE_SERVICES;
+        if (data.settings && data.settings.relationship_thresholds === undefined) data.settings.relationship_thresholds = DEFAULT_RELATIONSHIP_THRESHOLDS;
+        if (!data.care_touchpoints) data.care_touchpoints = [];
+        if (!data.health_profiles) data.health_profiles = {};
+        if (!data.program_recommendations) data.program_recommendations = [];
+        if (!data.patient_medications) data.patient_medications = [];
+        if (!data.refill_schedules) data.refill_schedules = [];
+        if (!data.referrals) data.referrals = [];
+        if (!data.home_readings) data.home_readings = [];
+        if (!data.home_visits) data.home_visits = [];
+        if (!data.family_links) data.family_links = [];
+        if (!data.family_consents) data.family_consents = [];
         if (!data.followups) data.followups = [];
         for (const r of data.reports || []) {
           if (r.status === "READY" && !data.followups.some((f) => f.report_id === r.id)) {
@@ -1386,6 +1569,16 @@ async function handleApiRequest(request, url, env) {
     const orders = store.orders || [];
     const reports = store.reports || [];
     const audit = store.audit || [];
+    const progRules = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
+    const progLabels = Object.fromEntries(progRules.map((p) => [p.code, p.clinical_label || p.code]));
+    const progMap = {};
+    for (const r of store.program_recommendations || []) {
+      const e = progMap[r.program_code] || { code: r.program_code, clinical_label: progLabels[r.program_code] || r.program_code, suggested: 0, accepted: 0, declined: 0 };
+      if (r.status === "SUGGESTED") e.suggested += 1;
+      else if (r.status === "ACCEPTED") e.accepted += 1;
+      else if (r.status === "DECLINED") e.declined += 1;
+      progMap[r.program_code] = e;
+    }
     return reply(200, {
       from: url.searchParams.get("from") || "",
       to: url.searchParams.get("to") || "",
@@ -1416,7 +1609,8 @@ async function handleApiRequest(request, url, env) {
         needs_review: reports.filter((r) => r && r.needs_review === true).length,
         pending_identity: 0
       },
-      doctors: []
+      doctors: [],
+      programs: Object.values(progMap).sort((a, b) => a.code.localeCompare(b.code))
     });
   }
 
@@ -1525,6 +1719,16 @@ async function handleApiRequest(request, url, env) {
     store.audit = [];
     store.workflows = {};
     store.comments = {};
+    store.care_touchpoints = [];
+    store.health_profiles = {};
+    store.program_recommendations = [];
+    store.patient_medications = [];
+    store.refill_schedules = [];
+    store.referrals = [];
+    store.home_readings = [];
+    store.home_visits = [];
+    store.family_links = [];
+    store.family_consents = [];
     store.dashboard = {
       from: "",
       to: "",
@@ -1587,9 +1791,18 @@ async function handleApiRequest(request, url, env) {
     });
   }
   if ((path === "/doctor/queue" || path === "/doctor-queue") && method === "GET") {
-    const list = me.role === "DOCTOR"
+    const progs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
+    const considerCodes = new Set(progs.filter((p) => p.mode === "DOCTOR_CONSIDER").map((p) => p.code));
+    const list = (me.role === "DOCTOR"
       ? store.followups.filter((f) => f.assigned_doctor_id === me.id)
-      : store.followups;
+      : store.followups).map((f) => {
+        const recs = (store.program_recommendations || []).filter((r) => r.patient_id === f.patient_id && r.status === "SUGGESTED");
+        return {
+          ...f,
+          pending_plans: recs.filter((r) => !considerCodes.has(r.program_code)).length,
+          pending_consider: recs.filter((r) => considerCodes.has(r.program_code)).length
+        };
+      });
     return reply(200, list);
   }
   if (path === "/identity-reviews" && method === "GET") return reply(200, store.identityReviews);
@@ -1689,6 +1902,10 @@ async function handleApiRequest(request, url, env) {
     }
 
     recordAudit(store, me, "extract", "report", rid);
+    if (rep.patient_id) {
+      syncTouchpointsInStore(store, rep.patient_id);
+      await syncProgramsInStore(env, store, rep.patient_id, rid, sampleParams);
+    }
     await saveStore(env, store);
     return reply(200, { ok: true, parameters: sampleParams, confidence: 90 });
   }
@@ -1747,6 +1964,11 @@ async function handleApiRequest(request, url, env) {
       });
     }
     recordAudit(store, me, "approve", "report", rid);
+    if (rep.patient_id) {
+      const pList = (await kvGet(env, `report_params:${rid}`)) || [];
+      syncTouchpointsInStore(store, rep.patient_id);
+      await syncProgramsInStore(env, store, rep.patient_id, rid, pList);
+    }
     await saveStore(env, store);
     return reply(200, { ok: true, status: "READY" });
   }
@@ -2224,9 +2446,23 @@ async function handleApiRequest(request, url, env) {
       if (!fuExists) return reply(404, { detail: "Follow-up not found." });
       const card = store.callcards?.[fid] || store.call_cards?.[fid];
       if (!card) return reply(404, { detail: "No call card yet" });
-      const pat = store.patients.find(p => p.id === store.followups.find(f => f.id === fid)?.patient_id) || { name: "Patient", mobile: "" };
+      const fu = store.followups.find(f => f.id === fid);
+      const pat = store.patients.find(p => p.id === fu?.patient_id) || { name: "Patient", mobile: "" };
+      const progs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
+      const cat = Object.fromEntries(progs.map(p => [p.code, p]));
+      const programFollowups = [...new Set(
+        (store.program_recommendations || [])
+          .filter(r => r.patient_id === fu?.patient_id && ["SUGGESTED", "ACCEPTED"].includes(r.status) && cat[r.program_code]?.mode !== "DOCTOR_CONSIDER")
+          .map(r => cat[r.program_code]?.caller_label)
+          .filter(Boolean)
+      )].sort();
+      const hasDueRefill = (store.refill_schedules || []).some(s => s.patient_id === fu?.patient_id && s.status === "ACTIVE" && s.task_status === "DUE");
+      const specialistBookings = (store.referrals || [])
+        .filter(r => r.patient_id === fu?.patient_id && (r.status === "SUGGESTED" || r.status === "BOOKED"))
+        .map(r => ({ id: r.id, label: "Specialist appointment to book", scheduled_for: r.scheduled_for || null, status: r.status }));
       return reply(200, {
         followup_id: fid,
+        patient_id: fu?.patient_id ?? null,
         patient_name: pat.name,
         mobile: mobileOut(pat.mobile, me),
         language: card.language || "en",
@@ -2235,7 +2471,10 @@ async function handleApiRequest(request, url, env) {
         reason_for_call: "Routine health check review",
         script: card.content?.caller_script || {},
         do_not_say: card.content?.caller_script?.do_not_say || [],
-        priority: store.followups.find(f => f.id === fid)?.priority || "ROUTINE"
+        priority: fu?.priority || "ROUTINE",
+        program_followups: programFollowups,
+        refill_reminder: hasDueRefill ? "Pharmacy refill reminder call" : null,
+        specialist_bookings: specialistBookings
       });
     }
     if (sub === "/accept" && method === "POST") {
@@ -2306,29 +2545,807 @@ async function handleApiRequest(request, url, env) {
     if (sub === "/approve" && method === "POST") return reply(200, { ok: true, approved: true });
   }
 
+  // --- RELATIONSHIP, HEALTH PROFILE & PROGRAMMES (Pages 1-4) ---
+  const relMatch = path.match(/^\/patients\/(\d+)\/relationship$/);
+  if (relMatch && method === "GET") {
+    const pid = parseInt(relMatch[1], 10);
+    const p = (store.patients || []).find((x) => x.id === pid);
+    if (!p) return reply(404, { detail: "No such patient" });
+    syncTouchpointsInStore(store, pid);
+    const todayIso = todayIstStr();
+    const thresholds = store.settings?.relationship_thresholds || DEFAULT_RELATIONSHIP_THRESHOLDS;
+    const tps = (store.care_touchpoints || []).filter((t) => t.patient_id === pid).sort((a, b) => b.occurred_on.localeCompare(a.occurred_on) || b.id - a.id);
+    const fus = (store.followups || []).filter((f) => f.patient_id === pid);
+    const hasOverdue = fus.some((f) => !f.suppressed_reason && !DONE_STAGES.has(f.stage) && (f.due_on || todayIso) < todayIso);
+    const reports = (store.reports || []).filter((r) => r.patient_id === pid);
+    const hasActiveBuckets = fus.some((f) => (f.buckets || []).length > 0);
+    const statusStr = relationshipStatus(tps, hasOverdue, todayIso, thresholds);
+    const nextStepRules = store.rules?.relationship_next_steps?.data || store.rules?.relationship_next_steps || DEFAULT_RELATIONSHIP_NEXT_STEPS;
+    const nextStep = nextBestStep(tps, reports, hasActiveBuckets, statusStr, nextStepRules, todayIso);
+    const lastOn = tps.length ? tps[0].occurred_on : null;
+    recordAudit(store, me, "view", "relationship", pid);
+    await saveStore(env, store);
+    if (me.role === "CALLER") {
+      return reply(200, {
+        patient_id: pid,
+        patient_name: p.name,
+        mobile: mobileOut(p.mobile, me),
+        status: statusStr,
+        last_touchpoint_on: lastOn,
+        next_step: nextStep ? { caller_label: nextStep.caller_label } : null
+      });
+    }
+    const stages = STAGES.map((s) => {
+      const m = tps.filter((t) => t.stage === s);
+      return { stage: s, count: m.length, last_occurred_on: m.length ? m[0].occurred_on : null };
+    });
+    const services = (store.settings?.care_services || DEFAULT_CARE_SERVICES).map((s) => ({
+      code: s.code,
+      name: s.name,
+      stage: s.stage,
+      ...(me.role === "ADMIN" ? { default_amount_inr: s.default_amount_inr } : {})
+    }));
+    const out = {
+      patient_id: pid,
+      status: statusStr,
+      last_touchpoint_on: lastOn,
+      next_step: nextStep,
+      stages,
+      touchpoints: tps.map((t) => me.role === "ADMIN" ? t : { id: t.id, patient_id: t.patient_id, stage: t.stage, service_code: t.service_code, occurred_on: t.occurred_on, source: t.source, created_at: t.created_at }),
+      services
+    };
+    if (me.role === "ADMIN") out.total_amount_inr = tps.reduce((s, t) => s + (Number(t.amount_inr) || 0), 0);
+    return reply(200, out);
+  }
+
+  const tpPostMatch = path.match(/^\/patients\/(\d+)\/touchpoints$/);
+  if (tpPostMatch && method === "POST") {
+    const pid = parseInt(tpPostMatch[1], 10);
+    const p = (store.patients || []).find((x) => x.id === pid);
+    if (!p) return reply(404, { detail: "No such patient" });
+    const b = await request.json().catch(() => ({}));
+    const services = store.settings?.care_services || DEFAULT_CARE_SERVICES;
+    const svc = services.find((s) => s.code === String(b.service_code || "").trim().toUpperCase());
+    if (!svc || !STAGES.includes(svc.stage)) return reply(422, { detail: "Unknown service_code" });
+    const amt = me.role === "ADMIN" && b.amount_inr !== undefined && b.amount_inr !== null ? Number(b.amount_inr) : svc.default_amount_inr;
+    if (!store.care_touchpoints) store.care_touchpoints = [];
+    const tp = {
+      id: nextId(store.care_touchpoints),
+      patient_id: pid,
+      stage: svc.stage,
+      service_code: svc.code,
+      occurred_on: String(b.occurred_on || todayIstStr()).slice(0, 10),
+      source: "MANUAL",
+      ref_entity: "manual",
+      ref_id: null,
+      amount_inr: amt,
+      health_hub_id: b.health_hub_id ?? null,
+      created_at: new Date().toISOString()
+    };
+    store.care_touchpoints.unshift(tp);
+    recordAudit(store, me, "create", "touchpoint", tp.id);
+    await saveStore(env, store);
+    return reply(201, me.role === "ADMIN" ? tp : { id: tp.id, patient_id: tp.patient_id, stage: tp.stage, service_code: tp.service_code, occurred_on: tp.occurred_on, source: tp.source, created_at: tp.created_at });
+  }
+
+  const tpDelMatch = path.match(/^\/touchpoints\/(\d+)$/);
+  if (tpDelMatch && method === "DELETE") {
+    const tid = parseInt(tpDelMatch[1], 10);
+    const tp = (store.care_touchpoints || []).find((t) => t.id === tid);
+    if (!tp) return reply(404, { detail: "No such touchpoint" });
+    if (tp.source !== "MANUAL") return reply(409, { detail: "Only manual touchpoints can be deleted" });
+    store.care_touchpoints = store.care_touchpoints.filter((t) => t.id !== tid);
+    recordAudit(store, me, "delete", "touchpoint", tid);
+    await saveStore(env, store);
+    return reply(200, { ok: true });
+  }
+
+  if (path === "/relationship/summary" && method === "GET") {
+    const todayIso = todayIstStr();
+    const thresholds = store.settings?.relationship_thresholds || DEFAULT_RELATIONSHIP_THRESHOLDS;
+    const patients = store.patients || [];
+    const counts = { NEW: 0, ACTIVE: 0, AT_RISK: 0, LAPSED: 0 };
+    const stagePatients = Object.fromEntries(STAGES.map((s) => [s, new Set()]));
+    let activeStageSum = 0;
+    let annualInr = 0;
+    for (const p of patients) {
+      syncTouchpointsInStore(store, p.id, todayIso);
+      const tps = (store.care_touchpoints || []).filter((t) => t.patient_id === p.id);
+      const fus = (store.followups || []).filter((f) => f.patient_id === p.id);
+      const hasOverdue = fus.some((f) => !f.suppressed_reason && !DONE_STAGES.has(f.stage) && (f.due_on || todayIso) < todayIso);
+      const st = relationshipStatus(tps, hasOverdue, todayIso, thresholds);
+      counts[st] += 1;
+      const dist = new Set(tps.map((t) => t.stage));
+      for (const s of dist) if (stagePatients[s]) stagePatients[s].add(p.id);
+      if (st === "NEW" || st === "ACTIVE") {
+        activeStageSum += dist.size;
+        annualInr += tps.reduce((s, t) => s + (Number(t.amount_inr) || 0), 0);
+      }
+    }
+    const activeN = counts.NEW + counts.ACTIVE;
+    const totalP = patients.length;
+    return reply(200, {
+      total_patients: totalP,
+      counts,
+      retention_12m_pct: null,
+      avg_stages_per_active: activeN ? Math.round((activeStageSum / activeN) * 100) / 100 : 0,
+      annual_contribution_inr: activeN ? Math.round((annualInr / activeN) * 100) / 100 : 0,
+      stage_coverage_pct: Object.fromEntries(STAGES.map((s) => [s, totalP ? Math.round((1000 * stagePatients[s].size) / totalP) / 10 : 0]))
+    });
+  }
+
+  const hpMatch = path.match(/^\/patients\/(\d+)\/health-profile$/);
+  if (hpMatch) {
+    const pid = parseInt(hpMatch[1], 10);
+    const p = (store.patients || []).find((x) => x.id === pid);
+    if (!p) return reply(404, { detail: "No such patient" });
+    if (!store.health_profiles) store.health_profiles = {};
+    if (method === "GET") {
+      const cur = store.health_profiles[pid];
+      recordAudit(store, me, "view", "health_profile", pid);
+      await saveStore(env, store);
+      return reply(200, { patient_id: pid, exists: Boolean(cur), updated_at: cur?.updated_at || null, ...cleanProfile(cur) });
+    }
+    if (method === "PUT") {
+      const b = await request.json().catch(() => ({}));
+      let cleaned;
+      try {
+        cleaned = cleanProfile(b);
+      } catch (err) {
+        return reply(422, { detail: err.message });
+      }
+      cleaned.updated_at = new Date().toISOString();
+      store.health_profiles[pid] = cleaned;
+      const latestRep = (store.reports || []).find((r) => r.patient_id === pid && r.status === "READY") || (store.reports || []).find((r) => r.patient_id === pid);
+      const params = latestRep ? ((await kvGet(env, `report_params:${latestRep.id}`)) || []) : [];
+      syncTouchpointsInStore(store, pid);
+      await syncProgramsInStore(env, store, pid, latestRep?.id || null, params);
+      recordAudit(store, me, "update", "health_profile", pid);
+      await saveStore(env, store);
+      return reply(200, { patient_id: pid, exists: true, updated_at: cleaned.updated_at, ...cleaned });
+    }
+  }
+
+  const patProgMatch = path.match(/^\/patients\/(\d+)\/programs$/);
+  if (patProgMatch && method === "GET") {
+    const pid = parseInt(patProgMatch[1], 10);
+    const p = (store.patients || []).find((x) => x.id === pid);
+    if (!p) return reply(404, { detail: "No such patient" });
+    const progs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
+    const cat = Object.fromEntries(progs.map((x) => [x.code, x]));
+    const recs = (store.program_recommendations || []).filter((r) => r.patient_id === pid);
+    recordAudit(store, me, "view", "program_recommendations", pid);
+    await saveStore(env, store);
+    if (me.role === "CALLER") {
+      return reply(200, recs
+        .filter((r) => cat[r.program_code]?.mode !== "DOCTOR_CONSIDER" && r.status !== "EXPIRED")
+        .map((r) => ({ caller_label: cat[r.program_code]?.caller_label || "Wellness plan follow-up", status: r.status })));
+    }
+    const activeBuckets = new Set((store.followups || []).filter((f) => f.patient_id === pid).flatMap((f) => f.buckets || []));
+    const items = recs.map((r) => {
+      const meta = cat[r.program_code] || {};
+      const linked = meta.linked_bucket || "";
+      return {
+        id: r.id,
+        patient_id: r.patient_id,
+        followup_id: r.followup_id,
+        report_id: r.report_id,
+        program_code: r.program_code,
+        doc_number: meta.doc_number || "",
+        group: meta.group || "",
+        clinical_label: meta.clinical_label || r.program_code,
+        caller_label: meta.caller_label || "",
+        trigger_text: meta.trigger_text || "",
+        offering_text: meta.offering_text || "",
+        loop_stage: meta.loop_stage || "",
+        mode: meta.mode || "AUTO_SUGGEST",
+        linked_bucket: linked,
+        is_primary_for_bucket: Boolean(linked && activeBuckets.has(linked)),
+        specialty: meta.specialty || "",
+        rule_version: r.rule_version || 1,
+        status: r.status,
+        matched_rules: r.reason_codes || [],
+        missing_data: r.missing_data || [],
+        notes: r.notes || [],
+        decline_reason_code: r.decline_reason_code || "",
+        decided_at: r.decided_at || null
+      };
+    });
+    items.sort((a, b) => (a.is_primary_for_bucket === b.is_primary_for_bucket ? 0 : a.is_primary_for_bucket ? -1 : 1) || a.doc_number.localeCompare(b.doc_number) || a.id - b.id);
+    return reply(200, items);
+  }
+
+  const progDecMatch = path.match(/^\/program-recommendations\/(\d+)\/decision$/);
+  if (progDecMatch && method === "POST") {
+    const recId = parseInt(progDecMatch[1], 10);
+    const rec = (store.program_recommendations || []).find((r) => r.id === recId);
+    if (!rec) return reply(404, { detail: "No such recommendation" });
+    const b = await request.json().catch(() => ({}));
+    const decision = String(b.decision || "").trim().toUpperCase();
+    if (!["ACCEPTED", "DECLINED", "DISCUSS_LATER"].includes(decision)) return reply(422, { detail: "Decision must be ACCEPTED, DECLINED or DISCUSS_LATER" });
+    const progs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
+    const meta = progs.find((x) => x.code === rec.program_code) || {};
+    const reasonCode = String(b.reason_code || "").trim().toUpperCase().slice(0, 40);
+    if (decision === "DECLINED" && meta.mode === "DOCTOR_CONSIDER" && !reasonCode) {
+      return reply(422, { detail: "Select a reason code when marking a consider item as not suitable" });
+    }
+    rec.status = decision;
+    rec.decided_by = me.id;
+    rec.decided_at = new Date().toISOString();
+    rec.decline_reason_code = decision === "DECLINED" ? reasonCode : "";
+    if (decision === "ACCEPTED") {
+      if (!store.care_touchpoints) store.care_touchpoints = [];
+      const stage = meta.loop_stage || "PREVENTION";
+      if (!store.care_touchpoints.some((t) => t.patient_id === rec.patient_id && t.ref_entity === "program_recommendation" && t.ref_id === rec.id && t.stage === stage)) {
+        store.care_touchpoints.unshift({
+          id: nextId(store.care_touchpoints),
+          patient_id: rec.patient_id,
+          stage,
+          service_code: rec.program_code,
+          occurred_on: todayIstStr(),
+          source: "MANUAL",
+          ref_entity: "program_recommendation",
+          ref_id: rec.id,
+          amount_inr: null,
+          created_at: new Date().toISOString()
+        });
+      }
+      if (meta.specialty) {
+        if (!store.referrals) store.referrals = [];
+        const hasRef = store.referrals.some((r) => r.patient_id === rec.patient_id && r.reason_code === rec.program_code && r.status !== "DECLINED");
+        if (!hasRef) {
+          store.referrals.push({
+            id: nextId(store.referrals),
+            patient_id: rec.patient_id,
+            followup_id: rec.followup_id ?? null,
+            specialty: meta.specialty,
+            reason_code: rec.program_code,
+            urgency: "ROUTINE",
+            status: "SUGGESTED",
+            appointment_ref: "",
+            scheduled_for: null,
+            created_by: me.id,
+            created_at: new Date().toISOString()
+          });
+        }
+      }
+      if (rec.program_code === "FOLLOWUP_DIAGNOSTIC" && rec.followup_id) {
+        if (!store.recommendations) store.recommendations = {};
+        if (!store.recommendations[rec.followup_id]) {
+          const fu = (store.followups || []).find((f) => f.id === rec.followup_id);
+          const bucketsList = fu?.buckets || [];
+          const bRules = store.rules?.buckets?.data || store.rules?.buckets || [];
+          const catList = store.rules?.test_catalogue?.data || store.rules?.test_catalogue || [];
+          const validCodes = new Set(catList.map((t) => t.code));
+          const bMap = Object.fromEntries(bRules.map((b) => [b.code, b.retest || []]));
+          const tests = [...new Set(bucketsList.flatMap((b) => bMap[b] || []).filter((tc) => !validCodes.size || validCodes.has(tc)))].sort();
+          if (tests.length) {
+            store.recommendations[rec.followup_id] = {
+              id: nextId(Object.values(store.recommendations || {})),
+              followup_id: rec.followup_id,
+              test_codes: tests,
+              ordered: false,
+              ordered_ref: ""
+            };
+          }
+        }
+      }
+      if (rec.program_code === "TREATMENT_RESPONSE" && rec.followup_id) {
+        const fu = (store.followups || []).find((f) => f.id === rec.followup_id);
+        if (fu && !fu.next_followup_on) fu.next_followup_on = addDaysIso(todayIstStr(), 30);
+      }
+    }
+    recordAudit(store, me, `program_${decision.toLowerCase()}`, "program_recommendation", rec.id);
+    await saveStore(env, store);
+    return reply(200, {
+      id: rec.id,
+      status: rec.status,
+      decline_reason_code: rec.decline_reason_code,
+      decided_at: rec.decided_at,
+      suggested_specialty: decision === "ACCEPTED" ? (meta.specialty || "") : ""
+    });
+  }
+
+  // --- EXTENDED CARE & FAMILY CARE (Page 5) ---
+  function medOut(m, catMap, sched) {
+    const meta = catMap[m.medicine_code] || {};
+    return {
+      id: m.id,
+      patient_id: m.patient_id,
+      medicine_code: m.medicine_code,
+      generic_name: meta.generic_name || m.medicine_code,
+      drug_class: meta.drug_class || "",
+      is_chronic: Boolean(meta.is_chronic),
+      dose_text: m.dose_text || "",
+      started_on: m.started_on,
+      last_changed_on: m.last_changed_on,
+      stopped_on: m.stopped_on || null,
+      prescribed_by: m.prescribed_by || "",
+      source: m.source || "DOCTOR",
+      refill: sched ? {
+        id: sched.id,
+        refill_every_days: sched.refill_every_days,
+        next_refill_on: sched.next_refill_on,
+        delivery_mode: sched.delivery_mode,
+        delivery_ref: sched.delivery_ref || "",
+        status: sched.status,
+        task_status: sched.task_status
+      } : null
+    };
+  }
+
+  async function reevalPatient(pid) {
+    const rep = (store.reports || []).find((r) => r.patient_id === pid && r.status === "READY") || (store.reports || []).find((r) => r.patient_id === pid);
+    const pList = rep ? ((await kvGet(env, `report_params:${rep.id}`)) || []) : [];
+    syncTouchpointsInStore(store, pid);
+    await syncProgramsInStore(env, store, pid, rep?.id || null, pList);
+  }
+
+  const patMedsMatch = path.match(/^\/patients\/(\d+)\/medicines$/);
+  if (patMedsMatch) {
+    const pid = parseInt(patMedsMatch[1], 10);
+    const pat = (store.patients || []).find((p) => p.id === pid);
+    if (!pat) return reply(404, { detail: "No such patient" });
+    if (!store.patient_medications) store.patient_medications = [];
+    if (!store.refill_schedules) store.refill_schedules = [];
+    const catList = store.rules?.medicine_catalogue?.data || store.rules?.medicine_catalogue || DEFAULT_MEDICINE_CATALOGUE;
+    const catMap = Object.fromEntries(catList.map((m) => [m.code, m]));
+    if (method === "GET") {
+      const meds = store.patient_medications.filter((m) => m.patient_id === pid).sort((a, b) => b.id - a.id);
+      const schedMap = Object.fromEntries(store.refill_schedules.filter((s) => s.patient_id === pid).map((s) => [s.patient_medication_id, s]));
+      recordAudit(store, me, "view", "patient_medicines", pid);
+      await saveStore(env, store);
+      return reply(200, meds.map((m) => medOut(m, catMap, schedMap[m.id])));
+    }
+    if (method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      const code = String(b.medicine_code || "").trim().toUpperCase();
+      if (!catMap[code]) return reply(422, { detail: `Unknown medicine_code: ${code}` });
+      const source = b.source || "DOCTOR";
+      if (!["DOCTOR", "PATIENT_REPORTED"].includes(source)) return reply(422, { detail: "source must be DOCTOR or PATIENT_REPORTED" });
+      const deliveryMode = b.delivery_mode || "HOME_DELIVERY";
+      if (!["HOME_DELIVERY", "PICKUP_AT_HUB"].includes(deliveryMode)) return reply(422, { detail: "delivery_mode must be HOME_DELIVERY or PICKUP_AT_HUB" });
+      const start = (b.started_on && String(b.started_on).slice(0, 10)) || todayIstStr();
+      const med = {
+        id: nextId(store.patient_medications),
+        patient_id: pid,
+        medicine_code: code,
+        dose_text: String(b.dose_text || "").trim().slice(0, 120),
+        started_on: start,
+        last_changed_on: start,
+        stopped_on: null,
+        prescribed_by: String(b.prescribed_by || "").trim().slice(0, 120),
+        source,
+        created_by: me.id,
+        created_at: new Date().toISOString()
+      };
+      store.patient_medications.push(med);
+      let sched = null;
+      const meta = catMap[code];
+      const every = b.refill_every_days || meta.default_refill_days;
+      if (meta.is_chronic || b.refill_every_days) {
+        const days = Math.max(1, parseInt(every || 30, 10));
+        sched = {
+          id: nextId(store.refill_schedules),
+          patient_medication_id: med.id,
+          patient_id: pid,
+          refill_every_days: days,
+          next_refill_on: addDaysIso(start, days),
+          delivery_mode: deliveryMode,
+          delivery_ref: "",
+          status: "ACTIVE",
+          reminder_sent_for: null,
+          task_due_on: null,
+          task_status: "PENDING"
+        };
+        store.refill_schedules.push(sched);
+      }
+      await reevalPatient(pid);
+      recordAudit(store, me, "create", "patient_medication", med.id);
+      await saveStore(env, store);
+      return reply(201, medOut(med, catMap, sched));
+    }
+  }
+
+  const medPatchMatch = path.match(/^\/medicines\/(\d+)$/);
+  if (medPatchMatch && method === "PATCH") {
+    const mid = parseInt(medPatchMatch[1], 10);
+    const med = (store.patient_medications || []).find((m) => m.id === mid);
+    if (!med) return reply(404, { detail: "No such medication" });
+    const b = await request.json().catch(() => ({}));
+    if (b.dose_text !== undefined && b.dose_text !== null) {
+      med.dose_text = String(b.dose_text).trim().slice(0, 120);
+      med.last_changed_on = (b.last_changed_on && String(b.last_changed_on).slice(0, 10)) || todayIstStr();
+    } else if (b.last_changed_on) {
+      med.last_changed_on = String(b.last_changed_on).slice(0, 10);
+    }
+    const sched = (store.refill_schedules || []).find((s) => s.patient_medication_id === med.id) || null;
+    if (b.stopped_on) {
+      med.stopped_on = String(b.stopped_on).slice(0, 10);
+      if (sched) sched.status = "STOPPED";
+    }
+    if (b.delivery_mode && sched) {
+      if (!["HOME_DELIVERY", "PICKUP_AT_HUB"].includes(b.delivery_mode)) return reply(422, { detail: "Invalid delivery_mode" });
+      sched.delivery_mode = b.delivery_mode;
+    }
+    await reevalPatient(med.patient_id);
+    recordAudit(store, me, "update", "patient_medication", med.id);
+    await saveStore(env, store);
+    const catList = store.rules?.medicine_catalogue?.data || store.rules?.medicine_catalogue || DEFAULT_MEDICINE_CATALOGUE;
+    return reply(200, medOut(med, Object.fromEntries(catList.map((m) => [m.code, m])), sched));
+  }
+
+  if (path === "/refill-tasks" && method === "GET") {
+    const tasks = (store.refill_schedules || [])
+      .filter((s) => s.status === "ACTIVE" && s.task_status === "DUE")
+      .sort((a, b) => String(a.next_refill_on || "").localeCompare(String(b.next_refill_on || "")) || a.id - b.id)
+      .map((s) => {
+        const pat = (store.patients || []).find((p) => p.id === s.patient_id) || { id: s.patient_id, name: "Patient", mobile: "" };
+        return {
+          id: s.id,
+          patient_id: pat.id,
+          patient_name: pat.name,
+          mobile: mobileOut(pat.mobile, me),
+          label: "Pharmacy refill reminder call",
+          next_refill_on: s.next_refill_on,
+          task_due_on: s.task_due_on,
+          delivery_mode: s.delivery_mode,
+          status: s.task_status
+        };
+      });
+    return reply(200, tasks);
+  }
+
+  const refillConfirmMatch = path.match(/^\/refill-schedules\/(\d+)\/confirm$/);
+  if (refillConfirmMatch && method === "POST") {
+    const sid = parseInt(refillConfirmMatch[1], 10);
+    const s = (store.refill_schedules || []).find((x) => x.id === sid);
+    if (!s) return reply(404, { detail: "No such refill schedule" });
+    const b = await request.json().catch(() => ({}));
+    s.delivery_ref = String(b.delivery_ref || "").trim().slice(0, 60);
+    const todayIso = todayIstStr();
+    const base = s.next_refill_on && s.next_refill_on > todayIso ? s.next_refill_on : todayIso;
+    s.next_refill_on = addDaysIso(base, s.refill_every_days || 30);
+    s.task_status = "DONE";
+    if (!store.care_touchpoints) store.care_touchpoints = [];
+    store.care_touchpoints.unshift({
+      id: nextId(store.care_touchpoints),
+      patient_id: s.patient_id,
+      stage: "MEDICATIONS",
+      service_code: "PHARMACY_REFILL",
+      occurred_on: todayIso,
+      source: "MANUAL",
+      ref_entity: "refill",
+      ref_id: s.id,
+      amount_inr: me.role === "ADMIN" && b.amount_inr !== undefined && b.amount_inr !== null ? Number(b.amount_inr) : null,
+      created_at: new Date().toISOString()
+    });
+    recordAudit(store, me, "refill_confirm", "refill_schedule", s.id);
+    await saveStore(env, store);
+    return reply(200, { id: s.id, next_refill_on: s.next_refill_on, delivery_ref: s.delivery_ref, task_status: s.task_status });
+  }
+
+  const patRefMatch = path.match(/^\/patients\/(\d+)\/referrals$/);
+  if (patRefMatch) {
+    const pid = parseInt(patRefMatch[1], 10);
+    const pat = (store.patients || []).find((p) => p.id === pid);
+    if (!pat) return reply(404, { detail: "No such patient" });
+    if (!store.referrals) store.referrals = [];
+    const specs = store.rules?.referral_specialties?.data || store.rules?.referral_specialties || DEFAULT_REFERRAL_SPECIALTIES;
+    if (method === "GET") {
+      const rows = store.referrals.filter((r) => r.patient_id === pid).sort((a, b) => b.id - a.id);
+      recordAudit(store, me, "view", "referrals", pid);
+      await saveStore(env, store);
+      if (me.role === "CALLER") {
+        return reply(200, rows.filter((r) => r.status !== "DECLINED").map((r) => ({
+          id: r.id,
+          label: specs[r.specialty] || "Specialist appointment to book",
+          urgency: r.urgency,
+          status: r.status,
+          scheduled_for: r.scheduled_for || null
+        })));
+      }
+      return reply(200, rows);
+    }
+    if (method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      const specialty = String(b.specialty || "");
+      if (!(specialty in specs)) return reply(422, { detail: `Unknown specialty: ${specialty}` });
+      const urgency = String(b.urgency || "ROUTINE").toUpperCase();
+      if (!["ROUTINE", "SOON", "URGENT"].includes(urgency)) return reply(422, { detail: "Invalid urgency" });
+      const ref = {
+        id: nextId(store.referrals),
+        patient_id: pid,
+        followup_id: b.followup_id ?? null,
+        specialty,
+        reason_code: String(b.reason_code || "").trim().toUpperCase().slice(0, 60),
+        urgency,
+        status: "SUGGESTED",
+        appointment_ref: "",
+        scheduled_for: b.scheduled_for ? String(b.scheduled_for).slice(0, 10) : null,
+        created_by: me.id,
+        created_at: new Date().toISOString()
+      };
+      store.referrals.push(ref);
+      await reevalPatient(pid);
+      recordAudit(store, me, "create", "referral", ref.id);
+      await saveStore(env, store);
+      return reply(201, { id: ref.id, patient_id: ref.patient_id, specialty: ref.specialty, urgency: ref.urgency, status: ref.status, scheduled_for: ref.scheduled_for });
+    }
+  }
+
+  const refPatchMatch = path.match(/^\/referrals\/(\d+)$/);
+  if (refPatchMatch && method === "PATCH") {
+    const rid = parseInt(refPatchMatch[1], 10);
+    const ref = (store.referrals || []).find((r) => r.id === rid);
+    if (!ref) return reply(404, { detail: "No such referral" });
+    const b = await request.json().catch(() => ({}));
+    if (b.status !== undefined && b.status !== null) {
+      const st = String(b.status).trim().toUpperCase();
+      if (!["SUGGESTED", "BOOKED", "DONE", "DECLINED"].includes(st)) return reply(422, { detail: "Invalid status" });
+      if (me.role === "CALLER" && st !== "BOOKED") return reply(403, { detail: "Callers can only mark referrals as BOOKED" });
+      ref.status = st;
+    }
+    if (b.appointment_ref !== undefined && b.appointment_ref !== null) ref.appointment_ref = String(b.appointment_ref).trim().slice(0, 80);
+    if (b.scheduled_for !== undefined) ref.scheduled_for = b.scheduled_for ? String(b.scheduled_for).slice(0, 10) : null;
+    recordAudit(store, me, "update", "referral", ref.id);
+    await saveStore(env, store);
+    if (me.role === "CALLER") return reply(200, { id: ref.id, label: "Specialist appointment to book", status: ref.status, scheduled_for: ref.scheduled_for || null });
+    return reply(200, { id: ref.id, specialty: ref.specialty, status: ref.status, appointment_ref: ref.appointment_ref || "", scheduled_for: ref.scheduled_for || null });
+  }
+
+  const homeReadMatch = path.match(/^\/patients\/(\d+)\/home-readings$/);
+  if (homeReadMatch) {
+    const pid = parseInt(homeReadMatch[1], 10);
+    const pat = (store.patients || []).find((p) => p.id === pid);
+    if (!pat) return reply(404, { detail: "No such patient" });
+    if (!store.home_readings) store.home_readings = [];
+    if (method === "GET") {
+      const rows = store.home_readings
+        .filter((r) => r.patient_id === pid)
+        .sort((a, b) => String(b.taken_at).localeCompare(String(a.taken_at)) || b.id - a.id)
+        .slice(0, 200)
+        .map((r) => ({ ...r, alert: checkHomeReadingAlert(r.kind, r.values) }));
+      recordAudit(store, me, "view", "home_readings", pid);
+      await saveStore(env, store);
+      return reply(200, rows);
+    }
+    if (method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      const kind = String(b.kind || "").trim().toUpperCase();
+      if (!HOME_KINDS.has(kind)) return reply(422, { detail: `Unsupported reading kind: ${kind}` });
+      const hr = {
+        id: nextId(store.home_readings),
+        patient_id: pid,
+        kind,
+        values: b.values || {},
+        taken_at: b.taken_at || new Date().toISOString(),
+        source: "MANUAL_STAFF",
+        entered_by: me.id
+      };
+      store.home_readings.push(hr);
+      const alert = checkHomeReadingAlert(kind, hr.values);
+      if (alert) {
+        if (!store.notifications) store.notifications = { unread: 0, items: [] };
+        store.notifications.unread = (store.notifications.unread || 0) + 1;
+        store.notifications.items.unshift({
+          id: nextId(store.notifications.items),
+          text: "Home monitoring alert",
+          link: `/patients/view?id=${pid}`,
+          urgent: true,
+          read: false,
+          at: new Date().toISOString()
+        });
+      }
+      await reevalPatient(pid);
+      recordAudit(store, me, "create", "home_reading", hr.id);
+      await saveStore(env, store);
+      return reply(201, { ...hr, alert });
+    }
+  }
+
+  const homeImportMatch = path.match(/^\/patients\/(\d+)\/home-readings\/import$/);
+  if (homeImportMatch && method === "POST") {
+    const pid = parseInt(homeImportMatch[1], 10);
+    const pat = (store.patients || []).find((p) => p.id === pid);
+    if (!pat) return reply(404, { detail: "No such patient" });
+    const ct = request.headers.get("content-type") || "";
+    let csvBytes;
+    if (ct.includes("multipart/form-data")) {
+      const fd = await request.formData().catch(() => null);
+      const f = fd?.get("file");
+      if (!f || typeof f.arrayBuffer !== "function") return reply(422, { detail: "Missing CSV file" });
+      if (f.size > MAX_HOME_CSV_BYTES) return reply(413, { detail: "File is larger than 5 MB" });
+      csvBytes = new Uint8Array(await f.arrayBuffer());
+    } else {
+      csvBytes = new Uint8Array(await request.arrayBuffer());
+    }
+    if (csvBytes.byteLength > MAX_HOME_CSV_BYTES) return reply(413, { detail: "File is larger than 5 MB" });
+    const text = new TextDecoder().decode(csvBytes).replace(/^\uFEFF/, "");
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2) return reply(422, { detail: "CSV file is empty" });
+    const headers = lines[0].split(",").map((h) => h.trim().replace(/^"|"$/g, ""));
+    if (!store.home_readings) store.home_readings = [];
+    let imported = 0;
+    let alerts = 0;
+    for (const line of lines.slice(1, 5001)) {
+      const cols = line.split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+      const row = Object.fromEntries(headers.map((h, i) => [h, cols[i] || ""]));
+      const kind = String(row.kind || "").trim().toUpperCase();
+      if (!HOME_KINDS.has(kind)) return reply(422, { detail: `Unsupported reading kind: ${kind}` });
+      const values = kind === "BP"
+        ? { systolic: Math.trunc(Number(row.systolic)), diastolic: Math.trunc(Number(row.diastolic)) }
+        : { value: Number(row.value) };
+      const takenAt = row.taken_at || new Date().toISOString();
+      store.home_readings.push({
+        id: nextId(store.home_readings),
+        patient_id: pid,
+        kind,
+        values,
+        taken_at: takenAt,
+        source: "CSV_IMPORT",
+        entered_by: me.id
+      });
+      imported += 1;
+      if (checkHomeReadingAlert(kind, values)) alerts += 1;
+    }
+    if (alerts) {
+      if (!store.notifications) store.notifications = { unread: 0, items: [] };
+      store.notifications.unread = (store.notifications.unread || 0) + 1;
+      store.notifications.items.unshift({
+        id: nextId(store.notifications.items),
+        text: "Home monitoring alert",
+        link: `/patients/view?id=${pid}`,
+        urgent: true,
+        read: false,
+        at: new Date().toISOString()
+      });
+    }
+    await reevalPatient(pid);
+    recordAudit(store, me, "import", "home_readings", `${pid}:${imported}`);
+    await saveStore(env, store);
+    return reply(201, { imported, alerts });
+  }
+
+  const homeCsvMatch = path.match(/^\/patients\/(\d+)\/home-readings\.csv$/);
+  if (homeCsvMatch && method === "GET") {
+    const pid = parseInt(homeCsvMatch[1], 10);
+    const pat = (store.patients || []).find((p) => p.id === pid);
+    if (!pat) return reply(404, { detail: "No such patient" });
+    const rows = (store.home_readings || []).filter((r) => r.patient_id === pid).sort((a, b) => String(b.taken_at).localeCompare(String(a.taken_at)));
+    let csvText = "Date,Kind,Systolic,Diastolic,Value,Source\n";
+    for (const r of rows) {
+      const cells = [r.taken_at, r.kind, r.values?.systolic ?? "", r.values?.diastolic ?? "", r.values?.value ?? "", r.source]
+        .map((c) => `"${sanitizeCsvCell(c).replace(/"/g, '""')}"`);
+      csvText += `${cells.join(",")}\n`;
+    }
+    recordAudit(store, me, "export", "home_readings", pid);
+    await saveStore(env, store);
+    return new Response(csvText, {
+      status: 200,
+      headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="home-readings-${pid}.csv"` }
+    });
+  }
+
+  const homeVisitsMatch = path.match(/^\/patients\/(\d+)\/home-visits$/);
+  if (homeVisitsMatch) {
+    const pid = parseInt(homeVisitsMatch[1], 10);
+    const pat = (store.patients || []).find((p) => p.id === pid);
+    if (!pat) return reply(404, { detail: "No such patient" });
+    if (!store.home_visits) store.home_visits = [];
+    if (method === "GET") {
+      return reply(200, store.home_visits.filter((v) => v.patient_id === pid).sort((a, b) => String(b.scheduled_on).localeCompare(String(a.scheduled_on)) || b.id - a.id));
+    }
+    if (method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      const v = {
+        id: nextId(store.home_visits),
+        patient_id: pid,
+        purpose_code: String(b.purpose_code || "").trim().toUpperCase(),
+        scheduled_on: String(b.scheduled_on || "").slice(0, 10),
+        status: "SCHEDULED",
+        staff_name: String(b.staff_name || "").trim().slice(0, 120),
+        created_by: me.id
+      };
+      store.home_visits.push(v);
+      recordAudit(store, me, "create", "home_visit", v.id);
+      await saveStore(env, store);
+      return reply(201, v);
+    }
+  }
+
+  const visitPatchMatch = path.match(/^\/home-visits\/(\d+)$/);
+  if (visitPatchMatch && method === "PATCH") {
+    const vid = parseInt(visitPatchMatch[1], 10);
+    const v = (store.home_visits || []).find((x) => x.id === vid);
+    if (!v) return reply(404, { detail: "No such visit" });
+    const b = await request.json().catch(() => ({}));
+    const st = String(b.status || "").trim().toUpperCase();
+    if (!["SCHEDULED", "DONE", "CANCELLED"].includes(st)) return reply(422, { detail: "Invalid visit status" });
+    v.status = st;
+    recordAudit(store, me, "update", "home_visit", v.id);
+    await saveStore(env, store);
+    return reply(200, { id: v.id, status: v.status });
+  }
+
+  const famMatch = path.match(/^\/patients\/(\d+)\/family$/);
+  if (famMatch && method === "GET") {
+    const pid = parseInt(famMatch[1], 10);
+    const pat = (store.patients || []).find((p) => p.id === pid);
+    if (!pat) return reply(404, { detail: "No such patient" });
+    const household = pat.household_tag
+      ? (store.patients || []).filter((h) => h.household_tag === pat.household_tag && h.id !== pid).map((h) => ({ id: h.id, name: h.name }))
+      : [];
+    const links = consentingFamilySummaries(store, pid);
+    recordAudit(store, me, "view", "family_links", pid);
+    await saveStore(env, store);
+    return reply(200, { patient_id: pid, household_tag: pat.household_tag || null, household, links });
+  }
+
+  const famLinkMatch = path.match(/^\/patients\/(\d+)\/family-links$/);
+  if (famLinkMatch && method === "POST") {
+    const pid = parseInt(famLinkMatch[1], 10);
+    const pat = (store.patients || []).find((p) => p.id === pid);
+    if (!pat) return reply(404, { detail: "No such patient" });
+    const b = await request.json().catch(() => ({}));
+    const relId = parseInt(b.related_patient_id, 10);
+    const rPat = (store.patients || []).find((p) => p.id === relId);
+    if (!rPat) return reply(404, { detail: "No such patient" });
+    if (relId === pid) return reply(422, { detail: "Cannot link a patient to themselves" });
+    if (!store.family_links) store.family_links = [];
+    if (store.family_links.some((l) => l.patient_id === pid && l.related_patient_id === relId)) {
+      return reply(409, { detail: "Family link already exists" });
+    }
+    const ln = {
+      id: nextId(store.family_links),
+      patient_id: pid,
+      related_patient_id: relId,
+      relationship: String(b.relationship || "").trim().slice(0, 40),
+      consent_id: null
+    };
+    store.family_links.push(ln);
+    recordAudit(store, me, "create", "family_link", ln.id);
+    await saveStore(env, store);
+    return reply(201, { id: ln.id, related_patient_id: relId, relationship: ln.relationship, has_consent: false });
+  }
+
+  const famConsentMatch = path.match(/^\/family-links\/(\d+)\/consent$/);
+  if (famConsentMatch && method === "POST") {
+    const lid = parseInt(famConsentMatch[1], 10);
+    const ln = (store.family_links || []).find((x) => x.id === lid);
+    if (!ln) return reply(404, { detail: "No such family link" });
+    if (!store.family_consents) store.family_consents = [];
+    if (!ln.consent_id) {
+      const c = {
+        id: nextId(store.family_consents),
+        patient_id: ln.related_patient_id,
+        given_by_user: me.id,
+        channel: "family_link",
+        given_at: new Date().toISOString()
+      };
+      store.family_consents.push(c);
+      ln.consent_id = c.id;
+    }
+    await reevalPatient(ln.patient_id);
+    recordAudit(store, me, "consent", "family_link", ln.id);
+    await saveStore(env, store);
+    return reply(201, { id: ln.id, consent_id: ln.consent_id, has_consent: true });
+  }
+
   // --- RULES ---
   const DEFAULT_RULES = {
-    aliases: {
-      "glycosylated hemoglobin": "HBA1C", "hba1c": "HBA1C", "a1c": "HBA1C",
-      "fasting blood sugar": "GLUCOSE_FASTING", "fbs": "GLUCOSE_FASTING", "glucose fasting": "GLUCOSE_FASTING",
-      "post prandial glucose": "GLUCOSE_PP", "ppbs": "GLUCOSE_PP",
-      "total cholesterol": "CHOL_TOTAL", "cholesterol total": "CHOL_TOTAL",
-      "ldl cholesterol": "LDL", "ldl": "LDL", "hdl cholesterol": "HDL", "hdl": "HDL",
-      "triglycerides": "TRIGLYCERIDES", "tg": "TRIGLYCERIDES",
-      "haemoglobin": "HEMOGLOBIN", "hemoglobin": "HEMOGLOBIN", "hb": "HEMOGLOBIN",
-      "tsh": "TSH", "ft3": "FT3", "free t3": "FT3", "ft4": "FT4", "free t4": "FT4",
-      "creatinine": "CREATININE", "sgot": "SGOT", "ast": "SGOT", "sgpt": "SGPT", "alt": "SGPT",
-      "vitamin d": "VITAMIN_D", "25-oh vitamin d": "VITAMIN_D", "egfr": "EGFR"
-    },
+    aliases: { ...DEFAULT_ALIASES },
     buckets: [
       { code: "DIABETES", name: "Diabetes / Prediabetes", params: ["HBA1C", "GLUCOSE_FASTING", "GLUCOSE_PP"], interval_days: 90, priority: "ROUTINE", retest: ["HBA1C", "FBS", "PPBS"] },
       { code: "LIPID", name: "Lipid / Cardio risk", params: ["TRIGLYCERIDES", "LDL", "HDL", "CHOL_TOTAL"], interval_days: 90, priority: "ROUTINE", retest: ["LIPID"] },
       { code: "THYROID", name: "Thyroid", params: ["TSH", "FT3", "FT4"], interval_days: 90, priority: "ROUTINE", retest: ["THYROID"] },
       { code: "ANAEMIA", name: "Anaemia / Iron", params: ["HEMOGLOBIN", "FERRITIN", "IRON", "TIBC"], interval_days: 90, priority: "ROUTINE", retest: ["CBC", "IRON"] },
       { code: "VIT_D_B12", name: "Vitamin D / B12", params: ["VITAMIN_D", "B12"], interval_days: 90, priority: "ROUTINE", retest: ["VITD", "B12"] },
-      { code: "KIDNEY", name: "Kidney", params: ["CREATININE", "UREA", "EGFR", "URIC_ACID"], interval_days: 90, priority: "ROUTINE", retest: ["KFT"] },
+      { code: "KIDNEY", name: "Kidney", params: ["CREATININE", "UREA", "EGFR", "URIC_ACID", "UACR"], interval_days: 90, priority: "ROUTINE", retest: ["KFT"] },
       { code: "LIVER", name: "Liver", params: ["SGOT", "SGPT", "ALP", "BILIRUBIN"], interval_days: 90, priority: "ROUTINE", retest: ["LFT"] },
       { code: "CANCER_MARKER", name: "Cancer markers", params: ["PSA", "CA125", "CEA"], interval_days: 0, priority: "ESCALATION", retest: [] },
+      { code: "HYPERTENSION", name: "Hypertension", params: [], interval_days: 90, priority: "ROUTINE", retest: [] },
+      { code: "BONE", name: "Bone health", params: [], interval_days: 90, priority: "ROUTINE", retest: ["VITD"] },
       { code: "OTHER", name: "Other abnormal", params: [], interval_days: 90, priority: "ROUTINE", retest: [] }
     ],
     test_catalogue: [
@@ -2400,7 +3417,13 @@ async function handleApiRequest(request, url, env) {
           closing: "Thank you for your time. Stay healthy!"
         }
       }
-    }
+    },
+    relationship_next_steps: DEFAULT_RELATIONSHIP_NEXT_STEPS,
+    profile_codes: DEFAULT_PROFILE_CODES,
+    care_programs: DEFAULT_CARE_PROGRAMS,
+    medicine_catalogue: DEFAULT_MEDICINE_CATALOGUE,
+    drug_nutrient_rules: DEFAULT_DRUG_NUTRIENT_RULES,
+    referral_specialties: DEFAULT_REFERRAL_SPECIALTIES
   };
 
   if (path === "/rules" && method === "GET") {
@@ -2493,11 +3516,12 @@ export default {
         headers: { "X-Edge-Secret": env.EDGE_SECRET }
       }).catch(() => {}));
     } else {
-      // Background LabTrace sync. The cron fires every 2 minutes; this only pulls when the
-      // "Repeat Lab Sync Every (minutes)" setting says it is time (0 = once a day at the IST sync time).
+      // Background refill reminders & LabTrace sync. The cron fires every 2 minutes;
+      // LabTrace only pulls when the "Repeat Lab Sync Every (minutes)" setting says it is time.
       ctx.waitUntil((async () => {
-        if (!labtraceConfigured(env)) return;
         const store = await getStore(env);
+        if (refillTickInStore(store) > 0) await saveStore(env, store);
+        if (!labtraceConfigured(env)) return;
         const every = Number(store.settings.pull_every_minutes) || 0;
         const last = Date.parse((store.labtrace_last_pull && store.labtrace_last_pull.at) || "") || 0;
         if (every > 0) {

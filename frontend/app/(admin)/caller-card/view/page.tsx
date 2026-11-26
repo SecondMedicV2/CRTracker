@@ -2,7 +2,8 @@
 import Link from "next/link";
 import { RequestState } from "@/components/RequestState";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useContext } from "react";
+import { Suspense, useContext, useEffect, useState } from "react";
+import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { RoleContext } from "@/lib/navigation";
 import Actions from "./Actions";
@@ -13,6 +14,7 @@ const STEPS = [
 ] as const;
 
 type CallerCardData = {
+  patient_id?: number | null;
   patient_name: string;
   mobile: string;
   language: string;
@@ -20,6 +22,9 @@ type CallerCardData = {
   notice?: string;
   report_age_days: number | null;
   reason_for_call: string;
+  program_followups?: string[];
+  refill_reminder?: string | null;
+  specialist_bookings?: { id: number; label: string; scheduled_for?: string | null; status: string }[];
   script: Record<(typeof STEPS)[number][0] | "urgent_symptom_protocol", string> & {
     objection_handling: { objection: string; reply: string }[];
   };
@@ -28,6 +33,12 @@ type CallerCardData = {
 
 function CallerCardInner({ id }: { id: string }) {
   const { data: c, error, reload } = useApi<CallerCardData>(`/followups/${id}/caller-card`);
+  const [rel, setRel] = useState<{ status: string; next_step?: { caller_label: string } | null } | null>(null);
+  useEffect(() => {
+    if (c?.patient_id) {
+      api<any>(`/patients/${c.patient_id}/relationship`).then(setRel).catch(() => {});
+    }
+  }, [c?.patient_id]);
   if (error || !c) return <RequestState loading={!c} error={error} retry={reload} />;
   const languages: Record<string, string> = { en: "English", hi: "Hindi", hinglish: "Hinglish" };
 
@@ -56,6 +67,37 @@ function CallerCardInner({ id }: { id: string }) {
         <p className="font-semibold">Reason for call</p>
         <p className="mt-1">{c.reason_for_call}</p>
         <p className="mt-2">Arrange a doctor follow-up for questions about report values, which parameters to watch, or precautions to take.</p>
+        {rel && (
+          <p className="mt-2 text-xs font-medium text-teal-900">
+            Relationship status: <span className="rounded bg-white px-2 py-0.5 font-semibold">{rel.status}</span>
+            {rel.next_step?.caller_label && <> · Next step: {rel.next_step.caller_label}</>}
+          </p>
+        )}
+        {c.program_followups && c.program_followups.length > 0 && (
+          <p className="mt-1 text-xs font-medium text-teal-900">Care follow-up: {c.program_followups.join(", ")}</p>
+        )}
+        {c.refill_reminder && (
+          <p className="mt-1 text-xs font-medium text-teal-900">Refill reminder: {c.refill_reminder}</p>
+        )}
+        {c.specialist_bookings && c.specialist_bookings.length > 0 && (
+          <div className="mt-2 space-y-1 text-xs text-teal-950">
+            <p className="font-semibold">Specialist appointment booking:</p>
+            {c.specialist_bookings.map((b) => (
+              <div key={b.id} className="flex flex-wrap items-center gap-2">
+                <span>{b.label}{b.scheduled_for ? ` (${b.scheduled_for})` : ""} — {b.status}</span>
+                {b.status === "SUGGESTED" && (
+                  <button
+                    type="button"
+                    className="rounded border border-teal-800 bg-white px-2 py-0.5 font-medium text-teal-800"
+                    onClick={() => api(`/referrals/${b.id}`, { method: "PATCH", body: { status: "BOOKED" } }).then(reload)}
+                  >
+                    Mark booked
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <nav aria-label="Call workspace sections" className="flex flex-wrap gap-4 lg:hidden">
         <a href="#call-script" className="font-semibold text-teal-800 underline">Call guide</a>

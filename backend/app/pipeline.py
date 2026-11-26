@@ -18,9 +18,13 @@ def conclude(db: Session, order: Order, report: Report) -> None:
     held = identity.resolve(db, order, report) == "pending"
     status.move(order, status.PENDING_IDENTITY if held else status.READY)
     if not held:
-        followup.build(db, order)
+        fu = followup.build(db, order)
         try:
-            from . import ai_insights
+            from . import ai_insights, programs, relationship
+            followup.sync_profile_buckets(db, order.patient_id, commit=False)
+            relationship.sync_touchpoints(db, order.patient_id, commit=False)
+            programs.evaluate(db, order.patient_id, report.id, commit=False, notify_consider=not (fu and fu.assigned_doctor_id))
+            db.commit()
             ai_insights.generate_insight_for_report(db, report)
         except Exception:
             pass  # retryable on failure, idempotent

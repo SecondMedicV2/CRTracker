@@ -5,11 +5,11 @@ from pydantic import BaseModel
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import assign, callcard as cc
+from .. import assign, callcard as cc, relationship as rel
 from ..analysis import load_rules
 from ..db import get_db
-from ..models import (Appointment, CallLog, Comment, Consent, Doctor, Followup, Notification, Patient, Report,
-                      RetestRecommendation, User)
+from ..models import (Appointment, CallLog, Comment, Consent, Doctor, Followup, Notification, Patient,
+                      ProgramRecommendation, Report, RetestRecommendation, User)
 from ..security import audit, current_user, require
 from ..settings_store import get_setting
 from ..telephony import get_dialer
@@ -229,12 +229,24 @@ def doctor_queue(doctor_id: int | None = None, db: Session = Depends(get_db), me
                    case((Followup.retest_tier == "HIGH", 0), (Followup.retest_tier == "MEDIUM", 1), else_=2), Followup.due_on, Followup.id))
     if mine:
         q = q.where(Followup.assigned_doctor_id == mine.id)
+    consider_codes = {p["code"] for p in load_rules(db).get("care_programs", []) if p.get("mode") == "DOCTOR_CONSIDER"}
+    rows_q = db.execute(q.limit(200)).all()
+    pids = {f.patient_id for f, _, _ in rows_q}
+    prog_counts: dict[int, list[int]] = {}
+    if pids:
+        for pid, code in db.execute(select(ProgramRecommendation.patient_id, ProgramRecommendation.program_code).where(
+            ProgramRecommendation.patient_id.in_(pids), ProgramRecommendation.status == "SUGGESTED"
+        )):
+            c = prog_counts.setdefault(pid, [0, 0])
+            c[1 if code in consider_codes else 0] += 1
     out = []
-    for f, p, r in db.execute(q.limit(200)):
+    for f, p, r in rows_q:
         unread = db.scalar(select(func.count()).select_from(Comment).where(Comment.followup_id == f.id, Comment.role != "DOCTOR", Comment.read_at.is_(None)))
         appt = db.scalar(select(Appointment).where(Appointment.followup_id == f.id, Appointment.status == "BOOKED"))
+        plans_n, consider_n = prog_counts.get(f.patient_id, [0, 0])
         out.append({**row(f, p, r, me, True), "unread_comments": unread, "accepted": f.accepted_at is not None,
-                    "slot_start": appt.slot_start if appt else None})
+                    "slot_start": appt.slot_start if appt else None,
+                    "pending_plans": plans_n, "pending_consider": consider_n})
     return out
 
 
@@ -289,6 +301,7 @@ def doctor_outcome(fid: int, body: DoctorOutcome, request: Request, db: Session 
     else:
         raise HTTPException(422, "Outcome must be DOCTOR_DONE or RECALL_CALLER")
     f.accepted_at = f.accepted_at or now
+    rel.sync_touchpoints(db, f.patient_id, commit=False)
     db.commit()
     audit(db, request, me.id, "doctor_outcome", "followup", f"{fid}:{body.outcome}")
     return {"stage": f.stage}
@@ -304,7 +317,9 @@ def mark_ordered(rid: int, body: Ordered, request: Request, db: Session = Depend
     if not r:
         raise HTTPException(404, "No such recommendation")
     r.ordered, r.ordered_ref = True, body.ordered_ref.strip()[:60]
-    db.get(Followup, r.followup_id).stage = "RETEST_ORDERED"  # also earns the engagement bonus next time
+    fu = db.get(Followup, r.followup_id)
+    fu.stage = "RETEST_ORDERED"  # also earns the engagement bonus next time
+    rel.sync_touchpoints(db, fu.patient_id, commit=False)
     db.commit()
     audit(db, request, me.id, "retest_ordered", "followup", r.followup_id)
     return {"ordered": True}

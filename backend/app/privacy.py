@@ -16,8 +16,10 @@ from sqlalchemy.orm import Session
 from . import storage
 from .config import env
 from .db import SessionLocal
-from .models import (Appointment, CallCard, CallLog, Comment, Consent, Followup, IdentityReview, Notification, Order,
-                     Patient, PatientBucket, Report, ReportParameter, RetestRecommendation)
+from .models import (Appointment, CallCard, CallLog, CareTouchpoint, Comment, Consent, FamilyLink, Followup,
+                     HealthProfile, HomeReading, HomeVisit, IdentityReview, Notification, Order, Patient,
+                     PatientBucket, PatientMedication, ProgramRecommendation, Referral, RefillSchedule, Report,
+                     ReportParameter, RetestRecommendation)
 from .security import audit
 
 
@@ -49,15 +51,43 @@ def export_patient(db: Session, pid: int) -> dict:
         d.pop("mobile_enc", None)
         d["parameters"] = [plain(p) for p in rows(ReportParameter, ReportParameter.report_id, [r.id])]
         reports.append(d)
+    profiles = []
+    for hp in rows(HealthProfile, HealthProfile.patient_id, x["patients"]):
+        d = plain(hp)
+        raw = storage.decrypt_str(hp.payload_enc) if hp.payload_enc else "{}"
+        try:
+            d["profile"] = json.loads(raw)
+        except Exception:
+            d["profile"] = {}
+        d.pop("payload_enc", None)
+        profiles.append(d)
+    meds = []
+    for m in rows(PatientMedication, PatientMedication.patient_id, x["patients"]):
+        md = plain(m)
+        md["dose_text"] = storage.decrypt_str(m.dose_text_enc) if m.dose_text_enc else ""
+        md["prescribed_by"] = storage.decrypt_str(m.prescribed_by_enc) if m.prescribed_by_enc else ""
+        md.pop("dose_text_enc", None)
+        md.pop("prescribed_by_enc", None)
+        meds.append(md)
+    flinks = list(db.scalars(select(FamilyLink).where(or_(FamilyLink.patient_id.in_(x["patients"]), FamilyLink.related_patient_id.in_(x["patients"])))))
     return {"patients": people, "orders": [plain(o) for o in x["orders"]], "reports": reports,
             "followups": [plain(f) for f in rows(Followup, Followup.id, x["followups"])],
             "buckets": [plain(b) for b in rows(PatientBucket, PatientBucket.patient_id, x["patients"])],
             "call_cards": [plain(c) for c in rows(CallCard, CallCard.followup_id, x["followups"])],
-            "consents": [plain(c) for c in rows(Consent, Consent.followup_id, x["followups"])],
+            "consents": [plain(c) for c in rows(Consent, Consent.patient_id, x["patients"])],
             "calls": [plain(c) for c in rows(CallLog, CallLog.followup_id, x["followups"])],
             "comments": [plain(c) for c in rows(Comment, Comment.followup_id, x["followups"])],
             "appointments": [plain(a) for a in rows(Appointment, Appointment.followup_id, x["followups"])],
-            "retest_recommendations": [plain(r) for r in rows(RetestRecommendation, RetestRecommendation.followup_id, x["followups"])]}
+            "retest_recommendations": [plain(r) for r in rows(RetestRecommendation, RetestRecommendation.followup_id, x["followups"])],
+            "care_touchpoints": [plain(t) for t in rows(CareTouchpoint, CareTouchpoint.patient_id, x["patients"])],
+            "health_profiles": profiles,
+            "program_recommendations": [plain(r) for r in rows(ProgramRecommendation, ProgramRecommendation.patient_id, x["patients"])],
+            "patient_medications": meds,
+            "refill_schedules": [plain(s) for s in rows(RefillSchedule, RefillSchedule.patient_id, x["patients"])],
+            "referrals": [plain(r) for r in rows(Referral, Referral.patient_id, x["patients"])],
+            "home_readings": [plain(r) for r in rows(HomeReading, HomeReading.patient_id, x["patients"])],
+            "home_visits": [plain(v) for v in rows(HomeVisit, HomeVisit.patient_id, x["patients"])],
+            "family_links": [plain(l) for l in flinks]}
 
 
 def erase_patient(db: Session, pid: int) -> dict:
@@ -70,13 +100,23 @@ def erase_patient(db: Session, pid: int) -> dict:
 
     for o in x["orders"]:  # the stored (encrypted) lab report files
         storage.delete(o.report_path)
-    links = [f"/followups/view?id={f}" for f in fids]
-    if links:  # notification texts name the patient
+    links = [f"/followups/view?id={f}" for f in fids] + [f"/patients/view?id={p}" for p in pids]
+    if links:  # notification texts/links tied to the patient
         wipe("notifications", delete(Notification).where(Notification.link.in_(links)))
     if fids:
-        for name, model in (("call_cards", CallCard), ("consents", Consent), ("calls", CallLog), ("comments", Comment),
+        for name, model in (("call_cards", CallCard), ("calls", CallLog), ("comments", Comment),
                             ("appointments", Appointment), ("retest_recommendations", RetestRecommendation)):
             wipe(name, delete(model).where(model.followup_id.in_(fids)))
+    wipe("family_links", delete(FamilyLink).where(or_(FamilyLink.patient_id.in_(pids), FamilyLink.related_patient_id.in_(pids))))
+    wipe("consents", delete(Consent).where(or_(Consent.patient_id.in_(pids), Consent.followup_id.in_(fids or [0]))))
+    wipe("refill_schedules", delete(RefillSchedule).where(RefillSchedule.patient_id.in_(pids)))
+    wipe("patient_medications", delete(PatientMedication).where(PatientMedication.patient_id.in_(pids)))
+    wipe("referrals", delete(Referral).where(Referral.patient_id.in_(pids)))
+    wipe("home_readings", delete(HomeReading).where(HomeReading.patient_id.in_(pids)))
+    wipe("home_visits", delete(HomeVisit).where(HomeVisit.patient_id.in_(pids)))
+    wipe("program_recommendations", delete(ProgramRecommendation).where(ProgramRecommendation.patient_id.in_(pids)))
+    wipe("health_profiles", delete(HealthProfile).where(HealthProfile.patient_id.in_(pids)))
+    wipe("care_touchpoints", delete(CareTouchpoint).where(CareTouchpoint.patient_id.in_(pids)))
     wipe("identity_reviews", delete(IdentityReview).where(or_(IdentityReview.patient_a_id.in_(pids), IdentityReview.patient_b_id.in_(pids),
                                                               IdentityReview.order_id.in_(oids or [0]))))
     wipe("buckets", delete(PatientBucket).where(PatientBucket.patient_id.in_(pids)))

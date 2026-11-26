@@ -18,6 +18,7 @@ CATEGORY_LABELS: dict[str, str] = {
     "ELECTROLYTE": "Electrolytes / minerals",
     "INFLAMMATION": "Inflammation markers",
     "URINE": "Urine examination",
+    "REPRODUCTIVE": "Reproductive & hormone panel",
     "OTHER": "Other investigations",
 }
 
@@ -176,10 +177,27 @@ MARKERS: list[Marker] = [
            "Chloride is a mineral that helps keep fluid and acid balance."),
     Marker("CALCIUM", "Calcium", "ELECTROLYTE", re.compile(r"calcium", re.I),
            "Calcium is a mineral important for bones, muscles and nerves."),
+    Marker("MAGNESIUM", "Magnesium", "ELECTROLYTE", re.compile(r"magnesium|\bmg\b", re.I),
+           "Magnesium is a mineral important for nerve, muscle and metabolic function."),
+    Marker("UACR", "Urine albumin-creatinine ratio (UACR)", "URINE",
+           re.compile(r"\buacr\b|albumin.?to.?creatinine|urine.*albumin.*creatinine|(?:urine\s+)?microalbumin", re.I),
+           "UACR measures tiny amounts of albumin protein in urine to detect early kidney changes."),
     Marker("U_PROTEIN", "Urine protein", "URINE", re.compile(r"urine.*(protein|albumin)|(protein|albumin).*urine", re.I),
            "Urine protein checks whether protein is passing into the urine."),
     Marker("U_GLUCOSE", "Urine glucose", "URINE", re.compile(r"urine.*(glucose|sugar)|(glucose|sugar).*urine", re.I),
            "Urine glucose checks whether sugar is passing into the urine."),
+    Marker("AMH", "Anti-Mullerian Hormone (AMH)", "REPRODUCTIVE", re.compile(r"\bamh\b|anti.?mullerian", re.I),
+           "AMH reflects ovarian follicle reserve."),
+    Marker("LH", "Luteinizing Hormone (LH)", "REPRODUCTIVE", re.compile(r"\blh\b|luteinizing hormone", re.I),
+           "LH helps regulate the menstrual cycle and reproductive hormone production."),
+    Marker("FSH", "Follicle Stimulating Hormone (FSH)", "REPRODUCTIVE", re.compile(r"\bfsh\b|follicle stimulating", re.I),
+           "FSH regulates egg and sperm development."),
+    Marker("PROLACTIN", "Prolactin", "REPRODUCTIVE", re.compile(r"prolactin|\bprl\b", re.I),
+           "Prolactin is a pituitary hormone involved in lactation and reproductive regulation."),
+    Marker("TESTOSTERONE", "Testosterone", "REPRODUCTIVE", re.compile(r"testosterone", re.I),
+           "Testosterone is an androgen hormone important for reproductive and metabolic health."),
+    Marker("BETA_HCG", "Beta-hCG", "REPRODUCTIVE", re.compile(r"beta.?hcg|\bhcg\b", re.I),
+           "Beta-hCG is a hormone checked in pregnancy and reproductive evaluation."),
 ]
 
 

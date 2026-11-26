@@ -3,6 +3,7 @@ import { RequestState } from "@/components/RequestState";
 import { TableFrame } from "@/components/TableFrame";
 import Link from "next/link";
 import { useContext, useState } from "react";
+import { api } from "@/lib/api";
 import { callStageLabel } from "@/lib/callWorkflow";
 import { RoleContext } from "@/lib/navigation";
 import { useApi } from "@/lib/useApi";
@@ -21,6 +22,7 @@ export default function Followups() {
   const [tier, setTier] = useState("");
   const [bucket, setBucket] = useState("");
   const counts = useApi<Record<string, any>>("/followups/summary");
+  const refills = useApi<any[]>(canOpenCallWorkspace ? "/refill-tasks" : "/followups/summary");
   const qs = new URLSearchParams({ view, ...(priority && { priority }), ...(tier && { tier }), ...(bucket && { bucket }) }).toString();
   const { data, error, reload } = useApi<any[]>(`/followups?${qs}`);
   const full = data?.[0] ? "retest_tier" in data[0] : counts.data ? "low_potential" in counts.data : false; // callers get no clinical columns
@@ -89,6 +91,35 @@ export default function Followups() {
             ))}</tbody>
           </table>
         </TableFrame>
+      )}
+      {canOpenCallWorkspace && Array.isArray(refills.data) && refills.data.length > 0 && (
+        <section className="space-y-2 rounded-xl border border-teal-200 bg-teal-50/50 p-3 text-xs">
+          <h2 className="text-sm font-semibold text-teal-950">Pharmacy refill reminders ({refills.data.length})</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead><tr className="border-b text-slate-600"><th className="p-1.5">Customer</th><th>Mobile</th><th>Next refill</th><th>Delivery mode</th><th /></tr></thead>
+              <tbody>
+                {refills.data.map((t: any) => (
+                  <tr key={t.id} className="border-t">
+                    <td className="p-1.5 font-medium">{t.patient_name}</td>
+                    <td className="font-mono">{t.mobile}</td>
+                    <td>{t.next_refill_on}</td>
+                    <td>{t.delivery_mode}</td>
+                    <td className="p-1.5">
+                      <button
+                        type="button"
+                        className="rounded bg-teal-800 px-2 py-1 font-medium text-white"
+                        onClick={() => api(`/refill-schedules/${t.id}/confirm`, { method: "POST", body: {} }).then(refills.reload)}
+                      >
+                        Confirm refill
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
     </div>
   );

@@ -22,6 +22,7 @@ export default function Dashboard() {
   const [from, setFrom] = useState(() => istDate.format(Date.now() - 29 * 864e5));
   const [to, setTo] = useState(() => istDate.format(Date.now()));
   const { data: d, error, reload } = useApi<any>(`/dashboard?from=${from}&to=${to}`);
+  const rel = useApi<any>("/relationship/summary");
   const top = d?.funnel?.[0]?.count || 0;
 
   return (
@@ -114,6 +115,50 @@ export default function Dashboard() {
               </table>
             </TableFrame>
           </section>
+
+          {rel.data && (
+            <section className="space-y-4">
+              <h2 className="text-lg font-semibold text-slate-900">Relationship</h2>
+              <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                <Card label="New (≤30d)" value={rel.data.counts?.NEW} />
+                <Card label="Active" value={rel.data.counts?.ACTIVE} />
+                <Card label="At risk" value={rel.data.counts?.AT_RISK} warn />
+                <Card label="Lapsed" value={rel.data.counts?.LAPSED} warn />
+                <Card label="12m retention" value={rel.data.retention_12m_pct == null ? "–" : `${rel.data.retention_12m_pct}%`} />
+                <Card label="Avg stages / active" value={rel.data.avg_stages_per_active} />
+                <Card label="Annual contribution / active" value={`₹${rel.data.annual_contribution_inr ?? 0}`} />
+              </div>
+              {rel.data.stage_coverage_pct && (
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {Object.entries(rel.data.stage_coverage_pct).map(([st, pct]: any) => (
+                    <span key={st} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 font-medium text-slate-700">{st}: {pct}%</span>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          {Array.isArray(d.programs) && (
+            <section>
+              <h2 className="mb-4 text-lg font-semibold text-slate-900">Recommended programmes</h2>
+              <TableFrame label="Recommended programmes">
+                <table className="w-full text-sm">
+                  <thead><tr><th className="px-4 py-3 text-left font-semibold text-slate-600">Programme</th><th className="px-4 py-3 text-left font-semibold text-slate-600">Suggested</th><th className="px-4 py-3 text-left font-semibold text-slate-600">Accepted</th><th className="px-4 py-3 text-left font-semibold text-slate-600">Declined</th></tr></thead>
+                  <tbody>
+                    {d.programs.map((p: any) => (
+                      <tr key={p.code} className="border-t border-slate-100">
+                        <td className="px-4 py-3 font-medium text-slate-900">{p.clinical_label}</td>
+                        <td className="px-4 py-3 text-slate-700">{p.suggested}</td>
+                        <td className="px-4 py-3 text-emerald-700">{p.accepted}</td>
+                        <td className="px-4 py-3 text-slate-600">{p.declined}</td>
+                      </tr>
+                    ))}
+                    {d.programs.length === 0 && <tr><td colSpan={4} className="px-4 py-3 text-slate-500">No programme recommendations in this period</td></tr>}
+                  </tbody>
+                </table>
+              </TableFrame>
+            </section>
+          )}
         </>
       )}
     </div>

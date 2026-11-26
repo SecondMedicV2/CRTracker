@@ -22,6 +22,9 @@ CALLER_OK = {
     ("POST", "/api/v1/followups/{fid}/calls"), ("GET", "/api/v1/followups/{fid}/comments"),
     ("POST", "/api/v1/followups/{fid}/comments"), ("POST", "/api/v1/followups/{fid}/connect-doctor"),
     ("GET", "/api/v1/followups/{fid}/workflow"), ("GET", "/api/v1/notifications"), ("POST", "/api/v1/notifications/read-all"),
+    ("GET", "/api/v1/patients/{pid}/relationship"), ("GET", "/api/v1/patients/{pid}/programs"),
+    ("GET", "/api/v1/refill-tasks"), ("POST", "/api/v1/refill-schedules/{sid}/confirm"),
+    ("GET", "/api/v1/patients/{pid}/referrals"), ("PATCH", "/api/v1/referrals/{rid}"),
 }
 # Routes a DOCTOR must be refused (admin-only or caller-only work).
 DOCTOR_FORBIDDEN = {
@@ -34,7 +37,7 @@ DOCTOR_FORBIDDEN = {
     ("GET", "/api/v1/identity-reviews"), ("POST", "/api/v1/identity-reviews/{rid}/decide"),
     ("POST", "/api/v1/identity-reviews/{rid}/unmerge"), ("POST", "/api/v1/followups/recompute"),
     ("POST", "/api/v1/followups/{fid}/calls"), ("POST", "/api/v1/followups/{fid}/connect-doctor"), ("GET", "/api/v1/dashboard"),
-    ("POST", "/api/v1/patients/{pid}/call"),
+    ("POST", "/api/v1/patients/{pid}/call"), ("GET", "/api/v1/relationship/summary"),
 }
 # Only a doctor may approve a call card; an admin must be refused that one route.
 ADMIN_FORBIDDEN = {("POST", "/api/v1/call-cards/{cid}/approve")}
@@ -73,7 +76,7 @@ def test_admin_matrix(admin):
 
 def test_new_routes_must_be_classified():
     """Fails when someone adds a route without deciding who may call it (update the sets above)."""
-    assert len(list(routes())) == 72  # 60 at Phase 9, 72 with AI insights and patient calling; bump with the sets
+    assert len(list(routes())) == 98  # 80 + 18 Page 5 extended clinical & family routes
 
 
 # ---- the two leaks the review found ----

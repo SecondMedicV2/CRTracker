@@ -67,4 +67,12 @@ SETTING_DEFAULTS = {
     "company_name": "our health team",  # spoken in caller scripts (Q19: real brand/pitch wording pending)
     "caller_script_requires_approval": False,  # True = callers only see doctor-approved scripts
     "callcard_lead_days": 14,  # pre-generate cards this many days before the due date
+    "care_services": [
+        {"code": "DIETITIAN_PLAN", "name": "Dietitian nutrition plan", "stage": "EATING_WELL", "default_amount_inr": 999},
+        {"code": "PREVENTIVE_SCREEN", "name": "Preventive screening plan", "stage": "PREVENTION", "default_amount_inr": 1499},
+        {"code": "PHARMACY_REFILL", "name": "Pharmacy refill", "stage": "MEDICATIONS", "default_amount_inr": 500},
+        {"code": "HOME_COLLECTION", "name": "Home sample collection", "stage": "DIAGNOSTICS", "default_amount_inr": 250},
+        {"code": "TELECONSULT", "name": "Doctor teleconsultation", "stage": "CONSULTATIONS", "default_amount_inr": 499},
+    ],
+    "relationship_thresholds": {"new_days": 30, "active_days": 90, "at_risk_days": 180},
 }

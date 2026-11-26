@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import relationship as rel
 from ..config import SETTING_DEFAULTS
 from ..db import get_db
 from ..models import AuditLog, Doctor, RuleSet, Setting, User
@@ -141,6 +142,14 @@ def put_setting(key: str, body: dict, request: Request, db: Session = Depends(ge
         raise HTTPException(422, "Time must be HH:MM")
     if type(value) is not type(SETTING_DEFAULTS[key]):
         raise HTTPException(422, f"Value must be {type(SETTING_DEFAULTS[key]).__name__}")
+    if key == "care_services":
+        for item in value:
+            if not isinstance(item, dict) or not str(item.get("code", "")).strip() or item.get("stage") not in rel.STAGES:
+                raise HTTPException(422, "Each care service needs code, name and a valid loop stage")
+    if key == "relationship_thresholds":
+        for k in ("new_days", "active_days", "at_risk_days"):
+            if not isinstance(value.get(k), int) or value[k] <= 0:
+                raise HTTPException(422, f"relationship_thresholds.{k} must be a positive integer")
     db.merge(Setting(key=key, value=value, updated_by=me.id))
     db.commit()
     audit(db, request, me.id, "update", "setting", key)

@@ -95,8 +95,8 @@ SEVERITY = {"mild_max_pct": 10, "moderate_max_pct": 25}
 # Entry format once a doctor supplies them: {"param_code": "...", "below": number or null, "above": number or null}
 CRITICAL_VALUES: list = []
 
-from .seed_programs import (CARE_PROGRAMS, DRUG_NUTRIENT_RULES, MEDICINE_CATALOGUE, PROFILE_CODES,  # noqa: E402
-                            REFERRAL_SPECIALTIES, RELATIONSHIP_NEXT_STEPS)
+from .seed_programs import (CARE_PROGRAMS, DIAGNOSTIC_FINDINGS, DRUG_NUTRIENT_RULES, MEDICINE_CATALOGUE, PROFILE_CODES,  # noqa: E402
+                            RECOMMENDATION_COMBINATIONS, REFERRAL_SPECIALTIES, RELATIONSHIP_NEXT_STEPS)
 from .seed_scripts import CALLER_FORBIDDEN, SCRIPT_TEMPLATES  # noqa: E402
 
 RULE_SETS = {
@@ -115,4 +115,6 @@ RULE_SETS = {
     "medicine_catalogue": MEDICINE_CATALOGUE,
     "drug_nutrient_rules": DRUG_NUTRIENT_RULES,
     "referral_specialties": REFERRAL_SPECIALTIES,
+    "diagnostic_findings": DIAGNOSTIC_FINDINGS,
+    "recommendation_combinations": RECOMMENDATION_COMBINATIONS,
 }

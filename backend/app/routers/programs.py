@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import extended as ext, followup as fu_svc, programs as prog_svc, relationship as rel
+from .. import extended as ext, findings, followup as fu_svc, programs as prog_svc, relationship as rel
 from ..analysis import load_rules
 from ..db import get_db
 from ..models import (CareTouchpoint, Followup, Order, Patient, PatientBucket, ProgramRecommendation, Report,
@@ -44,6 +44,7 @@ def put_health_profile(pid: int, body: dict, request: Request, db: Session = Dep
     fu_svc.sync_profile_buckets(db, p.id, commit=False)
     rel.sync_touchpoints(db, p.id, commit=False)
     prog_svc.evaluate(db, p.id, commit=False)
+    findings.sync_combinations(db, p.id, commit=False)
     db.commit()
     audit(db, request, me.id, "update", "health_profile", p.id)
     return {"patient_id": p.id, "exists": True, "updated_at": row.updated_at, **profile}
@@ -54,6 +55,12 @@ def get_patient_programs(pid: int, request: Request, db: Session = Depends(get_d
     p = _patient(db, pid)
     rules = load_rules(db)
     catalogue = {c["code"]: c for c in rules.get("care_programs", [])}
+    combo_meta = {
+        s["target"]: s
+        for c_def in rules.get("recommendation_combinations", {}).values()
+        for slot in ("primary", "secondary", "third")
+        if (s := c_def.get(slot))
+    }
     _, pids = rel.patient_family_ids(db, p.id)
     recs = list(db.scalars(
         select(ProgramRecommendation).where(ProgramRecommendation.patient_id == p.id)
@@ -68,7 +75,8 @@ def get_patient_programs(pid: int, request: Request, db: Session = Depends(get_d
             meta = catalogue.get(r.program_code, {})
             if meta.get("mode") == "DOCTOR_CONSIDER" or r.status == "EXPIRED":
                 continue
-            out.append({"caller_label": meta.get("caller_label", "Wellness plan follow-up"), "status": r.status})
+            lbl = meta.get("caller_label") or combo_meta.get(r.program_code, {}).get("caller_label", "Wellness plan follow-up")
+            out.append({"caller_label": lbl, "status": r.status})
         return out
 
     active_buckets = {
@@ -79,6 +87,7 @@ def get_patient_programs(pid: int, request: Request, db: Session = Depends(get_d
     items = []
     for r in recs:
         meta = catalogue.get(r.program_code, {})
+        c_meta = combo_meta.get(r.program_code, {})
         linked = meta.get("linked_bucket", "")
         items.append({
             "id": r.id,
@@ -88,15 +97,17 @@ def get_patient_programs(pid: int, request: Request, db: Session = Depends(get_d
             "program_code": r.program_code,
             "doc_number": meta.get("doc_number", ""),
             "group": meta.get("group", ""),
-            "clinical_label": meta.get("clinical_label", r.program_code),
-            "caller_label": meta.get("caller_label", ""),
+            "clinical_label": meta.get("clinical_label") or c_meta.get("label", r.program_code),
+            "caller_label": meta.get("caller_label") or c_meta.get("caller_label", ""),
             "trigger_text": meta.get("trigger_text", ""),
             "offering_text": meta.get("offering_text", ""),
-            "loop_stage": meta.get("loop_stage", ""),
+            "loop_stage": meta.get("loop_stage") or findings.SERVICE_LOOP_STAGE.get(r.program_code, ""),
             "mode": meta.get("mode", "AUTO_SUGGEST"),
             "linked_bucket": linked,
             "is_primary_for_bucket": bool(linked and linked in active_buckets),
             "specialty": meta.get("specialty", ""),
+            "rank": r.rank,
+            "finding_code": r.finding_code or "",
             "rule_version": r.rule_version,
             "status": r.status,
             "matched_rules": r.reason_codes or [],
@@ -105,12 +116,12 @@ def get_patient_programs(pid: int, request: Request, db: Session = Depends(get_d
             "decline_reason_code": r.decline_reason_code,
             "decided_at": r.decided_at,
         })
-    items.sort(key=lambda x: (0 if x["is_primary_for_bucket"] else 1, x["doc_number"], x["id"]))
+    items.sort(key=lambda x: (0 if x["is_primary_for_bucket"] else 1, x["rank"] or 99, x["doc_number"], x["id"]))
     return items
 
 
 class ProgramDecision(BaseModel):
-    decision: str  # ACCEPTED | DECLINED | DISCUSS_LATER
+    decision: str  # ACCEPTED | DECLINED | DISCUSS_LATER | ENROLLED
     reason_code: str = Field("", max_length=40)
 
 
@@ -121,8 +132,8 @@ def decide_program(rec_id: int, body: ProgramDecision, request: Request, db: Ses
     if not rec:
         raise HTTPException(404, "No such recommendation")
     decision = body.decision.strip().upper()
-    if decision not in ("ACCEPTED", "DECLINED", "DISCUSS_LATER"):
-        raise HTTPException(422, "Decision must be ACCEPTED, DECLINED or DISCUSS_LATER")
+    if decision not in ("ACCEPTED", "DECLINED", "DISCUSS_LATER", "ENROLLED"):
+        raise HTTPException(422, "Decision must be ACCEPTED, ENROLLED, DECLINED or DISCUSS_LATER")
 
     meta = next((c for c in load_rules(db).get("care_programs", []) if c["code"] == rec.program_code), {})
     if decision == "DECLINED" and meta.get("mode") == "DOCTOR_CONSIDER" and not body.reason_code.strip():
@@ -133,8 +144,8 @@ def decide_program(rec_id: int, body: ProgramDecision, request: Request, db: Ses
     rec.decided_at = datetime.now(timezone.utc)
     rec.decline_reason_code = body.reason_code.strip().upper()[:40] if decision == "DECLINED" else ""
 
-    if decision == "ACCEPTED":
-        stage = meta.get("loop_stage", "PREVENTION")
+    if decision in ("ACCEPTED", "ENROLLED"):
+        stage = meta.get("loop_stage") or findings.SERVICE_LOOP_STAGE.get(rec.program_code, "PREVENTION")
         existing_tp = db.scalar(select(CareTouchpoint).where(
             CareTouchpoint.patient_id == rec.patient_id,
             CareTouchpoint.ref_entity == "program_recommendation",
@@ -149,7 +160,7 @@ def decide_program(rec_id: int, body: ProgramDecision, request: Request, db: Ses
             ))
         if meta.get("specialty"):
             ext.ensure_referral_for_accepted_program(db, rec.patient_id, rec.followup_id, rec.program_code, meta["specialty"], me.id)
-        if rec.program_code == "FOLLOWUP_DIAGNOSTIC" and rec.followup_id:
+        if rec.program_code in ("FOLLOWUP_DIAGNOSTIC", "RETEST") and rec.followup_id:
             if not db.scalar(select(RetestRecommendation.id).where(RetestRecommendation.followup_id == rec.followup_id).limit(1)):
                 rules = load_rules(db)
                 cat_codes = {t["code"] for t in rules.get("test_catalogue", [])}
@@ -173,5 +184,14 @@ def decide_program(rec_id: int, body: ProgramDecision, request: Request, db: Ses
         "status": rec.status,
         "decline_reason_code": rec.decline_reason_code,
         "decided_at": rec.decided_at,
-        "suggested_specialty": meta.get("specialty", "") if decision == "ACCEPTED" else "",
+        "suggested_specialty": meta.get("specialty", "") if decision in ("ACCEPTED", "ENROLLED") else "",
     }
+
+
+@router.get("/followups/{fid}/recommendations")
+def followup_recommendations(fid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(clinical)):
+    f = db.get(Followup, fid)
+    if not f:
+        raise HTTPException(404, "No such follow-up")
+    audit(db, request, me.id, "view", "followup_recommendations", fid)
+    return findings.combinations_for_followup(db, fid)

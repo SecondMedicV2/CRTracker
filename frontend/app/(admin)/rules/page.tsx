@@ -64,6 +64,14 @@ const RULE_METADATA: Record<string, { title: string; desc: string }> = {
   referral_specialties: {
     title: "Specialist Referral Directory",
     desc: "Configured medical specialties mapped to neutral caller-safe appointment labels."
+  },
+  diagnostic_findings: {
+    title: "10 Shared Diagnostic Findings",
+    desc: "Starter clinical triggers defining the 10 key findings shared across recommendations, retesting, and journeys."
+  },
+  recommendation_combinations: {
+    title: "Ranked Recommendation Combinations (Primary -> Secondary -> Third)",
+    desc: "Starter Primary, Secondary, and Third recommendations and neutral caller labels for each diagnostic finding."
   }
 };
 

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import assign, extended as ext, programs as prog_svc, relationship as rel, storage
+from .. import assign, extended as ext, findings, programs as prog_svc, relationship as rel, storage
 from ..analysis import load_rules
 from ..db import get_db
 from ..models import (CareTouchpoint, Consent, FamilyLink, HomeReading, HomeVisit, Patient, PatientMedication,
@@ -32,6 +32,7 @@ def _patient(db: Session, pid: int) -> Patient:
 def _reeval(db: Session, pid: int) -> None:
     rel.sync_touchpoints(db, pid, commit=False)
     prog_svc.evaluate(db, pid, commit=False)
+    findings.sync_combinations(db, pid, commit=False)
 
 
 # ---- A. Medicines (doctor/admin only; callers get 403) ----

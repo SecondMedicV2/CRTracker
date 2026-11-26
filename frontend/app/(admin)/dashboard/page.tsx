@@ -159,6 +159,36 @@ export default function Dashboard() {
               </TableFrame>
             </section>
           )}
+
+          {Array.isArray(d.finding_funnel) && (
+            <section>
+              <h2 className="mb-4 text-lg font-semibold text-slate-900">Finding recommendation conversion funnel</h2>
+              <TableFrame label="Finding recommendation conversion funnel">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr>
+                      <th className="px-4 py-3 text-left font-semibold text-slate-600">Diagnostic finding</th>
+                      <th className="px-4 py-3 text-left font-semibold text-slate-600">Patients</th>
+                      <th className="px-4 py-3 text-left font-semibold text-slate-600">Primary accepted</th>
+                      <th className="px-4 py-3 text-left font-semibold text-slate-600">Secondary accepted</th>
+                      <th className="px-4 py-3 text-left font-semibold text-slate-600">Third accepted</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.finding_funnel.map((f: any) => (
+                      <tr key={f.finding_code} className="border-t border-slate-100">
+                        <td className="px-4 py-3 font-medium text-slate-900">{f.label}</td>
+                        <td className="px-4 py-3 text-slate-700">{f.patients}</td>
+                        <td className="px-4 py-3 text-emerald-700">{f.primary_pct}%</td>
+                        <td className="px-4 py-3 text-teal-700">{f.secondary_pct}%</td>
+                        <td className="px-4 py-3 text-slate-700">{f.third_pct}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableFrame>
+            </section>
+          )}
         </>
       )}
     </div>

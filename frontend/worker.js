@@ -33,6 +33,9 @@ import {
   DEFAULT_MEDICINE_CATALOGUE,
   DEFAULT_DRUG_NUTRIENT_RULES,
   DEFAULT_REFERRAL_SPECIALTIES,
+  DEFAULT_DIAGNOSTIC_FINDINGS,
+  DEFAULT_RECOMMENDATION_COMBINATIONS,
+  SERVICE_LOOP_STAGE,
   HOME_KINDS,
   MAX_HOME_CSV_BYTES,
   todayIstStr,
@@ -40,7 +43,10 @@ import {
   cleanProfile,
   bpIsHigh,
   boneRiskFromProfile,
+  buildProgramContext,
   evaluatePrograms,
+  ifPrescribedOk,
+  syncCombinationsInStore,
   refillTickInStore,
   checkHomeReadingAlert,
   syncTouchpointsInStore,
@@ -83,19 +89,13 @@ function consentingFamilySummaries(store, patientId) {
   return out;
 }
 
-async function syncProgramsInStore(env, store, patientId, reportId, params, nowIso = todayIstStr()) {
-  if (!store.program_recommendations) store.program_recommendations = [];
-  if (!store.health_profiles) store.health_profiles = {};
+async function buildEvalArgs(env, store, patientId, reportId, params, nowIso = todayIstStr()) {
   const patient = (store.patients || []).find((p) => p.id === patientId);
-  if (!patient) return [];
   const report = reportId ? (store.reports || []).find((r) => r.id === reportId) : (store.reports || []).find((r) => r.patient_id === patientId && r.status === "READY");
   const rid = report ? report.id : null;
   const fu = rid ? (store.followups || []).find((f) => f.report_id === rid) : null;
   const buckets = fu?.buckets || [];
-  const rawHp = store.health_profiles[patientId];
-  const programs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
-  const byCode = Object.fromEntries(programs.map((p) => [p.code, p]));
-  const ruleVer = store.rules?.care_programs?.version || 1;
+  const rawHp = (store.health_profiles || {})[patientId];
   const medCatalogue = store.rules?.medicine_catalogue?.data || store.rules?.medicine_catalogue || DEFAULT_MEDICINE_CATALOGUE;
   const drugNutrientRules = store.rules?.drug_nutrient_rules?.data || store.rules?.drug_nutrient_rules || DEFAULT_DRUG_NUTRIENT_RULES;
   const referenceRanges = store.rules?.reference_ranges?.data || store.rules?.reference_ranges || DEFAULT_REFERENCE_RANGES;
@@ -121,13 +121,24 @@ async function syncProgramsInStore(env, store, patientId, reportId, params, nowI
   const familyChronic = consentingFamilySummaries(store, patientId).some(
     (s) => s.has_consent && ((s.summary?.confirmed_conditions || []).length > 0 || (s.summary?.active_buckets || []).length > 0)
   );
-
-  const matches = evaluatePrograms({
-    patient, report, params: params || [], buckets,
-    profile: rawHp || {}, hasProfile: Boolean(rawHp), programs, todayIso: nowIso,
+  return {
+    patient, report, rid, fu, params: params || [], buckets,
+    profile: rawHp || {}, hasProfile: Boolean(rawHp), todayIso: nowIso,
     activeMeds, medCatalogue, drugNutrientRules, prevLabs, serialCodes, referenceRanges,
     openReferrals, isEscalation, hasHomeReadings, familyChronic,
-  });
+  };
+}
+
+async function syncProgramsInStore(env, store, patientId, reportId, params, nowIso = todayIstStr()) {
+  if (!store.program_recommendations) store.program_recommendations = [];
+  if (!store.health_profiles) store.health_profiles = {};
+  const args = await buildEvalArgs(env, store, patientId, reportId, params, nowIso);
+  if (!args.patient) return [];
+  const { rid, fu } = args;
+  const programs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
+  const byCode = Object.fromEntries(programs.map((p) => [p.code, p]));
+  const ruleVer = store.rules?.care_programs?.version || 1;
+  const matches = evaluatePrograms({ ...args, programs });
   const byMatch = Object.fromEntries(matches.map((m) => [m.program_code, m]));
   const existing = store.program_recommendations.filter((r) => r.patient_id === patientId && (r.report_id ?? null) === rid);
   const existingByCode = Object.fromEntries(existing.map((r) => [r.program_code, r]));
@@ -151,6 +162,8 @@ async function syncProgramsInStore(env, store, patientId, reportId, params, nowI
         program_code: m.program_code,
         rule_version: ruleVer,
         status: "SUGGESTED",
+        rank: null,
+        finding_code: "",
         reason_codes: m.matched_rules,
         missing_data: m.missing_data,
         notes: m.notes,
@@ -165,6 +178,10 @@ async function syncProgramsInStore(env, store, patientId, reportId, params, nowI
   for (const cur of existing) {
     if (!byMatch[cur.program_code] && cur.status === "SUGGESTED") cur.status = "EXPIRED";
   }
+  const findingRules = store.rules?.diagnostic_findings?.data || store.rules?.diagnostic_findings || DEFAULT_DIAGNOSTIC_FINDINGS;
+  const comboRules = store.rules?.recommendation_combinations?.data || store.rules?.recommendation_combinations || DEFAULT_RECOMMENDATION_COMBINATIONS;
+  const comboVer = store.rules?.recommendation_combinations?.version || 1;
+  syncCombinationsInStore(store, buildProgramContext(args), rid, fu, { findingRules, comboRules, comboVer });
   if (newConsider) {
     if (!store.notifications) store.notifications = { unread: 0, items: [] };
     store.notifications.unread = (store.notifications.unread || 0) + 1;
@@ -536,10 +553,12 @@ function forbidden(path, method, role) {
     return true;
   }
   if (path === "/relationship/summary") return true;
+  if (role === "DOCTOR" && method === "POST" && /^\/rules\/[a-zA-Z0-9_]+\/signoff$/.test(path)) return false;
   if (method !== "GET" && /^\/(settings|rules|doctors)(\/|$)/.test(path)) return true;
   if (role === "CALLER") {
     if (method === "GET" && /^\/patients\/\d+\/(relationship|programs|referrals)$/.test(path)) return false;
     if (/^\/reports\/\d+\/insight(?:\/|$)/.test(path) && method === "GET") return false;
+    if (/^\/followups\/\d+\/recommendations$/.test(path)) return true;
     if (/^\/(reports|patients|trends|exports\/trends|touchpoints|program-recommendations|medicines|home-visits|family-links)(\/|$)/.test(path)) return true;
   }
   return false;
@@ -1566,22 +1585,58 @@ async function handleApiRequest(request, url, env) {
 
   // --- DASHBOARD ---
   if (path === "/dashboard" && method === "GET") {
+    const fromD = url.searchParams.get("from") || "";
+    const toD = url.searchParams.get("to") || "";
+    const inWin = (iso) => {
+      if (!fromD && !toD) return true;
+      const d = String(iso || "").slice(0, 10);
+      if (!d) return true;
+      return (!fromD || d >= fromD) && (!toD || d <= toD);
+    };
     const orders = store.orders || [];
     const reports = store.reports || [];
     const audit = store.audit || [];
     const progRules = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
     const progLabels = Object.fromEntries(progRules.map((p) => [p.code, p.clinical_label || p.code]));
+    const comboRules = store.rules?.recommendation_combinations?.data || store.rules?.recommendation_combinations || DEFAULT_RECOMMENDATION_COMBINATIONS;
+    const comboLabels = {};
+    for (const cDef of Object.values(comboRules)) {
+      for (const s of Object.values(cDef || {})) if (s?.target && s?.label) comboLabels[s.target] = s.label;
+    }
+    const recsInWin = (store.program_recommendations || []).filter((r) => inWin(r.created_at));
     const progMap = {};
-    for (const r of store.program_recommendations || []) {
-      const e = progMap[r.program_code] || { code: r.program_code, clinical_label: progLabels[r.program_code] || r.program_code, suggested: 0, accepted: 0, declined: 0 };
+    for (const r of recsInWin) {
+      const e = progMap[r.program_code] || { code: r.program_code, clinical_label: progLabels[r.program_code] || comboLabels[r.program_code] || r.program_code, suggested: 0, accepted: 0, declined: 0 };
       if (r.status === "SUGGESTED") e.suggested += 1;
-      else if (r.status === "ACCEPTED") e.accepted += 1;
+      else if (r.status === "ACCEPTED" || r.status === "ENROLLED") e.accepted += 1;
       else if (r.status === "DECLINED") e.declined += 1;
       progMap[r.program_code] = e;
     }
+    const fRules = store.rules?.diagnostic_findings?.data || store.rules?.diagnostic_findings || DEFAULT_DIAGNOSTIC_FINDINGS;
+    const fusInWin = (store.followups || []).filter((f) => inWin(f.created_at || f.due_on));
+    const byFid = {};
+    for (const r of recsInWin) {
+      if (r.followup_id) {
+        if (!byFid[r.followup_id]) byFid[r.followup_id] = {};
+        byFid[r.followup_id][r.program_code] = r.status;
+      }
+    }
+    const findingFunnel = fRules.map((fMeta) => {
+      const fc = fMeta.code;
+      const cDef = comboRules[fc] || {};
+      const matching = fusInWin.filter((f) => (f.finding_codes || []).includes(fc));
+      const total = matching.length;
+      const pct = (slot) => {
+        const t = cDef[slot]?.target;
+        if (!t || !total) return 0;
+        const acc = matching.filter((f) => ["ACCEPTED", "ENROLLED"].includes(byFid[f.id]?.[t])).length;
+        return Math.round((100 * acc) / total);
+      };
+      return { finding_code: fc, label: fMeta.label || fc, patients: total, primary_pct: pct("primary"), secondary_pct: pct("secondary"), third_pct: pct("third") };
+    });
     return reply(200, {
-      from: url.searchParams.get("from") || "",
-      to: url.searchParams.get("to") || "",
+      from: fromD,
+      to: toD,
       orders: {
         imported: orders.length,
         by_status: {},
@@ -1610,7 +1665,8 @@ async function handleApiRequest(request, url, env) {
         pending_identity: 0
       },
       doctors: [],
-      programs: Object.values(progMap).sort((a, b) => a.code.localeCompare(b.code))
+      programs: Object.values(progMap).sort((a, b) => a.code.localeCompare(b.code)),
+      finding_funnel: findingFunnel
     });
   }
 
@@ -2325,6 +2381,7 @@ async function handleApiRequest(request, url, env) {
         attempts: fu.attempts || 0,
         report_age_days: fu.report_age_days || 0,
         buckets: fu.buckets || [],
+        finding_codes: fu.finding_codes || [],
         retest_score: fu.retest_score ?? null,
         retest_tier: fu.retest_tier ?? null,
         assigned_doctor_id: fu.assigned_doctor_id || null,
@@ -2334,6 +2391,52 @@ async function handleApiRequest(request, url, env) {
         buckets_detail: fu.buckets_detail || [],
         parked: fu.parked || false
       });
+    }
+    if (sub === "/recommendations" && method === "GET") {
+      const fu = store.followups.find((f) => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      const rep = fu.report_id ? (store.reports || []).find((r) => r.id === fu.report_id) : null;
+      const pList = rep ? ((await kvGet(env, `report_params:${rep.id}`)) || []) : [];
+      const args = await buildEvalArgs(env, store, fu.patient_id, rep?.id || null, pList);
+      const ctx = buildProgramContext(args);
+      const findingRules = store.rules?.diagnostic_findings?.data || store.rules?.diagnostic_findings || DEFAULT_DIAGNOSTIC_FINDINGS;
+      const comboRules = store.rules?.recommendation_combinations?.data || store.rules?.recommendation_combinations || DEFAULT_RECOMMENDATION_COMBINATIONS;
+      const fMap = Object.fromEntries(findingRules.map((x) => [x.code, x]));
+      const codes = (Array.isArray(fu.finding_codes) && fu.finding_codes.length)
+        ? fu.finding_codes
+        : syncCombinationsInStore(store, ctx, rep?.id || null, fu, { findingRules, comboRules });
+      const recByCode = Object.fromEntries(
+        (store.program_recommendations || [])
+          .filter((r) => r.patient_id === fu.patient_id && (r.report_id ?? null) === (fu.report_id ?? null))
+          .map((r) => [r.program_code, r])
+      );
+      const rows = codes.map((fc) => {
+        const meta = fMap[fc] || {};
+        const cDef = comboRules[fc] || {};
+        const row = { finding_code: fc, finding_label: meta.label || fc, icon: meta.icon || "•" };
+        for (const [rank, slot] of [[1, "primary"], [2, "secondary"], [3, "third"]]) {
+          const spec = cDef[slot];
+          if (!spec || !ifPrescribedOk(spec, ctx)) {
+            row[slot] = null;
+            continue;
+          }
+          const rec = recByCode[spec.target];
+          row[slot] = {
+            recommendation_id: rec ? rec.id : null,
+            target: spec.target,
+            label: spec.label,
+            condition: spec.condition || "ALWAYS",
+            status: rec ? rec.status : "SUGGESTED",
+            rank,
+            effective_rank: rec ? rec.rank : rank,
+            owner_finding: rec ? (rec.finding_code || fc) : fc
+          };
+        }
+        return row;
+      });
+      recordAudit(store, me, "view", "followup_recommendations", fid);
+      await saveStore(env, store);
+      return reply(200, { followup_id: fu.id, finding_codes: codes, combinations: rows });
     }
     if (!sub && method === "PATCH") {
       const fu = store.followups.find((f) => f.id === fid);
@@ -2456,6 +2559,18 @@ async function handleApiRequest(request, url, env) {
           .map(r => cat[r.program_code]?.caller_label)
           .filter(Boolean)
       )].sort();
+      const comboRules = store.rules?.recommendation_combinations?.data || store.rules?.recommendation_combinations || DEFAULT_RECOMMENDATION_COMBINATIONS;
+      const comboLabels = {};
+      for (const cDef of Object.values(comboRules)) {
+        for (const s of Object.values(cDef || {})) if (s?.target && s?.caller_label) comboLabels[s.target] = comboLabels[s.target] || s.caller_label;
+      }
+      const nextSteps = [...new Set(
+        (store.program_recommendations || [])
+          .filter(r => r.patient_id === fu?.patient_id && r.rank != null && ["SUGGESTED", "ACCEPTED", "ENROLLED"].includes(r.status) && cat[r.program_code]?.mode !== "DOCTOR_CONSIDER")
+          .sort((a, b) => (a.rank - b.rank) || (a.id - b.id))
+          .map(r => comboLabels[r.program_code] || cat[r.program_code]?.caller_label)
+          .filter(Boolean)
+      )];
       const hasDueRefill = (store.refill_schedules || []).some(s => s.patient_id === fu?.patient_id && s.status === "ACTIVE" && s.task_status === "DUE");
       const specialistBookings = (store.referrals || [])
         .filter(r => r.patient_id === fu?.patient_id && (r.status === "SUGGESTED" || r.status === "BOOKED"))
@@ -2473,6 +2588,7 @@ async function handleApiRequest(request, url, env) {
         do_not_say: card.content?.caller_script?.do_not_say || [],
         priority: fu?.priority || "ROUTINE",
         program_followups: programFollowups,
+        next_steps: nextSteps,
         refill_reminder: hasDueRefill ? "Pharmacy refill reminder call" : null,
         specialist_bookings: specialistBookings
       });
@@ -2713,17 +2829,26 @@ async function handleApiRequest(request, url, env) {
     if (!p) return reply(404, { detail: "No such patient" });
     const progs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
     const cat = Object.fromEntries(progs.map((x) => [x.code, x]));
+    const comboRules = store.rules?.recommendation_combinations?.data || store.rules?.recommendation_combinations || DEFAULT_RECOMMENDATION_COMBINATIONS;
+    const comboMeta = {};
+    for (const cDef of Object.values(comboRules)) {
+      for (const s of Object.values(cDef || {})) if (s?.target) comboMeta[s.target] = comboMeta[s.target] || s;
+    }
     const recs = (store.program_recommendations || []).filter((r) => r.patient_id === pid);
     recordAudit(store, me, "view", "program_recommendations", pid);
     await saveStore(env, store);
     if (me.role === "CALLER") {
       return reply(200, recs
         .filter((r) => cat[r.program_code]?.mode !== "DOCTOR_CONSIDER" && r.status !== "EXPIRED")
-        .map((r) => ({ caller_label: cat[r.program_code]?.caller_label || "Wellness plan follow-up", status: r.status })));
+        .map((r) => ({
+          caller_label: cat[r.program_code]?.caller_label || comboMeta[r.program_code]?.caller_label || "Wellness plan follow-up",
+          status: r.status
+        })));
     }
     const activeBuckets = new Set((store.followups || []).filter((f) => f.patient_id === pid).flatMap((f) => f.buckets || []));
     const items = recs.map((r) => {
       const meta = cat[r.program_code] || {};
+      const cMeta = comboMeta[r.program_code] || {};
       const linked = meta.linked_bucket || "";
       return {
         id: r.id,
@@ -2733,15 +2858,17 @@ async function handleApiRequest(request, url, env) {
         program_code: r.program_code,
         doc_number: meta.doc_number || "",
         group: meta.group || "",
-        clinical_label: meta.clinical_label || r.program_code,
-        caller_label: meta.caller_label || "",
+        clinical_label: meta.clinical_label || cMeta.label || r.program_code,
+        caller_label: meta.caller_label || cMeta.caller_label || "",
         trigger_text: meta.trigger_text || "",
         offering_text: meta.offering_text || "",
-        loop_stage: meta.loop_stage || "",
+        loop_stage: meta.loop_stage || SERVICE_LOOP_STAGE[r.program_code] || "",
         mode: meta.mode || "AUTO_SUGGEST",
         linked_bucket: linked,
         is_primary_for_bucket: Boolean(linked && activeBuckets.has(linked)),
         specialty: meta.specialty || "",
+        rank: r.rank ?? null,
+        finding_code: r.finding_code || "",
         rule_version: r.rule_version || 1,
         status: r.status,
         matched_rules: r.reason_codes || [],
@@ -2751,7 +2878,7 @@ async function handleApiRequest(request, url, env) {
         decided_at: r.decided_at || null
       };
     });
-    items.sort((a, b) => (a.is_primary_for_bucket === b.is_primary_for_bucket ? 0 : a.is_primary_for_bucket ? -1 : 1) || a.doc_number.localeCompare(b.doc_number) || a.id - b.id);
+    items.sort((a, b) => (a.is_primary_for_bucket === b.is_primary_for_bucket ? 0 : a.is_primary_for_bucket ? -1 : 1) || ((a.rank ?? 99) - (b.rank ?? 99)) || a.doc_number.localeCompare(b.doc_number) || a.id - b.id);
     return reply(200, items);
   }
 
@@ -2762,7 +2889,7 @@ async function handleApiRequest(request, url, env) {
     if (!rec) return reply(404, { detail: "No such recommendation" });
     const b = await request.json().catch(() => ({}));
     const decision = String(b.decision || "").trim().toUpperCase();
-    if (!["ACCEPTED", "DECLINED", "DISCUSS_LATER"].includes(decision)) return reply(422, { detail: "Decision must be ACCEPTED, DECLINED or DISCUSS_LATER" });
+    if (!["ACCEPTED", "ENROLLED", "DECLINED", "DISCUSS_LATER"].includes(decision)) return reply(422, { detail: "Decision must be ACCEPTED, ENROLLED, DECLINED or DISCUSS_LATER" });
     const progs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
     const meta = progs.find((x) => x.code === rec.program_code) || {};
     const reasonCode = String(b.reason_code || "").trim().toUpperCase().slice(0, 40);
@@ -2773,9 +2900,9 @@ async function handleApiRequest(request, url, env) {
     rec.decided_by = me.id;
     rec.decided_at = new Date().toISOString();
     rec.decline_reason_code = decision === "DECLINED" ? reasonCode : "";
-    if (decision === "ACCEPTED") {
+    if (decision === "ACCEPTED" || decision === "ENROLLED") {
       if (!store.care_touchpoints) store.care_touchpoints = [];
-      const stage = meta.loop_stage || "PREVENTION";
+      const stage = meta.loop_stage || SERVICE_LOOP_STAGE[rec.program_code] || "PREVENTION";
       if (!store.care_touchpoints.some((t) => t.patient_id === rec.patient_id && t.ref_entity === "program_recommendation" && t.ref_id === rec.id && t.stage === stage)) {
         store.care_touchpoints.unshift({
           id: nextId(store.care_touchpoints),
@@ -2809,7 +2936,7 @@ async function handleApiRequest(request, url, env) {
           });
         }
       }
-      if (rec.program_code === "FOLLOWUP_DIAGNOSTIC" && rec.followup_id) {
+      if ((rec.program_code === "FOLLOWUP_DIAGNOSTIC" || rec.program_code === "RETEST") && rec.followup_id) {
         if (!store.recommendations) store.recommendations = {};
         if (!store.recommendations[rec.followup_id]) {
           const fu = (store.followups || []).find((f) => f.id === rec.followup_id);
@@ -2842,7 +2969,7 @@ async function handleApiRequest(request, url, env) {
       status: rec.status,
       decline_reason_code: rec.decline_reason_code,
       decided_at: rec.decided_at,
-      suggested_specialty: decision === "ACCEPTED" ? (meta.specialty || "") : ""
+      suggested_specialty: (decision === "ACCEPTED" || decision === "ENROLLED") ? (meta.specialty || "") : ""
     });
   }
 
@@ -3423,7 +3550,9 @@ async function handleApiRequest(request, url, env) {
     care_programs: DEFAULT_CARE_PROGRAMS,
     medicine_catalogue: DEFAULT_MEDICINE_CATALOGUE,
     drug_nutrient_rules: DEFAULT_DRUG_NUTRIENT_RULES,
-    referral_specialties: DEFAULT_REFERRAL_SPECIALTIES
+    referral_specialties: DEFAULT_REFERRAL_SPECIALTIES,
+    diagnostic_findings: DEFAULT_DIAGNOSTIC_FINDINGS,
+    recommendation_combinations: DEFAULT_RECOMMENDATION_COMBINATIONS
   };
 
   if (path === "/rules" && method === "GET") {

@@ -814,6 +814,11 @@ function evalNode(node, ctx) {
   if (node.family_member_chronic) {
     return [Boolean(ctx.familyChronic), ctx.familyChronic ? ["family:chronic_member"] : [], []];
   }
+  if (node.report_classification) {
+    const cls = String(ctx.report?.classification || "").toUpperCase();
+    const ok = cls === String(node.report_classification).toUpperCase();
+    return [ok, ok ? [`report:${cls}`] : [], []];
+  }
   if (node.profile) {
     const path = node.profile;
     const val = getField(profile, path);
@@ -851,8 +856,8 @@ function evalNode(node, ctx) {
   return [false, [], []];
 }
 
-export function evaluatePrograms({
-  patient, report, params = [], buckets = [], profile, hasProfile = false, programs = DEFAULT_CARE_PROGRAMS, todayIso = todayIstStr(),
+export function buildProgramContext({
+  patient, report, params = [], buckets = [], profile, hasProfile = false, todayIso = todayIstStr(),
   activeMeds = [], medCatalogue = DEFAULT_MEDICINE_CATALOGUE, drugNutrientRules = DEFAULT_DRUG_NUTRIENT_RULES,
   prevLabs = {}, serialCodes = [], referenceRanges = {}, openReferrals = [], isEscalation = false, hasHomeReadings = false, familyChronic = false,
 }) {
@@ -887,21 +892,26 @@ export function evaluatePrograms({
     ? Object.keys(labs).filter((c) => serialSet.has(c) && linkedMarkers.has(c)).sort().map((c) => `treatment_response:${c}`)
     : [];
 
-  const ctx = {
+  return {
     patient, report, profile: clean, hasProfile, labs, buckets: bSet, age, gender, todayIso,
     activeMeds, chronicMeds, drugNutrientHits, prevLabs, treatmentResponseHits, referenceRanges,
-    openReferrals, isEscalation, hasHomeReadings, familyChronic,
+    openReferrals, isEscalation, hasHomeReadings, familyChronic, catMap,
   };
+}
+
+export function evaluatePrograms(opts) {
+  const programs = opts.programs || DEFAULT_CARE_PROGRAMS;
+  const ctx = buildProgramContext(opts);
   const out = [];
   for (const prog of programs) {
     const [ok, matched, missing] = evalNode(prog.trigger, ctx);
     if (!ok) continue;
     const notes = [];
-    if (prog.clearance_if_limitations && (clean.physical_limitations || []).some((x) => x !== "NONE")) {
+    if (prog.clearance_if_limitations && (ctx.profile.physical_limitations || []).some((x) => x !== "NONE")) {
       notes.push("doctor clearance needed");
     }
     if (prog.code === "DRUG_NUTRIENT_REVIEW") {
-      for (const h of drugNutrientHits) if (h.note) notes.push(h.note);
+      for (const h of ctx.drugNutrientHits) if (h.note) notes.push(h.note);
     }
     out.push({
       program_code: prog.code,
@@ -911,6 +921,181 @@ export function evaluatePrograms({
     });
   }
   return out;
+}
+
+export const SERVICE_LOOP_STAGE = {
+  RETEST: "DIAGNOSTICS",
+  LIFESTYLE_MONITORING: "ONGOING_MONITORING",
+  DIETITIAN_CONSULT: "EATING_WELL",
+  INTEGRATED_CHRONIC_CARE: "CHRONIC_CONDITIONS",
+  SCREENING_SCHEDULE: "PREVENTION",
+};
+
+export const DEFAULT_DIAGNOSTIC_FINDINGS = [
+  { code: "LOW_VITD", label: "Low Vitamin D", icon: "☀️", severity_markers: ["VITD"], note: "starter value, clinician to confirm", trigger: { lab: "VITD", flag: "LOW" } },
+  { code: "HIGH_HBA1C", label: "Elevated HbA1c", icon: "🩸", severity_markers: ["HBA1C"], note: "starter value, clinician to confirm", trigger: { lab: "HBA1C", flag: "HIGH" } },
+  { code: "HIGH_CHOLESTEROL", label: "Elevated cholesterol", icon: "❤️", severity_markers: ["CHOL", "LDL", "NON_HDL"], note: "starter value, clinician to confirm", trigger: { lab_any: ["CHOL", "LDL", "NON_HDL"], flag: "HIGH" } },
+  { code: "HIGH_TSH", label: "Elevated TSH", icon: "🦋", severity_markers: ["TSH"], note: "starter value, clinician to confirm", trigger: { lab: "TSH", flag: "HIGH" } },
+  { code: "LOW_HB", label: "Low hemoglobin", icon: "🧬", severity_markers: ["HB"], note: "starter value, clinician to confirm", trigger: { lab: "HB", flag: "LOW" } },
+  { code: "HIGH_CREATININE", label: "Elevated creatinine", icon: "🫘", severity_markers: ["CREAT", "EGFR"], note: "starter value, clinician to confirm", trigger: { any: [{ lab: "CREAT", flag: "HIGH" }, { lab: "EGFR", flag: "LOW" }] } },
+  { code: "ABNORMAL_LFT", label: "Abnormal liver enzymes", icon: "🫀", severity_markers: ["ALT", "AST", "ALP", "GGT", "BILI_T"], note: "starter value, clinician to confirm", trigger: { lab_any: ["ALT", "AST", "ALP", "GGT", "BILI_T"], flag: "HIGH" } },
+  {
+    code: "OBESITY_METABOLIC", label: "Obesity with metabolic abnormalities", icon: "⚖️",
+    severity_markers: ["HBA1C", "CHOL", "LDL", "NON_HDL", "TG", "HDL"], note: "starter value, clinician to confirm",
+    trigger: { all: [{ profile: "vitals.bmi", op: ">=", value: 25 }, { any: [{ lab_any: ["HBA1C", "CHOL", "LDL", "NON_HDL", "TG"], flag: "HIGH" }, { lab: "HDL", flag: "LOW" }] }] },
+  },
+  { code: "MULTI_CHRONIC", label: "Multiple chronic conditions", icon: "🩺", severity_markers: [], note: "starter value, clinician to confirm", trigger: { chronic_count: ">=", value: 2 } },
+  {
+    code: "NORMAL_WITH_RISK", label: "Normal report with risk factors", icon: "🛡️", severity_markers: [], note: "starter value, clinician to confirm",
+    trigger: { all: [{ report_classification: "NORMAL" }, { any: [{ age: ">=", value: 40 }, { profile: "family_history", any_present: true }, { profile: "vitals.bmi", op: ">=", value: 23 }, { profile: "lifestyle.smoking", op: "==", value: true }, { profile: "lifestyle.activity_level", op: "==", value: "SEDENTARY" }] }] },
+  },
+];
+
+export const DEFAULT_RECOMMENDATION_COMBINATIONS = {
+  LOW_VITD: {
+    primary: { label: "Vitamin plan", caller_label: "Wellness supplement plan", target: "VITAMIN_PLAN", condition: "ALWAYS" },
+    secondary: { label: "Bone health assessment", caller_label: "Doctor follow-up plan", target: "BONE_HEALTH", condition: "ALWAYS" },
+    third: { label: "Appropriate retesting", caller_label: "Repeat test reminder", target: "RETEST", condition: "ALWAYS" },
+  },
+  HIGH_HBA1C: {
+    primary: { label: "Diabetes plan", caller_label: "Doctor follow-up plan", target: "DIABETES_MGMT", condition: "ALWAYS" },
+    secondary: { label: "Personalized diet", caller_label: "Nutrition follow-up", target: "DIET_PLAN", condition: "ALWAYS" },
+    third: { label: "Medication review/refill if prescribed", caller_label: "Care plan follow-up", target: "MED_REVIEW", condition: "IF_PRESCRIBED", drug_classes: ["BIGUANIDE", "SULFONYLUREA", "INSULIN"] },
+  },
+  HIGH_CHOLESTEROL: {
+    primary: { label: "Cardiac risk assessment", caller_label: "Doctor follow-up plan", target: "CARDIAC_RISK_MGMT", condition: "ALWAYS" },
+    secondary: { label: "Diet plan", caller_label: "Nutrition follow-up", target: "DIET_PLAN", condition: "ALWAYS" },
+    third: { label: "Lifestyle monitoring", caller_label: "Wellness follow-up", target: "LIFESTYLE_MONITORING", condition: "ALWAYS" },
+  },
+  HIGH_TSH: {
+    primary: { label: "Thyroid consultation", caller_label: "Doctor follow-up plan", target: "THYROID_MGMT", condition: "ALWAYS" },
+    secondary: { label: "Medication management if prescribed", caller_label: "Care plan follow-up", target: "MED_REVIEW", condition: "IF_PRESCRIBED", drug_classes: ["THYROID_HORMONE"] },
+    third: { label: "Thyroid follow-up", caller_label: "Follow-up diagnostic call", target: "FOLLOWUP_DIAGNOSTIC", condition: "ALWAYS" },
+  },
+  LOW_HB: {
+    primary: { label: "Anemia evaluation", caller_label: "Doctor follow-up plan", target: "ANEMIA_MGMT", condition: "ALWAYS" },
+    secondary: { label: "Nutrition assessment", caller_label: "Nutrition follow-up", target: "DIET_PLAN", condition: "ALWAYS" },
+    third: { label: "Follow-up diagnostics", caller_label: "Repeat test reminder", target: "FOLLOWUP_DIAGNOSTIC", condition: "ALWAYS" },
+  },
+  HIGH_CREATININE: {
+    primary: { label: "Kidney health consultation", caller_label: "Doctor follow-up plan", target: "KIDNEY_HEALTH", condition: "ALWAYS" },
+    secondary: { label: "Medication safety review", caller_label: "Care review follow-up", target: "MED_REVIEW", condition: "ALWAYS" },
+    third: { label: "Renal monitoring", caller_label: "Ongoing check-in plan", target: "RETEST", condition: "ALWAYS" },
+  },
+  ABNORMAL_LFT: {
+    primary: { label: "Liver health evaluation", caller_label: "Doctor follow-up plan", target: "LIVER_HEALTH", condition: "ALWAYS" },
+    secondary: { label: "Diet/lifestyle assessment", caller_label: "Nutrition follow-up", target: "DIET_PLAN", condition: "ALWAYS" },
+    third: { label: "Clinician-directed investigation", caller_label: "Diagnostic follow-up call", target: "FOLLOWUP_DIAGNOSTIC", condition: "ALWAYS" },
+  },
+  OBESITY_METABOLIC: {
+    primary: { label: "Weight management", caller_label: "Wellness plan follow-up", target: "WEIGHT_PLAN", condition: "ALWAYS" },
+    secondary: { label: "Dietitian consultation", caller_label: "Nutrition follow-up", target: "DIETITIAN_CONSULT", condition: "ALWAYS" },
+    third: { label: "Medical weight-loss eligibility assessment", caller_label: "Doctor consultation follow-up", target: "GLP1_WEIGHT_ASSESSMENT", condition: "IF_APPROPRIATE" },
+  },
+  MULTI_CHRONIC: {
+    primary: { label: "Integrated chronic care", caller_label: "Doctor follow-up plan", target: "INTEGRATED_CHRONIC_CARE", condition: "ALWAYS" },
+    secondary: { label: "Pharmacy refill management", caller_label: "Pharmacy refill reminder call", target: "PHARMACY_REFILL", condition: "ALWAYS" },
+    third: { label: "Home monitoring", caller_label: "Home check-in plan", target: "HOME_MONITORING", condition: "ALWAYS" },
+  },
+  NORMAL_WITH_RISK: {
+    primary: { label: "Preventive health plan", caller_label: "Preventive health check-in", target: "PREVENTIVE_PLAN", condition: "ALWAYS" },
+    secondary: { label: "Lifestyle guidance", caller_label: "Wellness plan follow-up", target: "FITNESS_PLAN", condition: "ALWAYS" },
+    third: { label: "Future screening schedule", caller_label: "Preventive health check-in", target: "SCREENING_SCHEDULE", condition: "ALWAYS" },
+  },
+};
+
+const SEV_WEIGHT = { severe: 3, moderate: 2, mild: 1 };
+
+export function detectFindingsInCtx(ctx, findingRules = DEFAULT_DIAGNOSTIC_FINDINGS) {
+  const hits = [];
+  for (let idx = 0; idx < findingRules.length; idx += 1) {
+    const f = findingRules[idx];
+    const [ok] = evalNode(f.trigger || {}, ctx);
+    if (!ok) continue;
+    let sev = 0;
+    let dev = 0;
+    if (f.code === "MULTI_CHRONIC") {
+      const ch = new Set([...[...ctx.buckets].filter((b) => b !== "OTHER"), ...(ctx.profile?.conditions || []).filter((c) => c.status === "CONFIRMED").map((c) => c.code)]);
+      sev = 1;
+      dev = ch.size;
+    } else {
+      for (const m of f.severity_markers || []) {
+        for (const p of matchingLabs(ctx.labs, m)) {
+          if (p.system_flag === "LOW" || p.system_flag === "HIGH") {
+            sev = Math.max(sev, SEV_WEIGHT[p.severity] || 0);
+            dev = Math.max(dev, Number(p.deviation_pct || 0));
+          }
+        }
+      }
+    }
+    hits.push({ code: f.code, sev, dev, idx });
+  }
+  hits.sort((a, b) => (b.sev - a.sev) || (b.dev - a.dev) || (a.idx - b.idx));
+  return hits.map((h) => h.code);
+}
+
+export function ifPrescribedOk(spec, ctx) {
+  if (spec?.condition !== "IF_PRESCRIBED") return true;
+  const active = ctx.activeMeds || [];
+  const req = spec.drug_classes || [];
+  if (!req.length) return active.length > 0;
+  return active.some((m) => req.includes(ctx.catMap?.[m.medicine_code]?.drug_class));
+}
+
+export function syncCombinationsInStore(store, ctx, reportId, followup, opts = {}) {
+  const findingRules = opts.findingRules || DEFAULT_DIAGNOSTIC_FINDINGS;
+  const comboRules = opts.comboRules || DEFAULT_RECOMMENDATION_COMBINATIONS;
+  const comboVer = opts.comboVer || 1;
+  const codes = detectFindingsInCtx(ctx, findingRules);
+  if (followup) followup.finding_codes = codes;
+
+  const merged = {};
+  for (const fc of codes) {
+    const cDef = comboRules[fc] || {};
+    for (const [rank, slot] of [[1, "primary"], [2, "secondary"], [3, "third"]]) {
+      const spec = cDef[slot];
+      if (!spec || !ifPrescribedOk(spec, ctx)) continue;
+      const cur = merged[spec.target];
+      if (!cur || rank < cur.rank) merged[spec.target] = { rank, finding_code: fc };
+    }
+  }
+  if (!store.program_recommendations) store.program_recommendations = [];
+  const existing = Object.fromEntries(
+    store.program_recommendations
+      .filter((r) => r.patient_id === ctx.patient.id && (r.report_id ?? null) === reportId)
+      .map((r) => [r.program_code, r])
+  );
+  let nextNum = store.program_recommendations.reduce((m, r) => Math.max(m, Number(r.id) || 0), 0) + 1;
+  for (const [target, info] of Object.entries(merged)) {
+    const cur = existing[target];
+    if (cur) {
+      if (cur.rank === null || cur.rank === undefined || info.rank < cur.rank || !cur.finding_code) {
+        cur.rank = cur.rank == null ? info.rank : Math.min(cur.rank, info.rank);
+        cur.finding_code = info.finding_code;
+      }
+      if (followup && !cur.followup_id) cur.followup_id = followup.id;
+    } else {
+      store.program_recommendations.push({
+        id: nextNum++,
+        patient_id: ctx.patient.id,
+        followup_id: followup ? followup.id : null,
+        report_id: reportId,
+        program_code: target,
+        rule_version: comboVer,
+        status: "SUGGESTED",
+        rank: info.rank,
+        finding_code: info.finding_code,
+        reason_codes: [`finding:${info.finding_code}`],
+        missing_data: [],
+        notes: [],
+        decided_by: null,
+        decided_at: null,
+        decline_reason_code: "",
+        created_at: new Date().toISOString(),
+      });
+    }
+  }
+  return codes;
 }
 
 export function addDaysIso(isoDate, days) {

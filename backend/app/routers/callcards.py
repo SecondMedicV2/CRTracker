@@ -115,10 +115,25 @@ def caller_card(fid: int, request: Request, db: Session = Depends(get_db), me: U
         {"id": rf.id, "label": specs.get(rf.specialty, "Specialist appointment to book"), "scheduled_for": rf.scheduled_for, "status": rf.status}
         for rf in refs
     ]
+    combos = load_rules(db).get("recommendation_combinations", {})
+    combo_labels = {
+        s["target"]: s["caller_label"]
+        for c_def in combos.values() for slot in ("primary", "secondary", "third")
+        if (s := c_def.get(slot))
+    }
+    ranked_recs = sorted(
+        (r for r in recs if r.rank is not None and catalogue.get(r.program_code, {}).get("mode") != "DOCTOR_CONSIDER"
+         and r.status in ("SUGGESTED", "ACCEPTED", "ENROLLED")),
+        key=lambda r: (r.rank, r.id),
+    )
+    next_steps = list(dict.fromkeys(
+        lbl for r in ranked_recs
+        if (lbl := combo_labels.get(r.program_code) or catalogue.get(r.program_code, {}).get("caller_label"))
+    ))
     audit(db, request, me.id, "view", "caller_card", fid)
     return {"followup_id": fid, "patient_id": root_pid, "patient_name": p.name, "mobile": mobile_out(p, me), "language": c.language,
             "notice": c.notice, "report_age_days": c.content["summary"]["report_age_days"], "reason_for_call": cc.reason_for_call(c),
             "script": {k: v for k, v in script.items() if k != "do_not_say"}, "do_not_say": script["do_not_say"],
-            "priority": f.priority, "program_followups": program_followups,
+            "priority": f.priority, "program_followups": program_followups, "next_steps": next_steps,
             "refill_reminder": "Pharmacy refill reminder call" if refill_due else None,
             "specialist_bookings": specialist_bookings}

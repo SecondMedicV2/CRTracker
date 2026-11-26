@@ -179,7 +179,37 @@ def dashboard(frm: date | None = Query(None, alias="from"), to: date | None = No
                             "needs_review": n(select(func.count()).select_from(Order).where(Order.status == status.NEEDS_REVIEW)),
                             "pending_identity": n(select(func.count()).select_from(IdentityReview).where(IdentityReview.status == "PENDING"))},
         "programs": _program_counts(db, start, end),
+        "finding_funnel": _finding_funnel(db, start, end),
     }
+
+
+def _finding_funnel(db: Session, start: datetime, end: datetime) -> list[dict]:
+    rules = load_rules(db)
+    f_list = rules.get("diagnostic_findings", [])
+    labels = {f["code"]: f.get("label", f["code"]) for f in f_list}
+    combos = rules.get("recommendation_combinations", {})
+    fus = list(db.scalars(select(Followup).where(Followup.created_at >= start, Followup.created_at < end)))
+    recs = list(db.scalars(select(ProgramRecommendation).where(ProgramRecommendation.created_at >= start, ProgramRecommendation.created_at < end)))
+    by_fid: dict[int, dict[str, str]] = {}
+    for r in recs:
+        if r.followup_id:
+            by_fid.setdefault(r.followup_id, {})[r.program_code] = r.status
+    out = []
+    for f_meta in f_list:
+        fc = f_meta["code"]
+        c_def = combos.get(fc) or {}
+        matching = [f for f in fus if fc in (f.finding_codes or [])]
+        total = len(matching)
+        def _pct(slot: str) -> int:
+            spec = c_def.get(slot)
+            if not spec or not total:
+                return 0
+            t = spec["target"]
+            acc = sum(1 for f in matching if by_fid.get(f.id, {}).get(t) in ("ACCEPTED", "ENROLLED"))
+            return round(100 * acc / total)
+        out.append({"finding_code": fc, "label": labels[fc], "patients": total,
+                    "primary_pct": _pct("primary"), "secondary_pct": _pct("secondary"), "third_pct": _pct("third")})
+    return out
 
 
 def _program_counts(db: Session, start: datetime, end: datetime) -> list[dict]:

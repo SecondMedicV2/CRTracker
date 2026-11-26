@@ -106,6 +106,7 @@ def get_followup(fid: int, request: Request, db: Session = Depends(get_db), me: 
     audit(db, request, me.id, "view", "followup", fid)
     why = db.scalars(select(PatientBucket).where(PatientBucket.report_id == r.id)).all()
     return {**row(f, p, r, me, True), "report_id": r.id, "score_breakdown": f.score_breakdown, "suppressed_reason": f.suppressed_reason,
+            "finding_codes": f.finding_codes or [],
             "buckets_detail": [{"code": b.bucket_code, "severity": b.severity, "reason": b.reason} for b in why],
             "parked": f.priority == "ROUTINE" and f.retest_tier == "LOW"}
 

@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import worker from "../worker.js";
 import {
   DEFAULT_CARE_PROGRAMS,
+  DEFAULT_DIAGNOSTIC_FINDINGS,
+  DEFAULT_RECOMMENDATION_COMBINATIONS,
+  buildProgramContext,
+  detectFindingsInCtx,
   evaluatePrograms,
   refillTickInStore,
   relationshipStatus,
@@ -237,5 +241,71 @@ describe("Smart Diagnostics Pages 1-4 Worker Parity", () => {
     const famAfter = await (await req(env, "GET", "/api/v1/patients/1/family", docCookie)).json();
     assert.strictEqual(famAfter.links[0].has_consent, true);
     assert.ok(famAfter.links[0].summary.active_buckets.includes("DIABETES"));
+  });
+
+  it("evaluates Page 6 findings, IF_PRESCRIBED gating, rank merge, caller neutrality, rules signoff, and dashboard funnel", async () => {
+    const ctxAll = buildProgramContext({
+      patient: { id: 1, age: 48, gender: "M" },
+      report: { age: 48, gender: "M", classification: "ABNORMAL" },
+      params: [
+        { param_code: "VITD", system_flag: "LOW", severity: "mild" },
+        { param_code: "HBA1C", system_flag: "HIGH", severity: "severe" },
+        { param_code: "LDL", system_flag: "HIGH", severity: "moderate" },
+        { param_code: "TSH", system_flag: "HIGH", severity: "mild" },
+        { param_code: "HB", system_flag: "LOW", severity: "mild" },
+        { param_code: "CREAT", system_flag: "HIGH", severity: "moderate" },
+        { param_code: "ALT", system_flag: "HIGH", severity: "mild" },
+      ],
+      buckets: ["DIABETES", "LIPID"],
+      profile: { vitals: { height_cm: 170, weight_kg: 80 } },
+    });
+    const det = detectFindingsInCtx(ctxAll, DEFAULT_DIAGNOSTIC_FINDINGS);
+    assert.strictEqual(det[0], "HIGH_HBA1C");
+    assert.strictEqual(det.length, 9);
+    assert.ok(!det.includes("NORMAL_WITH_RISK"));
+
+    const ctxNormalRisk = buildProgramContext({
+      patient: { id: 2, age: 46, gender: "F" },
+      report: { age: 46, gender: "F", classification: "NORMAL" },
+      params: [{ param_code: "GLU_F", system_flag: "NORMAL" }],
+      profile: {},
+    });
+    assert.deepStrictEqual(detectFindingsInCtx(ctxNormalRisk, DEFAULT_DIAGNOSTIC_FINDINGS), ["NORMAL_WITH_RISK"]);
+
+    // Worker routes: recommendations table, IF_PRESCRIBED gating, caller 403, doctor signoff, dashboard finding_funnel
+    const env = createTestEnv();
+    const aLogin = await req(env, "POST", "/api/v1/auth/login", null, { email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD });
+    const adminCookie = aLogin.headers.get("set-cookie").split(";")[0];
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Dr", email: "doc@sm.com", password: "DoctorPassword123!", role: "DOCTOR" });
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Cal", email: "cal@sm.com", password: "CallerPassword123!", role: "CALLER" });
+    const docCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "doc@sm.com", password: "DoctorPassword123!" })).headers.get("set-cookie").split(";")[0];
+    const calCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "cal@sm.com", password: "CallerPassword123!" })).headers.get("set-cookie").split(";")[0];
+
+    // Trigger recommendations on followup 1 (HEMOGLOBIN LOW -> LOW_HB)
+    assert.strictEqual((await req(env, "GET", "/api/v1/followups/1/recommendations", calCookie)).status, 403);
+    const recRes = await (await req(env, "GET", "/api/v1/followups/1/recommendations", docCookie)).json();
+    assert.strictEqual(recRes.combinations[0].finding_code, "LOW_HB");
+    assert.strictEqual(recRes.combinations[0].primary.label, "Anemia evaluation");
+    assert.strictEqual(recRes.combinations[0].secondary.label, "Nutrition assessment");
+    assert.strictEqual(recRes.combinations[0].third.label, "Follow-up diagnostics");
+
+    // Decision + caller card neutral next_steps + dashboard finding_funnel
+    await req(env, "POST", `/api/v1/program-recommendations/${recRes.combinations[0].primary.recommendation_id}/decision`, docCookie, { decision: "ACCEPTED" });
+    await req(env, "POST", "/api/v1/followups/1/call-card/generate", docCookie, {});
+    const card = await (await req(env, "GET", "/api/v1/followups/1/caller-card", calCookie)).json();
+    assert.strictEqual(card.next_steps.length, 3);
+    assert.ok(!JSON.stringify(card.next_steps).toLowerCase().includes("anemia"));
+
+    const dash = await (await req(env, "GET", "/api/v1/dashboard", adminCookie)).json();
+    const hbRow = dash.finding_funnel.find((x) => x.finding_code === "LOW_HB");
+    assert.strictEqual(hbRow.patients, 1);
+    assert.strictEqual(hbRow.primary_pct, 100);
+
+    // Doctor can signoff rule edit
+    await req(env, "PUT", "/api/v1/rules/diagnostic_findings", adminCookie, { data: DEFAULT_DIAGNOSTIC_FINDINGS });
+    const so = await req(env, "POST", "/api/v1/rules/diagnostic_findings/signoff", docCookie, {});
+    assert.strictEqual(so.status, 200);
+    assert.strictEqual((await so.json()).pending_signoff, false);
+    assert.ok(DEFAULT_RECOMMENDATION_COMBINATIONS.HIGH_HBA1C.third.condition === "IF_PRESCRIBED");
   });
 });

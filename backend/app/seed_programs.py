@@ -475,3 +475,154 @@ REFERRAL_SPECIALTIES = {
     "Fertility specialist": "Specialist appointment to book",
     "Obesity medicine": "Specialist appointment to book",
 }
+
+DIAGNOSTIC_FINDINGS = [
+    {
+        "code": "LOW_VITD",
+        "label": "Low Vitamin D",
+        "icon": "☀️",
+        "severity_markers": ["VITD"],
+        "note": "starter value, clinician to confirm",
+        "trigger": {"lab": "VITD", "flag": "LOW"},
+    },
+    {
+        "code": "HIGH_HBA1C",
+        "label": "Elevated HbA1c",
+        "icon": "🩸",
+        "severity_markers": ["HBA1C"],
+        "note": "starter value, clinician to confirm",
+        "trigger": {"lab": "HBA1C", "flag": "HIGH"},
+    },
+    {
+        "code": "HIGH_CHOLESTEROL",
+        "label": "Elevated cholesterol",
+        "icon": "❤️",
+        "severity_markers": ["CHOL", "LDL", "NON_HDL"],
+        "note": "starter value, clinician to confirm",
+        "trigger": {"lab_any": ["CHOL", "LDL", "NON_HDL"], "flag": "HIGH"},
+    },
+    {
+        "code": "HIGH_TSH",
+        "label": "Elevated TSH",
+        "icon": "🦋",
+        "severity_markers": ["TSH"],
+        "note": "starter value, clinician to confirm",
+        "trigger": {"lab": "TSH", "flag": "HIGH"},
+    },
+    {
+        "code": "LOW_HB",
+        "label": "Low hemoglobin",
+        "icon": "🧬",
+        "severity_markers": ["HB"],
+        "note": "starter value, clinician to confirm",
+        "trigger": {"lab": "HB", "flag": "LOW"},
+    },
+    {
+        "code": "HIGH_CREATININE",
+        "label": "Elevated creatinine",
+        "icon": "🫘",
+        "severity_markers": ["CREAT", "EGFR"],
+        "note": "starter value, clinician to confirm",
+        "trigger": {"any": [{"lab": "CREAT", "flag": "HIGH"}, {"lab": "EGFR", "flag": "LOW"}]},
+    },
+    {
+        "code": "ABNORMAL_LFT",
+        "label": "Abnormal liver enzymes",
+        "icon": "🫀",
+        "severity_markers": ["ALT", "AST", "ALP", "GGT", "BILI_T"],
+        "note": "starter value, clinician to confirm",
+        "trigger": {"lab_any": ["ALT", "AST", "ALP", "GGT", "BILI_T"], "flag": "HIGH"},
+    },
+    {
+        "code": "OBESITY_METABOLIC",
+        "label": "Obesity with metabolic abnormalities",
+        "icon": "⚖️",
+        "severity_markers": ["HBA1C", "CHOL", "LDL", "NON_HDL", "TG", "HDL"],
+        "note": "starter value, clinician to confirm",
+        "trigger": {"all": [
+            {"profile": "vitals.bmi", "op": ">=", "value": 25},
+            {"any": [
+                {"lab_any": ["HBA1C", "CHOL", "LDL", "NON_HDL", "TG"], "flag": "HIGH"},
+                {"lab": "HDL", "flag": "LOW"},
+            ]},
+        ]},
+    },
+    {
+        "code": "MULTI_CHRONIC",
+        "label": "Multiple chronic conditions",
+        "icon": "🩺",
+        "severity_markers": [],
+        "note": "starter value, clinician to confirm",
+        "trigger": {"chronic_count": ">=", "value": 2},
+    },
+    {
+        "code": "NORMAL_WITH_RISK",
+        "label": "Normal report with risk factors",
+        "icon": "🛡️",
+        "severity_markers": [],
+        "note": "starter value, clinician to confirm",
+        "trigger": {"all": [
+            {"report_classification": "NORMAL"},
+            {"any": [
+                {"age": ">=", "value": 40},
+                {"profile": "family_history", "any_present": True},
+                {"profile": "vitals.bmi", "op": ">=", "value": 23},
+                {"profile": "lifestyle.smoking", "op": "==", "value": True},
+                {"profile": "lifestyle.activity_level", "op": "==", "value": "SEDENTARY"},
+            ]},
+        ]},
+    },
+]
+
+RECOMMENDATION_COMBINATIONS = {
+    "LOW_VITD": {
+        "primary": {"label": "Vitamin plan", "caller_label": "Wellness supplement plan", "target": "VITAMIN_PLAN", "condition": "ALWAYS"},
+        "secondary": {"label": "Bone health assessment", "caller_label": "Doctor follow-up plan", "target": "BONE_HEALTH", "condition": "ALWAYS"},
+        "third": {"label": "Appropriate retesting", "caller_label": "Repeat test reminder", "target": "RETEST", "condition": "ALWAYS"},
+    },
+    "HIGH_HBA1C": {
+        "primary": {"label": "Diabetes plan", "caller_label": "Doctor follow-up plan", "target": "DIABETES_MGMT", "condition": "ALWAYS"},
+        "secondary": {"label": "Personalized diet", "caller_label": "Nutrition follow-up", "target": "DIET_PLAN", "condition": "ALWAYS"},
+        "third": {"label": "Medication review/refill if prescribed", "caller_label": "Care plan follow-up", "target": "MED_REVIEW", "condition": "IF_PRESCRIBED", "drug_classes": ["BIGUANIDE", "SULFONYLUREA", "INSULIN"]},
+    },
+    "HIGH_CHOLESTEROL": {
+        "primary": {"label": "Cardiac risk assessment", "caller_label": "Doctor follow-up plan", "target": "CARDIAC_RISK_MGMT", "condition": "ALWAYS"},
+        "secondary": {"label": "Diet plan", "caller_label": "Nutrition follow-up", "target": "DIET_PLAN", "condition": "ALWAYS"},
+        "third": {"label": "Lifestyle monitoring", "caller_label": "Wellness follow-up", "target": "LIFESTYLE_MONITORING", "condition": "ALWAYS"},
+    },
+    "HIGH_TSH": {
+        "primary": {"label": "Thyroid consultation", "caller_label": "Doctor follow-up plan", "target": "THYROID_MGMT", "condition": "ALWAYS"},
+        "secondary": {"label": "Medication management if prescribed", "caller_label": "Care plan follow-up", "target": "MED_REVIEW", "condition": "IF_PRESCRIBED", "drug_classes": ["THYROID_HORMONE"]},
+        "third": {"label": "Thyroid follow-up", "caller_label": "Follow-up diagnostic call", "target": "FOLLOWUP_DIAGNOSTIC", "condition": "ALWAYS"},
+    },
+    "LOW_HB": {
+        "primary": {"label": "Anemia evaluation", "caller_label": "Doctor follow-up plan", "target": "ANEMIA_MGMT", "condition": "ALWAYS"},
+        "secondary": {"label": "Nutrition assessment", "caller_label": "Nutrition follow-up", "target": "DIET_PLAN", "condition": "ALWAYS"},
+        "third": {"label": "Follow-up diagnostics", "caller_label": "Repeat test reminder", "target": "FOLLOWUP_DIAGNOSTIC", "condition": "ALWAYS"},
+    },
+    "HIGH_CREATININE": {
+        "primary": {"label": "Kidney health consultation", "caller_label": "Doctor follow-up plan", "target": "KIDNEY_HEALTH", "condition": "ALWAYS"},
+        "secondary": {"label": "Medication safety review", "caller_label": "Care review follow-up", "target": "MED_REVIEW", "condition": "ALWAYS"},
+        "third": {"label": "Renal monitoring", "caller_label": "Ongoing check-in plan", "target": "RETEST", "condition": "ALWAYS"},
+    },
+    "ABNORMAL_LFT": {
+        "primary": {"label": "Liver health evaluation", "caller_label": "Doctor follow-up plan", "target": "LIVER_HEALTH", "condition": "ALWAYS"},
+        "secondary": {"label": "Diet/lifestyle assessment", "caller_label": "Nutrition follow-up", "target": "DIET_PLAN", "condition": "ALWAYS"},
+        "third": {"label": "Clinician-directed investigation", "caller_label": "Diagnostic follow-up call", "target": "FOLLOWUP_DIAGNOSTIC", "condition": "ALWAYS"},
+    },
+    "OBESITY_METABOLIC": {
+        "primary": {"label": "Weight management", "caller_label": "Wellness plan follow-up", "target": "WEIGHT_PLAN", "condition": "ALWAYS"},
+        "secondary": {"label": "Dietitian consultation", "caller_label": "Nutrition follow-up", "target": "DIETITIAN_CONSULT", "condition": "ALWAYS"},
+        "third": {"label": "Medical weight-loss eligibility assessment", "caller_label": "Doctor consultation follow-up", "target": "GLP1_WEIGHT_ASSESSMENT", "condition": "IF_APPROPRIATE"},
+    },
+    "MULTI_CHRONIC": {
+        "primary": {"label": "Integrated chronic care", "caller_label": "Doctor follow-up plan", "target": "INTEGRATED_CHRONIC_CARE", "condition": "ALWAYS"},
+        "secondary": {"label": "Pharmacy refill management", "caller_label": "Pharmacy refill reminder call", "target": "PHARMACY_REFILL", "condition": "ALWAYS"},
+        "third": {"label": "Home monitoring", "caller_label": "Home check-in plan", "target": "HOME_MONITORING", "condition": "ALWAYS"},
+    },
+    "NORMAL_WITH_RISK": {
+        "primary": {"label": "Preventive health plan", "caller_label": "Preventive health check-in", "target": "PREVENTIVE_PLAN", "condition": "ALWAYS"},
+        "secondary": {"label": "Lifestyle guidance", "caller_label": "Wellness plan follow-up", "target": "FITNESS_PLAN", "condition": "ALWAYS"},
+        "third": {"label": "Future screening schedule", "caller_label": "Preventive health check-in", "target": "SCREENING_SCHEDULE", "condition": "ALWAYS"},
+    },
+}

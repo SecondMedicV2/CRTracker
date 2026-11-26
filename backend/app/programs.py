@@ -414,6 +414,12 @@ def _eval_node(node: dict, ctx: dict) -> tuple[bool, list[str], list[str]]:
     if node.get("family_member_chronic"):
         return bool(ctx["family_chronic"]), (["family:chronic_member"] if ctx["family_chronic"] else []), []
 
+    if "report_classification" in node:
+        rep = ctx.get("report")
+        cls = (rep.classification or "").upper() if rep else ""
+        ok = cls == node["report_classification"].upper()
+        return ok, ([f"report:{cls}"] if ok else []), []
+
     if "profile" in node:
         path = node["profile"]
         val = _field(profile, path)

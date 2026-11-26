@@ -23,6 +23,7 @@ type CallerCardData = {
   report_age_days: number | null;
   reason_for_call: string;
   program_followups?: string[];
+  next_steps?: string[];
   refill_reminder?: string | null;
   specialist_bookings?: { id: number; label: string; scheduled_for?: string | null; status: string }[];
   script: Record<(typeof STEPS)[number][0] | "urgent_symptom_protocol", string> & {
@@ -75,6 +76,11 @@ function CallerCardInner({ id }: { id: string }) {
         )}
         {c.program_followups && c.program_followups.length > 0 && (
           <p className="mt-1 text-xs font-medium text-teal-900">Care follow-up: {c.program_followups.join(", ")}</p>
+        )}
+        {c.next_steps && c.next_steps.length > 0 && (
+          <p className="mt-1 text-xs font-medium text-teal-900">
+            Recommended next steps: {c.next_steps.length} ({c.next_steps.join(", ")})
+          </p>
         )}
         {c.refill_reminder && (
           <p className="mt-1 text-xs font-medium text-teal-900">Refill reminder: {c.refill_reminder}</p>

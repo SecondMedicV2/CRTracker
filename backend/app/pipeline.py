@@ -20,10 +20,11 @@ def conclude(db: Session, order: Order, report: Report) -> None:
     if not held:
         fu = followup.build(db, order)
         try:
-            from . import ai_insights, programs, relationship
+            from . import ai_insights, findings, programs, relationship
             followup.sync_profile_buckets(db, order.patient_id, commit=False)
             relationship.sync_touchpoints(db, order.patient_id, commit=False)
             programs.evaluate(db, order.patient_id, report.id, commit=False, notify_consider=not (fu and fu.assigned_doctor_id))
+            findings.sync_combinations(db, order.patient_id, report.id, commit=False)
             db.commit()
             ai_insights.generate_insight_for_report(db, report)
         except Exception:

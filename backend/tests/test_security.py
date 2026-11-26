@@ -76,7 +76,7 @@ def test_admin_matrix(admin):
 
 def test_new_routes_must_be_classified():
     """Fails when someone adds a route without deciding who may call it (update the sets above)."""
-    assert len(list(routes())) == 98  # 80 + 18 Page 5 extended clinical & family routes
+    assert len(list(routes())) == 99  # 98 + 1 (GET /followups/{fid}/recommendations, clinical only)
 
 
 # ---- the two leaks the review found ----

@@ -181,6 +181,7 @@ class Followup(Base, Stamped):
     report_id: Mapped[int] = mapped_column(ForeignKey("reports.id"), unique=True)  # one follow-up per report
     bucket_codes: Mapped[list] = mapped_column(JSON, default=list)
     abnormal_codes: Mapped[list] = mapped_column(JSON, default=list)
+    finding_codes: Mapped[list] = mapped_column(JSON, default=list)
     due_on: Mapped[date] = mapped_column(Date, index=True)
     priority: Mapped[str] = mapped_column(String(12), default="ROUTINE")  # ROUTINE | ESCALATION
     stage: Mapped[str] = mapped_column(String(20), default="NOT_CALLED", index=True)
@@ -385,6 +386,8 @@ class ProgramRecommendation(Base):
     program_code: Mapped[str] = mapped_column(String(50), index=True)
     rule_version: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(20), default="SUGGESTED", index=True)
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    finding_code: Mapped[str] = mapped_column(String(40), default="")
     reason_codes: Mapped[list] = mapped_column(JSON, default=list)
     missing_data: Mapped[list] = mapped_column(JSON, default=list)
     notes: Mapped[list] = mapped_column(JSON, default=list)

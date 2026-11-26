@@ -7,8 +7,9 @@ import { Suspense } from "react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
-import Trends from "@/components/Trends";
+import FollowupCombinationsTable from "@/components/FollowupCombinationsTable";
 import ProgramsPanel from "@/components/ProgramsPanel";
+import Trends from "@/components/Trends";
 import CallCard from "./CallCard";
 import DoctorActions from "./DoctorActions";
 
@@ -17,6 +18,7 @@ function FollowupViewInner({ id }: { id: string }) {
   const doctors = useApi<any[]>("/doctors");
   const me = useApi<any>("/auth/me");
   const [msg, setMsg] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
   if (error || !f) return <RequestState loading={!f} error={error} retry={reload} />;
   const patch = (body: object) => api(`/followups/${id}`, { method: "PATCH", body }).then(() => { setMsg(""); reload(); }).catch((e) => setMsg(e.message));
 
@@ -45,7 +47,8 @@ function FollowupViewInner({ id }: { id: string }) {
       {me.data && <CallCard fid={id} role={me.data.role} />}
       {f.patient_id && <Trends patientId={f.patient_id} />}
       <DoctorActions fid={id} />
-      {f.patient_id && <ProgramsPanel patientId={String(f.patient_id)} mode="followup" />}
+      <FollowupCombinationsTable fid={id} onChanged={() => setRefreshKey((n) => n + 1)} />
+      {f.patient_id && <ProgramsPanel patientId={String(f.patient_id)} mode="followup" refreshKey={refreshKey} onChanged={() => setRefreshKey((n) => n + 1)} />}
       <section>
         <h2 className="mb-1 font-medium">Why this patient is in these buckets</h2>
         <ul className="list-disc pl-5 text-sm">{(f.buckets_detail ?? []).map((b: any) => <li key={b.code}><b>{b.code}</b> ({b.severity || "n/a"}): {b.reason}</li>)}</ul>

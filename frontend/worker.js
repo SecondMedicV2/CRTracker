@@ -53,6 +53,14 @@ import {
   relationshipStatus,
   nextBestStep,
 } from "./lib/programs.js";
+import {
+  DEFAULT_RETEST_PROTOCOLS,
+  DEFAULT_TEST_CATALOGUE_P7,
+  OVERRIDE_REASONS,
+  overrideRetestInStore,
+  planRetestInStore,
+  retestReminderTickInStore,
+} from "./lib/retest.js";
 
 function consentingFamilySummaries(store, patientId) {
   const links = (store.family_links || []).filter((l) => l.patient_id === patientId);
@@ -182,6 +190,25 @@ async function syncProgramsInStore(env, store, patientId, reportId, params, nowI
   const comboRules = store.rules?.recommendation_combinations?.data || store.rules?.recommendation_combinations || DEFAULT_RECOMMENDATION_COMBINATIONS;
   const comboVer = store.rules?.recommendation_combinations?.version || 1;
   syncCombinationsInStore(store, buildProgramContext(args), rid, fu, { findingRules, comboRules, comboVer });
+  if (fu) {
+    const rPlan = planRetestInStore(store, fu, { report: args.report, params: args.params, evalArgs: args });
+    if (rPlan?.default_tests?.length) {
+      if (!store.recommendations) store.recommendations = {};
+      const exRec = store.recommendations[fu.id];
+      if (!exRec) {
+        store.recommendations[fu.id] = {
+          id: nextId(Object.values(store.recommendations)),
+          followup_id: fu.id,
+          test_codes: rPlan.default_tests,
+          ordered: false,
+          ordered_ref: "",
+          source: "PROTOCOL",
+        };
+      } else if (exRec.source === "PROTOCOL" && !exRec.ordered) {
+        exRec.test_codes = rPlan.default_tests;
+      }
+    }
+  }
   if (newConsider) {
     if (!store.notifications) store.notifications = { unread: 0, items: [] };
     store.notifications.unread = (store.notifications.unread || 0) + 1;
@@ -212,19 +239,7 @@ const EDGE_DEFAULT_RULES = {
     { code: "CANCER_MARKER", name: "Cancer markers", params: ["PSA", "CA125", "CEA"], interval_days: 0, priority: "ESCALATION", retest: [] },
     { code: "OTHER", name: "Other abnormal", params: [], interval_days: 90, priority: "ROUTINE", retest: [] }
   ],
-  test_catalogue: [
-    { code: "HBA1C", name: "HbA1c" },
-    { code: "FBS", name: "Fasting Blood Sugar" },
-    { code: "PPBS", name: "Post-Prandial Blood Sugar" },
-    { code: "LIPID", name: "Lipid Profile" },
-    { code: "THYROID", name: "Thyroid Profile" },
-    { code: "CBC", name: "Complete Blood Count" },
-    { code: "IRON", name: "Iron Studies" },
-    { code: "VITD", name: "Vitamin D" },
-    { code: "B12", name: "Vitamin B12" },
-    { code: "KFT", name: "Kidney Function Test" },
-    { code: "LFT", name: "Liver Function Test" }
-  ]
+  test_catalogue: DEFAULT_TEST_CATALOGUE_P7
 };
 
 async function jsonBody(request) {
@@ -1803,58 +1818,109 @@ async function handleApiRequest(request, url, env) {
   }
 
   // --- FOLLOWUPS ---
-  if (path === "/followups" && method === "GET") {
-    const list = store.followups.map((f) => ({
+  const fuRowOut = (f, full) => {
+    const label = !full ? "Retest due" : (f.retest_plan?.label || (f.retest_status === "DOCTOR_TO_SET" ? "Doctor to set retest date" : "Retest due"));
+    const out = {
       id: f.id,
       patient_id: f.patient_id || 1,
       patient_name: f.patient_name || "Patient",
-      mobile: f.mobile || "",
+      mobile: full ? (f.mobile || "") : mobileOut(f.mobile || "", me),
+      language: f.language || "en",
       report_id: f.report_id ?? null,
       order_id: f.order_id ?? null,
-      due_on: f.due_on || f.created_at || new Date().toISOString().slice(0, 10),
+      due_on: f.due_on || f.created_at || todayIstStr(),
       stage: f.stage || "QUEUED",
       priority: f.priority || "ROUTINE",
       attempts: f.attempts || 0,
       report_age_days: f.report_age_days || 0,
-      buckets: f.buckets || [],
-      retest_score: f.retest_score || 50,
-      retest_tier: f.retest_tier || "MEDIUM",
-      assigned_doctor_id: f.assigned_doctor_id || null,
-      deficits_summary: f.deficits_summary || ""
-    }));
+      retest_status: f.retest_status || "AUTO_SCHEDULED",
+      retest_label: label,
+      retest_window_start: f.retest_window_start ?? null,
+      retest_window_end: f.retest_window_end ?? null,
+    };
+    if (full) {
+      out.buckets = f.buckets || [];
+      out.finding_codes = f.finding_codes || [];
+      out.retest_score = f.retest_score ?? 50;
+      out.retest_tier = f.retest_tier || "MEDIUM";
+      out.assigned_doctor_id = f.assigned_doctor_id || null;
+      out.treatment_anchor_on = f.treatment_anchor_on ?? null;
+      out.reminder_on = f.reminder_on ?? null;
+      out.retest_plan = f.retest_plan ?? null;
+      out.deficits_summary = f.deficits_summary || "";
+    }
+    return out;
+  };
+  if (path === "/followups" && method === "GET") {
+    const isFull = me.role !== "CALLER" || Boolean(store.settings?.caller_can_view_results);
+    const view = url.searchParams.get("view") || "queue";
+    const bucketFilter = url.searchParams.get("bucket");
+    const priorityFilter = url.searchParams.get("priority");
+    const tierFilter = url.searchParams.get("tier");
+    if (!isFull && (view === "low_potential" || bucketFilter)) {
+      return reply(403, { detail: "Not allowed" });
+    }
+    const today = todayIstStr();
+    const list = (store.followups || [])
+      .filter((f) => {
+        if (f.suppressed_reason) return false;
+        const isDone = DONE_STAGES.has(f.stage);
+        const parked = f.priority === "ROUTINE" && f.retest_tier === "LOW";
+        if (view === "done") return isDone;
+        if (view === "low_potential") return !isDone && parked;
+        if (isDone || parked) return false;
+        const due = String(f.due_on || today).slice(0, 10);
+        if (view === "due_tomorrow") return due === addDaysIso(today, 1);
+        if (view === "due_this_week") return due >= today && due <= addDaysIso(today, 7);
+        if (view === "next_30_days") return due >= today && due <= addDaysIso(today, 30);
+        if (view === "overdue") return due < today;
+        if (view === "escalations") return f.priority === "ESCALATION" || f.priority === "URGENT";
+        return true;
+      })
+      .filter((f) => (!priorityFilter || f.priority === priorityFilter))
+      .filter((f) => (!tierFilter || f.retest_tier === tierFilter))
+      .filter((f) => (!bucketFilter || (f.buckets || []).includes(bucketFilter)))
+      .map((f) => fuRowOut(f, isFull));
     return reply(200, list);
   }
   if (path === "/followups/summary" && method === "GET") {
-    const queue = store.followups.filter((f) => f.stage !== "DOCTOR_DONE").length;
-    const done = store.followups.filter((f) => f.stage === "DOCTOR_DONE").length;
-    const escalations = store.followups.filter((f) => f.priority === "ESCALATION").length;
-    const _buckets = {};
-    for (const f of store.followups) {
-      for (const b of (f.buckets || [])) {
-        _buckets[b] = (_buckets[b] || 0) + 1;
-      }
-    }
-    return reply(200, {
-      queue,
-      due_tomorrow: 0,
-      due_this_week: queue,
-      next_30_days: queue,
-      overdue: 0,
-      escalations,
-      low_potential: 0,
+    const isFull = me.role !== "CALLER" || Boolean(store.settings?.caller_can_view_results);
+    const today = todayIstStr();
+    const live = (store.followups || []).filter((f) => !f.suppressed_reason && !DONE_STAGES.has(f.stage));
+    const active = live.filter((f) => !(f.priority === "ROUTINE" && f.retest_tier === "LOW"));
+    const done = (store.followups || []).filter((f) => !f.suppressed_reason && DONE_STAGES.has(f.stage)).length;
+    const out = {
+      queue: active.length,
+      due_tomorrow: active.filter((f) => String(f.due_on || today).slice(0, 10) === addDaysIso(today, 1)).length,
+      due_this_week: active.filter((f) => { const d = String(f.due_on || today).slice(0, 10); return d >= today && d <= addDaysIso(today, 7); }).length,
+      next_30_days: active.filter((f) => { const d = String(f.due_on || today).slice(0, 10); return d >= today && d <= addDaysIso(today, 30); }).length,
+      overdue: active.filter((f) => String(f.due_on || today).slice(0, 10) < today).length,
+      escalations: active.filter((f) => f.priority === "ESCALATION" || f.priority === "URGENT").length,
       done,
-      _buckets
-    });
+    };
+    if (isFull) {
+      out.low_potential = live.filter((f) => f.priority === "ROUTINE" && f.retest_tier === "LOW").length;
+      const _buckets = {};
+      for (const f of store.followups || []) {
+        for (const b of (f.buckets || [])) _buckets[b] = (_buckets[b] || 0) + 1;
+      }
+      out._buckets = _buckets;
+    }
+    return reply(200, out);
   }
   if ((path === "/doctor/queue" || path === "/doctor-queue") && method === "GET") {
+    if (me.role === "CALLER") return reply(403, { detail: "Not allowed" });
     const progs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
     const considerCodes = new Set(progs.filter((p) => p.mode === "DOCTOR_CONSIDER").map((p) => p.code));
     const list = (me.role === "DOCTOR"
-      ? store.followups.filter((f) => f.assigned_doctor_id === me.id)
-      : store.followups).map((f) => {
+      ? store.followups.filter((f) => !f.assigned_doctor_id || f.assigned_doctor_id === me.id)
+      : store.followups
+    )
+      .filter((f) => !f.suppressed_reason && !DONE_STAGES.has(f.stage) && (["BOOKED", "CONSENT_GIVEN"].includes(f.stage) || ["ESCALATION", "URGENT"].includes(f.priority) || f.retest_status === "DOCTOR_TO_SET"))
+      .map((f) => {
         const recs = (store.program_recommendations || []).filter((r) => r.patient_id === f.patient_id && r.status === "SUGGESTED");
         return {
-          ...f,
+          ...fuRowOut(f, true),
           pending_plans: recs.filter((r) => !considerCodes.has(r.program_code)).length,
           pending_consider: recs.filter((r) => considerCodes.has(r.program_code)).length
         };
@@ -2242,7 +2308,7 @@ async function handleApiRequest(request, url, env) {
   }
 
   if (path === "/rules/test_catalogue" || path === "/rules/test-catalogue") {
-    return reply(200, { data: DEFAULT_RULES.test_catalogue });
+    return reply(200, store.rules?.test_catalogue || { key: "test_catalogue", version: 1, data: DEFAULT_TEST_CATALOGUE_P7, pending_signoff: false });
   }
 
   // Calls go only to patients that came from LabTrace.
@@ -2368,28 +2434,18 @@ async function handleApiRequest(request, url, env) {
     }
     const fuExists = store.followups.some((f) => f.id === fid);
     if (!sub && method === "GET") {
+      if (me.role === "CALLER" && !store.settings?.caller_can_view_results) {
+        return reply(403, { detail: "Not allowed" });
+      }
       const fu = store.followups.find((f) => f.id === fid);
       if (!fu) return reply(404, { detail: "Follow-up not found." });
       return reply(200, {
-        id: fu.id,
-        patient_id: fu.patient_id ?? null,
-        patient_name: fu.patient_name || "Patient",
-        mobile: fu.mobile || "",
-        due_on: fu.due_on || fu.created_at || new Date().toISOString().slice(0, 10),
-        stage: fu.stage || "QUEUED",
-        priority: fu.priority || "ROUTINE",
-        attempts: fu.attempts || 0,
-        report_age_days: fu.report_age_days || 0,
-        buckets: fu.buckets || [],
-        finding_codes: fu.finding_codes || [],
-        retest_score: fu.retest_score ?? null,
-        retest_tier: fu.retest_tier ?? null,
-        assigned_doctor_id: fu.assigned_doctor_id || null,
+        ...fuRowOut(fu, true),
         report_id: fu.report_id ?? null,
         score_breakdown: fu.score_breakdown || [],
         suppressed_reason: fu.suppressed_reason || "",
         buckets_detail: fu.buckets_detail || [],
-        parked: fu.parked || false
+        parked: fu.parked || (fu.priority === "ROUTINE" && fu.retest_tier === "LOW")
       });
     }
     if (sub === "/recommendations" && method === "GET") {
@@ -2405,6 +2461,9 @@ async function handleApiRequest(request, url, env) {
       const codes = (Array.isArray(fu.finding_codes) && fu.finding_codes.length)
         ? fu.finding_codes
         : syncCombinationsInStore(store, ctx, rep?.id || null, fu, { findingRules, comboRules });
+      if (!fu.retest_plan && fu.retest_status !== "OVERRIDDEN") {
+        planRetestInStore(store, fu, { report: rep, params: pList, evalArgs: args });
+      }
       const recByCode = Object.fromEntries(
         (store.program_recommendations || [])
           .filter((r) => r.patient_id === fu.patient_id && (r.report_id ?? null) === (fu.report_id ?? null))
@@ -2439,13 +2498,43 @@ async function handleApiRequest(request, url, env) {
       return reply(200, { followup_id: fu.id, finding_codes: codes, combinations: rows });
     }
     if (!sub && method === "PATCH") {
+      if (me.role === "CALLER") return reply(403, { detail: "Not allowed" });
       const fu = store.followups.find((f) => f.id === fid);
       if (!fu) return reply(404, { detail: "Follow-up not found." });
       const body = await request.json().catch(() => ({}));
-      if (body.priority !== undefined) fu.priority = body.priority;
+      if (body.priority !== undefined) {
+        if (!["ROUTINE", "ESCALATION"].includes(body.priority)) return reply(422, { detail: "Priority must be ROUTINE or ESCALATION" });
+        fu.priority = body.priority;
+      }
       if (body.assigned_doctor_id !== undefined) fu.assigned_doctor_id = body.assigned_doctor_id;
+      if (body.treatment_anchor_on !== undefined) {
+        fu.treatment_anchor_on = String(body.treatment_anchor_on).slice(0, 10);
+        if (fu.retest_status !== "OVERRIDDEN") {
+          const rep = fu.report_id ? (store.reports || []).find((r) => r.id === fu.report_id) : null;
+          const pList = rep ? ((await kvGet(env, `report_params:${rep.id}`)) || []) : [];
+          planRetestInStore(store, fu, { report: rep, params: pList });
+        }
+      }
+      recordAudit(store, me, "update", "followup", fid);
       await saveStore(env, store);
-      return reply(200, fu);
+      return reply(200, fuRowOut(fu, true));
+    }
+    if (sub === "/retest-override" && method === "POST") {
+      if (me.role === "CALLER") return reply(403, { detail: "Not allowed" });
+      const fu = store.followups.find((f) => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      const b = await request.json().catch(() => ({}));
+      const reason = String(b.reason_code || "").trim().toUpperCase();
+      if (!OVERRIDE_REASONS.includes(reason)) {
+        return reply(422, { detail: `reason_code must be one of ${OVERRIDE_REASONS.join(", ")}` });
+      }
+      const start = String(b.window_start || b.retest_date || "").slice(0, 10);
+      const end = b.window_end ? String(b.window_end).slice(0, 10) : start;
+      if (!start || (end && end < start)) return reply(422, { detail: "Invalid window_start or window_end" });
+      overrideRetestInStore(fu, { window_start: start, window_end: end, reason_code: reason, notes: b.notes || "", user_id: me.id });
+      recordAudit(store, me, "retest_override", "followup", `${fid}:${reason}`);
+      await saveStore(env, store);
+      return reply(200, fuRowOut(fu, true));
     }
     if (sub === "/call-card" && method === "GET") {
       if (!fuExists) return reply(404, { detail: "Follow-up not found." });
@@ -2632,7 +2721,24 @@ async function handleApiRequest(request, url, env) {
         fu.stage = b.retest_codes && b.retest_codes.length > 0 ? "RETEST_RECOMMENDED" : "DOCTOR_DONE";
         if (b.retest_codes && b.retest_codes.length > 0) {
           if (!store.recommendations) store.recommendations = {};
-          store.recommendations[fid] = { id: nextId(Object.values(store.recommendations || {})), followup_id: fid, test_codes: b.retest_codes, ordered: false, ordered_ref: "" };
+          const exRec = store.recommendations[fid];
+          if (exRec && exRec.source === "PROTOCOL") {
+            exRec.test_codes = b.retest_codes;
+            exRec.source = "DOCTOR";
+          } else {
+            store.recommendations[fid] = { id: nextId(Object.values(store.recommendations || {})), followup_id: fid, test_codes: b.retest_codes, ordered: false, ordered_ref: "", source: "DOCTOR" };
+          }
+        }
+        if (b.next_followup_on) {
+          const nf = String(b.next_followup_on).slice(0, 10);
+          fu.next_followup_on = nf;
+          if (fu.retest_status === "DOCTOR_TO_SET") {
+            fu.due_on = nf;
+            fu.retest_window_start = nf;
+            fu.retest_window_end = nf;
+            fu.retest_status = "DOCTOR_SET";
+            fu.retest_plan = { ...(fu.retest_plan || {}), status: "DOCTOR_SET", label: "Doctor set retest date" };
+          }
         }
       } else if (b.outcome === "RECALL_CALLER") {
         fu.stage = "CALL_LATER";
@@ -3475,19 +3581,7 @@ async function handleApiRequest(request, url, env) {
       { code: "BONE", name: "Bone health", params: [], interval_days: 90, priority: "ROUTINE", retest: ["VITD"] },
       { code: "OTHER", name: "Other abnormal", params: [], interval_days: 90, priority: "ROUTINE", retest: [] }
     ],
-    test_catalogue: [
-      { code: "HBA1C", name: "HbA1c" },
-      { code: "FBS", name: "Fasting Blood Sugar" },
-      { code: "PPBS", name: "Post-Prandial Blood Sugar" },
-      { code: "LIPID", name: "Lipid Profile" },
-      { code: "THYROID", name: "Thyroid Profile" },
-      { code: "CBC", name: "Complete Blood Count" },
-      { code: "IRON", name: "Iron Studies" },
-      { code: "VITD", name: "Vitamin D" },
-      { code: "B12", name: "Vitamin B12" },
-      { code: "KFT", name: "Kidney Function Test" },
-      { code: "LFT", name: "Liver Function Test" }
-    ],
+    test_catalogue: DEFAULT_TEST_CATALOGUE_P7,
     reference_ranges: {
       HBA1C: { unit: "%", bands: [["normal", null, 5.7], ["prediabetes", 5.7, 6.5], ["diabetes_range", 6.5, null]] },
       GLUCOSE_FASTING: { unit: "mg/dL", bands: [["normal", 70, 100], ["prediabetes", 100, 126], ["diabetes_range", 126, null]] },
@@ -3552,7 +3646,8 @@ async function handleApiRequest(request, url, env) {
     drug_nutrient_rules: DEFAULT_DRUG_NUTRIENT_RULES,
     referral_specialties: DEFAULT_REFERRAL_SPECIALTIES,
     diagnostic_findings: DEFAULT_DIAGNOSTIC_FINDINGS,
-    recommendation_combinations: DEFAULT_RECOMMENDATION_COMBINATIONS
+    recommendation_combinations: DEFAULT_RECOMMENDATION_COMBINATIONS,
+    retest_protocols: DEFAULT_RETEST_PROTOCOLS
   };
 
   if (path === "/rules" && method === "GET") {
@@ -3649,7 +3744,7 @@ export default {
       // LabTrace only pulls when the "Repeat Lab Sync Every (minutes)" setting says it is time.
       ctx.waitUntil((async () => {
         const store = await getStore(env);
-        if (refillTickInStore(store) > 0) await saveStore(env, store);
+        if (refillTickInStore(store) + retestReminderTickInStore(store) > 0) await saveStore(env, store);
         if (!labtraceConfigured(env)) return;
         const every = Number(store.settings.pull_every_minutes) || 0;
         const last = Date.parse((store.labtrace_last_pull && store.labtrace_last_pull.at) || "") || 0;

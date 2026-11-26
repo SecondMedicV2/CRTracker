@@ -5,12 +5,20 @@ import {
   DEFAULT_CARE_PROGRAMS,
   DEFAULT_DIAGNOSTIC_FINDINGS,
   DEFAULT_RECOMMENDATION_COMBINATIONS,
+  addDaysIso,
   buildProgramContext,
   detectFindingsInCtx,
   evaluatePrograms,
   refillTickInStore,
   relationshipStatus,
+  todayIstStr,
 } from "../lib/programs.js";
+import {
+  DEFAULT_RETEST_PROTOCOLS,
+  planRetestInStore,
+  retestReminderTickInStore,
+  toIstDateStr,
+} from "../lib/retest.js";
 
 function createTestEnv() {
   const kv = new Map();
@@ -307,5 +315,69 @@ describe("Smart Diagnostics Pages 1-4 Worker Parity", () => {
     assert.strictEqual(so.status, 200);
     assert.strictEqual((await so.json()).pending_signoff, false);
     assert.ok(DEFAULT_RECOMMENDATION_COMBINATIONS.HIGH_HBA1C.third.condition === "IF_PRESCRIBED");
+  });
+
+  it("evaluates Page 7 retest protocols, IST dates, anchors, caller isolation, overrides, and reminder cron in Worker", async () => {
+    assert.strictEqual(DEFAULT_RETEST_PROTOCOLS.length, 10);
+    assert.strictEqual(toIstDateStr("2026-01-10T20:00:00Z"), "2026-01-11");
+
+    const env = createTestEnv();
+    const aLogin = await req(env, "POST", "/api/v1/auth/login", null, { email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD });
+    const adminCookie = aLogin.headers.get("set-cookie").split(";")[0];
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Dr", email: "doc@sm.com", password: "DoctorPassword123!", role: "DOCTOR" });
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Cal", email: "cal@sm.com", password: "CallerPassword123!", role: "CALLER" });
+    const docCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "doc@sm.com", password: "DoctorPassword123!" })).headers.get("set-cookie").split(";")[0];
+    const calCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "cal@sm.com", password: "CallerPassword123!" })).headers.get("set-cookie").split(";")[0];
+
+    // Seed LOW_HB (followup 1) -> initially DOCTOR_TO_SET; adding FERROUS_SULFATE sets 14-28d window
+    await req(env, "GET", "/api/v1/followups/1/recommendations", docCookie);
+    let fu1 = await (await req(env, "GET", "/api/v1/followups/1", docCookie)).json();
+    assert.strictEqual(fu1.retest_status, "DOCTOR_TO_SET");
+    const dq = await (await req(env, "GET", "/api/v1/doctor/queue", docCookie)).json();
+    assert.ok(dq.some((x) => x.id === 1 && x.retest_label === "Doctor to set retest date"));
+
+    const anchor = todayIstStr();
+    const medRes = await req(env, "POST", "/api/v1/patients/1/medicines", docCookie, { medicine_code: "FERROUS_SULFATE", started_on: anchor });
+    assert.strictEqual(medRes.status, 201);
+    fu1 = await (await req(env, "GET", "/api/v1/followups/1", docCookie)).json();
+    assert.strictEqual(fu1.retest_status, "AUTO_SCHEDULED");
+    assert.strictEqual(fu1.retest_window_start, addDaysIso(anchor, 14));
+    assert.strictEqual(fu1.retest_window_end, addDaysIso(anchor, 28));
+    assert.strictEqual(fu1.reminder_on, addDaysIso(anchor, 14));
+
+    // Caller sees only neutral "Retest due" and window dates; clinical endpoints forbidden
+    const calRows = await (await req(env, "GET", "/api/v1/followups", calCookie)).json();
+    const calRow = calRows.find((x) => x.id === 1);
+    assert.strictEqual(calRow.retest_label, "Retest due");
+    assert.strictEqual(calRow.retest_window_start, addDaysIso(anchor, 14));
+    assert.ok(!("retest_plan" in calRow) && !("finding_codes" in calRow) && !("reminder_on" in calRow));
+    assert.strictEqual((await req(env, "GET", "/api/v1/followups/1", calCookie)).status, 403);
+    assert.strictEqual((await req(env, "POST", "/api/v1/followups/1/retest-override", calCookie, { window_start: anchor, reason_code: "CLINICAL_JUDGMENT" })).status, 403);
+
+    // Doctor override requires valid reason_code and persists OVERRIDDEN status
+    assert.strictEqual((await req(env, "POST", "/api/v1/followups/1/retest-override", docCookie, { window_start: anchor, reason_code: "" })).status, 422);
+    const ovRes = await req(env, "POST", "/api/v1/followups/1/retest-override", docCookie, {
+      window_start: addDaysIso(anchor, 7),
+      window_end: addDaysIso(anchor, 10),
+      reason_code: "CLINICAL_JUDGMENT",
+      notes: "Recheck early",
+    });
+    assert.strictEqual(ovRes.status, 200);
+    assert.strictEqual((await ovRes.json()).retest_status, "OVERRIDDEN");
+
+    // Reminder tick fires once when reminder_on <= today
+    const mockStore = {
+      followups: [{ id: 9, stage: "QUEUED", suppressed_reason: "", retest_status: "AUTO_SCHEDULED", reminder_on: anchor, reminder_sent_at: null }],
+      notifications: { unread: 0, items: [] },
+    };
+    assert.strictEqual(retestReminderTickInStore(mockStore, Date.now()), 1);
+    assert.strictEqual(retestReminderTickInStore(mockStore, Date.now()), 0);
+    assert.strictEqual(mockStore.notifications.items[0].text, "Retest reminder due");
+
+    // Rules endpoint includes retest_protocols and test_catalogue expansion
+    const rulesRes = await (await req(env, "GET", "/api/v1/rules/retest_protocols", docCookie)).json();
+    assert.strictEqual(rulesRes.data.length, 10);
+    const catRes = await (await req(env, "GET", "/api/v1/rules/test_catalogue", docCookie)).json();
+    assert.ok(catRes.data.some((t) => t.code === "ELECTROLYTES") && catRes.data.some((t) => t.code === "UACR"));
   });
 });

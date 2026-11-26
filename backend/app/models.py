@@ -197,6 +197,13 @@ class Followup(Base, Stamped):
     tried_doctor_ids: Mapped[list] = mapped_column(JSON, default=list)  # doctors the case already cascaded through
     call_later_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_followup_on: Mapped[date | None] = mapped_column(Date, nullable=True)  # set by the doctor
+    retest_window_start: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    retest_window_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    reminder_on: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    reminder_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    treatment_anchor_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    retest_status: Mapped[str] = mapped_column(String(20), default="AUTO_SCHEDULED", index=True)
+    retest_plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Consent(Base):
@@ -252,6 +259,7 @@ class RetestRecommendation(Base):
     test_codes: Mapped[list] = mapped_column(JSON, default=list)
     ordered: Mapped[bool] = mapped_column(Boolean, default=False)
     ordered_ref: Mapped[str] = mapped_column(String(60), default="")
+    source: Mapped[str] = mapped_column(String(20), default="DOCTOR")  # DOCTOR | PROTOCOL
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

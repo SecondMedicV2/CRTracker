@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlalchemy import and_, distinct, func, select
+from sqlalchemy import and_, distinct, func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import status
@@ -139,10 +139,12 @@ def dashboard(frm: date | None = Query(None, alias="from"), to: date | None = No
         return n(select(func.count(distinct(model.followup_id))).select_from(model).join(Followup, Followup.id == model.followup_id)
                  .where(cohort, *conds))
 
+    proto_filter = or_(RetestRecommendation.source != "PROTOCOL", RetestRecommendation.ordered.is_(True))
     funnel = [("Follow-ups created", n(select(func.count()).select_from(Followup).where(cohort))),
               ("Called", step(CallLog, CallLog.outcome != "DOCTOR_DONE")), ("Consent given", step(Consent)),
               ("Booked", step(CallLog, CallLog.outcome == "BOOKED")), ("Doctor call done", step(CallLog, CallLog.outcome == "DOCTOR_DONE")),
-              ("Retest recommended", step(RetestRecommendation)), ("Retest ordered", step(RetestRecommendation, RetestRecommendation.ordered))]
+              ("Retest recommended", step(RetestRecommendation, proto_filter)),
+              ("Retest ordered", step(RetestRecommendation, RetestRecommendation.ordered))]
 
     doctors = []
     live = and_(Followup.suppressed_reason == "", Followup.stage.notin_(DONE))
@@ -170,7 +172,7 @@ def dashboard(frm: date | None = Query(None, alias="from"), to: date | None = No
         "calls": {"made": sum(calls.values()), "by_outcome": calls, "bookings": calls.get("BOOKED", 0),
                   "consent_rate_pct": round(100 * n_consented / n_attempted) if n_attempted else None,
                   "doctor_calls_done": n(select(func.count()).select_from(CallLog).where(in_range(CallLog.started_at), CallLog.outcome == "DOCTOR_DONE"))},
-        "retests": {"recommended": n(select(func.count()).select_from(RetestRecommendation).where(in_range(RetestRecommendation.created_at))),
+        "retests": {"recommended": n(select(func.count()).select_from(RetestRecommendation).where(in_range(RetestRecommendation.created_at), proto_filter)),
                     "ordered": n(select(func.count()).select_from(RetestRecommendation).where(in_range(RetestRecommendation.created_at), RetestRecommendation.ordered))},
         "funnel": [{"step": s, "count": c} for s, c in funnel],
         "doctors": doctors,

@@ -9,6 +9,7 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import FollowupCombinationsTable from "@/components/FollowupCombinationsTable";
 import ProgramsPanel from "@/components/ProgramsPanel";
+import RetestPlan from "@/components/RetestPlan";
 import Trends from "@/components/Trends";
 import CallCard from "./CallCard";
 import DoctorActions from "./DoctorActions";
@@ -45,6 +46,7 @@ function FollowupViewInner({ id }: { id: string }) {
         </label>
       </div>
       {me.data && <CallCard fid={id} role={me.data.role} />}
+      <RetestPlan followup={f} onUpdated={reload} />
       {f.patient_id && <Trends patientId={f.patient_id} />}
       <DoctorActions fid={id} />
       <FollowupCombinationsTable fid={id} onChanged={() => setRefreshKey((n) => n + 1)} />

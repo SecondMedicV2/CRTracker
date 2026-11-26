@@ -62,8 +62,14 @@ export default function Followups() {
       {!error && !!data?.length && (
         <TableFrame label="Follow-up cases">
           <table className="w-full bg-white text-left text-sm shadow">
-            <thead><tr><th className="p-2">{isCaller ? "Customer" : "Patient"}</th><th>Due</th><th>Report age</th><th>Priority</th><th>Status</th><th>Deficits / Findings</th>{canOpenCallWorkspace && <th>Call workspace</th>}{full && <><th>Buckets</th><th>Potential</th></>}</tr></thead>
-            <tbody>{data?.map((f) => (
+            <thead><tr><th className="p-2">{isCaller ? "Customer" : "Patient"}</th><th>Due</th><th>Report age</th><th>Priority</th><th>Status</th><th>{full ? "Deficits / Findings" : "Retest"}</th>{canOpenCallWorkspace && <th>Call workspace</th>}{full && <><th>Retest window</th><th>Buckets</th><th>Potential</th></>}</tr></thead>
+            <tbody>{data?.map((f) => {
+              const winLabel = f.retest_status === "DOCTOR_TO_SET"
+                ? (full ? "Doctor to set retest date" : "Retest due")
+                : f.retest_window_start
+                  ? `${new Date(`${String(f.retest_window_start).slice(0, 10)}T00:00:00+05:30`).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric" })}${f.retest_window_end && f.retest_window_end !== f.retest_window_start ? ` \u2192 ${new Date(`${String(f.retest_window_end).slice(0, 10)}T00:00:00+05:30`).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric" })}` : ""}`
+                  : "";
+              return (
               <tr key={f.id} className="border-t">
                 <td className="p-2">{full ? <Link className="underline" href={`/followups/view?id=${f.id}`}>{f.patient_name}</Link> : f.patient_name}</td>
                 <td>{new Date(f.due_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
@@ -71,7 +77,14 @@ export default function Followups() {
                 <td className={f.priority === "ESCALATION" ? "font-medium text-red-700" : ""}>{f.priority === "ESCALATION" ? "Escalation" : "Routine"}</td>
                 <td>{callStageLabel(f.stage)}</td>
                 <td>
-                  {f.deficits_summary ? (
+                  {!full ? (
+                    <div className="space-y-0.5 text-xs">
+                      <span className="inline-block rounded bg-teal-50 px-2 py-0.5 font-medium text-teal-900 border border-teal-200">
+                        Retest due
+                      </span>
+                      {winLabel && <div className="text-slate-600">{winLabel}</div>}
+                    </div>
+                  ) : f.deficits_summary ? (
                     <span className="inline-flex items-center gap-1.5 rounded-lg bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-800 border border-rose-200">
                       <span className="size-1.5 rounded-full bg-rose-600"></span>
                       {f.deficits_summary}
@@ -86,9 +99,22 @@ export default function Followups() {
                   )}
                 </td>
                 {canOpenCallWorkspace && <td><Link className="inline-block rounded-lg border border-teal-800 px-2 py-1 font-medium text-teal-800 hover:bg-teal-50" href={`/caller-card/view?id=${f.id}`} aria-label={`Open call workspace for ${f.patient_name}`}>Open workspace</Link></td>}
-                {full && <><td>{f.buckets.join(", ")}</td><td>{f.retest_tier} ({f.retest_score})</td></>}
+                {full && (
+                  <>
+                    <td className="text-xs">
+                      {f.retest_status === "DOCTOR_TO_SET" ? (
+                        <span className="inline-block rounded bg-amber-100 px-2 py-0.5 font-medium text-amber-900">Doctor to set retest date</span>
+                      ) : (
+                        <span>{winLabel || "\u2014"}</span>
+                      )}
+                    </td>
+                    <td>{f.buckets.join(", ")}</td>
+                    <td>{f.retest_tier} ({f.retest_score})</td>
+                  </>
+                )}
               </tr>
-            ))}</tbody>
+              );
+            })}</tbody>
           </table>
         </TableFrame>
       )}

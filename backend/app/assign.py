@@ -60,7 +60,7 @@ def assign(db: Session, fu: Followup) -> Doctor | None:
 
 
 def needs_doctor(fu: Followup) -> bool:
-    return fu.stage in ("BOOKED", "CONSENT_GIVEN") or fu.priority == "ESCALATION"
+    return fu.stage in ("BOOKED", "CONSENT_GIVEN") or fu.priority == "ESCALATION" or fu.retest_status == "DOCTOR_TO_SET"
 
 
 def reassign(db: Session, fu: Followup, now: datetime) -> bool:

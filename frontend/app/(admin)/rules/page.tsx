@@ -72,6 +72,10 @@ const RULE_METADATA: Record<string, { title: string; desc: string }> = {
   recommendation_combinations: {
     title: "Ranked Recommendation Combinations (Primary -> Secondary -> Third)",
     desc: "Starter Primary, Secondary, and Third recommendations and neutral caller labels for each diagnostic finding."
+  },
+  retest_protocols: {
+    title: "Retesting Schedule Protocols (10 Findings)",
+    desc: "Clinically grounded retest timeframes, repeat tests, clinical considerations, and AMI reminder schedules for all 10 findings."
   }
 };
 
@@ -142,6 +146,47 @@ function Rule({ k, onChange }: { k: string; onChange: () => void }) {
       </summary>
 
       <div className="pt-3 border-t border-slate-100 space-y-3">
+        {k === "retest_protocols" && Array.isArray(ruleData) && (
+          <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+            {ruleData.filter((p: any) => p.signoff_note).map((p: any) => (
+              <div key={p.finding_code} className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-950">
+                <b>Sign-off checklist ({p.finding_name}):</b> {p.signoff_note}
+              </div>
+            ))}
+            <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+              <table className="w-full text-left text-xs">
+                <thead className="border-b bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="p-2">Finding</th>
+                    <th className="p-2">Recommended retesting timeframe</th>
+                    <th className="p-2">Tests to repeat</th>
+                    <th className="p-2">Clinical considerations</th>
+                    <th className="p-2">AMI reminder</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    let rows: any[] = ruleData;
+                    try { if (text !== null) rows = JSON.parse(text); } catch {}
+                    const updateRow = (idx: number, field: string, val: string) => {
+                      const next = rows.map((item: any, i: number) => (i === idx ? { ...item, [field]: val } : item));
+                      setText(JSON.stringify(next, null, 2));
+                    };
+                    return rows.map((p: any, idx: number) => (
+                      <tr key={p.finding_code} className="border-t align-top">
+                        <td className="p-2 font-semibold whitespace-nowrap">{p.finding_name}</td>
+                        <td className="p-2 min-w-[200px]"><input aria-label={`${p.finding_code} timeframe`} className="w-full rounded border px-1.5 py-1" value={p.timeframe_text || ""} onChange={(e) => updateRow(idx, "timeframe_text", e.target.value)} /></td>
+                        <td className="p-2 min-w-[160px]"><input aria-label={`${p.finding_code} tests`} className="w-full rounded border px-1.5 py-1" value={p.tests_text || ""} onChange={(e) => updateRow(idx, "tests_text", e.target.value)} /></td>
+                        <td className="p-2 min-w-[240px]"><input aria-label={`${p.finding_code} considerations`} className="w-full rounded border px-1.5 py-1" value={p.considerations_text || ""} onChange={(e) => updateRow(idx, "considerations_text", e.target.value)} /></td>
+                        <td className="p-2 min-w-[130px]"><input aria-label={`${p.finding_code} reminder`} className="w-full rounded border px-1.5 py-1" value={p.ami_reminder_text || ""} onChange={(e) => updateRow(idx, "ami_reminder_text", e.target.value)} /></td>
+                      </tr>
+                    ));
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
         <label className="block text-xs font-semibold text-slate-700">
           Rule Definition (JSON)
           <textarea

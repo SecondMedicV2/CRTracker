@@ -1,17 +1,17 @@
-from datetime import timedelta
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
-from .. import followup as fu_svc
+from .. import assign, followup as fu_svc, retest as retest_svc
 from .. import status
 from ..db import get_db
 from ..models import Doctor, Followup, Order, Patient, PatientBucket, Report, User
 from ..security import audit, current_user, require
 from ..settings_store import get_setting
-from ..timeutil import today_ist
+from ..timeutil import to_ist_date, today_ist
 from .patients import mobile_out
 
 router = APIRouter(tags=["followups"])
@@ -42,12 +42,16 @@ def can_see_results(user: User, db: Session) -> bool:
 
 
 def row(f: Followup, p: Patient, r: Report, user: User, full: bool) -> dict:
+    label = "Retest due" if not full else ((f.retest_plan or {}).get("label") or ("Doctor to set retest date" if f.retest_status == "DOCTOR_TO_SET" else "Retest due"))
     out = {"id": f.id, "patient_id": p.id, "patient_name": p.name, "mobile": mobile_out(p, user), "language": p.language,
            "due_on": f.due_on, "stage": f.stage, "priority": f.priority, "attempts": f.attempts,
-           "report_age_days": (today_ist() - r.collected_on.date()).days if r.collected_on else None}
+           "report_age_days": (today_ist() - to_ist_date(r.collected_on)).days if r.collected_on else None,
+           "retest_status": f.retest_status, "retest_label": label,
+           "retest_window_start": f.retest_window_start, "retest_window_end": f.retest_window_end}
     if full:  # callers get no clinical content by default (Part 3.2)
         out |= {"buckets": f.bucket_codes, "retest_score": f.retest_score, "retest_tier": f.retest_tier,
-                "assigned_doctor_id": f.assigned_doctor_id}
+                "assigned_doctor_id": f.assigned_doctor_id, "treatment_anchor_on": f.treatment_anchor_on,
+                "reminder_on": f.reminder_on, "retest_plan": f.retest_plan}
     return out
 
 
@@ -114,6 +118,14 @@ def get_followup(fid: int, request: Request, db: Session = Depends(get_db), me: 
 class FollowupPatch(BaseModel):
     priority: str | None = None
     assigned_doctor_id: int | None = None
+    treatment_anchor_on: date | None = None
+
+
+class RetestOverrideIn(BaseModel):
+    window_start: date
+    window_end: date | None = None
+    reason_code: str = Field(max_length=40)
+    notes: str = Field("", max_length=300)
 
 
 @router.patch("/followups/{fid}")
@@ -129,8 +141,31 @@ def patch_followup(fid: int, body: FollowupPatch, request: Request, db: Session 
         if not db.get(Doctor, body.assigned_doctor_id):
             raise HTTPException(422, "No such doctor")
         f.assigned_doctor_id = body.assigned_doctor_id
+    if body.treatment_anchor_on is not None:
+        f.treatment_anchor_on = body.treatment_anchor_on
+        if f.retest_status != "OVERRIDDEN":
+            retest_svc.plan_retest(db, f)
+            if f.retest_status == "DOCTOR_TO_SET":
+                assign.assign(db, f)
     db.commit()
     audit(db, request, me.id, "update", "followup", fid)
+    return row(f, db.get(Patient, f.patient_id), db.get(Report, f.report_id), me, True)
+
+
+@router.post("/followups/{fid}/retest-override")
+def override_retest(fid: int, body: RetestOverrideIn, request: Request, db: Session = Depends(get_db), me: User = Depends(staff)):
+    f = db.get(Followup, fid)
+    if not f:
+        raise HTTPException(404, "No such follow-up")
+    reason = body.reason_code.strip().upper()
+    if reason not in retest_svc.OVERRIDE_REASONS:
+        raise HTTPException(422, f"reason_code must be one of {', '.join(retest_svc.OVERRIDE_REASONS)}")
+    if body.window_end and body.window_end < body.window_start:
+        raise HTTPException(422, "window_end cannot be before window_start")
+    retest_svc.override_retest(db, f, window_start=body.window_start, window_end=body.window_end,
+                               reason_code=reason, notes=body.notes, user_id=me.id)
+    db.commit()
+    audit(db, request, me.id, "retest_override", "followup", f"{fid}:{reason}")
     return row(f, db.get(Patient, f.patient_id), db.get(Report, f.report_id), me, True)
 
 

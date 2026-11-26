@@ -223,7 +223,8 @@ def doctor_queue(doctor_id: int | None = None, db: Session = Depends(get_db), me
         return []
     q = (select(Followup, Patient, Report).join(Patient, Patient.id == Followup.patient_id).join(Report, Report.id == Followup.report_id)
          .where(Followup.suppressed_reason == "", Followup.stage.notin_(DONE),
-                or_(Followup.stage.in_(("BOOKED", "CONSENT_GIVEN")), Followup.priority.in_(("ESCALATION", "URGENT"))))
+                or_(Followup.stage.in_(("BOOKED", "CONSENT_GIVEN")), Followup.priority.in_(("ESCALATION", "URGENT")),
+                    Followup.retest_status == "DOCTOR_TO_SET"))
          .order_by(case((Followup.priority.in_(("URGENT", "ESCALATION")), 0), (Followup.priority == "PRIORITY", 1), else_=2),
                    Followup.retest_score.desc(),
                    case((Followup.retest_tier == "HIGH", 0), (Followup.retest_tier == "MEDIUM", 1), else_=2), Followup.due_on, Followup.id))
@@ -292,9 +293,23 @@ def doctor_outcome(fid: int, body: DoctorOutcome, request: Request, db: Session 
             raise HTTPException(422, f"Not in the test catalogue: {', '.join(bad)}")
         f.stage = "DOCTOR_DONE"
         if body.retest_codes:
-            db.add(RetestRecommendation(followup_id=fid, doctor_id=mine.id if mine else None, test_codes=sorted(set(body.retest_codes))))
+            codes = sorted(set(body.retest_codes))
+            proto_rec = db.scalar(select(RetestRecommendation).where(
+                RetestRecommendation.followup_id == fid, RetestRecommendation.source == "PROTOCOL"))
+            if proto_rec:
+                proto_rec.test_codes, proto_rec.doctor_id, proto_rec.source = codes, (mine.id if mine else None), "DOCTOR"
+            else:
+                db.add(RetestRecommendation(followup_id=fid, doctor_id=mine.id if mine else None, test_codes=codes))
             f.stage = "RETEST_RECOMMENDED"
         f.next_followup_on = body.next_followup_on
+        if body.next_followup_on and f.retest_status == "DOCTOR_TO_SET":
+            f.due_on = body.next_followup_on
+            f.retest_window_start = body.next_followup_on
+            f.retest_window_end = body.next_followup_on
+            f.retest_status = "DOCTOR_SET"
+            plan = dict(f.retest_plan or {})
+            plan["status"], plan["label"] = "DOCTOR_SET", "Doctor set retest date"
+            f.retest_plan = plan
         for a in db.scalars(select(Appointment).where(Appointment.followup_id == fid, Appointment.status == "BOOKED")):
             a.status = "DONE"
         db.add(CallLog(followup_id=fid, user_id=me.id, role=me.role, outcome="DOCTOR_DONE", notes=body.notes.strip()[:500]))

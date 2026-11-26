@@ -30,9 +30,16 @@ def _patient(db: Session, pid: int) -> Patient:
 
 
 def _reeval(db: Session, pid: int) -> None:
+    from .. import assign as assign_svc, followup as fu_svc, retest as retest_svc
+    from ..models import Followup
     rel.sync_touchpoints(db, pid, commit=False)
     prog_svc.evaluate(db, pid, commit=False)
     findings.sync_combinations(db, pid, commit=False)
+    for fu in db.scalars(select(Followup).where(Followup.patient_id == pid, Followup.suppressed_reason == "", Followup.stage.notin_(fu_svc.DONE_STAGES))):
+        if fu.retest_status != "OVERRIDDEN":
+            retest_svc.plan_retest(db, fu)
+            if fu.retest_status == "DOCTOR_TO_SET":
+                assign_svc.assign(db, fu)
 
 
 # ---- A. Medicines (doctor/admin only; callers get 403) ----

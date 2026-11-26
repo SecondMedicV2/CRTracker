@@ -9,7 +9,7 @@ from . import assign, status
 from .analysis import load_rules
 from .models import Followup, Order, Patient, PatientBucket, Report, ReportParameter
 from .settings_store import get_setting
-from .timeutil import today_ist
+from .timeutil import to_ist_date, today_ist
 
 DONE_STAGES = {"DOCTOR_DONE", "RETEST_RECOMMENDED", "RETEST_ORDERED", "DECLINED", "WRONG_NUMBER"}
 SEV_RANK = {"": 0, "mild": 1, "moderate": 2, "severe": 3}
@@ -97,7 +97,7 @@ def trend_vs_previous(db: Session, patient_id: int, report: Report, abn: list) -
 
 def collected_date(report: Report, order: Order) -> date:
     d = report.collected_on or order.collected_on or report.reported_on or order.reported_on
-    return d.date() if d else today_ist()
+    return to_ist_date(d)
 
 
 def build(db: Session, order: Order) -> Followup | None:
@@ -137,7 +137,9 @@ def build(db: Session, order: Order) -> Followup | None:
     db.flush()
     _refresh_buckets(db, order.patient_id, report, buckets)
     _suppress_older(db, order.patient_id, report, fu.abnormal_codes)
-    if not fu.suppressed_reason and not (fu.priority == "ROUTINE" and fu.retest_tier == "LOW"):
+    from . import retest as retest_svc
+    retest_svc.plan_retest(db, fu, fallback_interval_days=interval, trends=param_trends(db, order.patient_id, report, abn))
+    if not fu.suppressed_reason and (not (fu.priority == "ROUTINE" and fu.retest_tier == "LOW") or fu.retest_status == "DOCTOR_TO_SET"):
         assign.assign(db, fu)  # parked and suppressed cases need no doctor yet
     db.commit()
     return fu

@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { RequestState } from "@/components/RequestState";
+import TierBadge from "@/components/TierBadge";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useContext, useEffect, useState } from "react";
 import { api } from "@/lib/api";
@@ -19,6 +20,8 @@ type CallerCardData = {
   mobile: string;
   language: string;
   priority: string;
+  protocol_tier_colour?: string;
+  protocol_tier_label?: string;
   notice?: string;
   report_age_days: number | null;
   reason_for_call: string;
@@ -48,9 +51,12 @@ function CallerCardInner({ id }: { id: string }) {
       <header className="space-y-4 rounded-2xl bg-gradient-to-r from-sky-800 to-sky-950 p-5 text-white shadow-sm sm:p-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div><h1 className="font-semibold">Call workspace</h1><p className="mt-1 text-slate-300">SecondMedic report follow-up</p></div>
-          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${c.priority === "ESCALATION" ? "bg-amber-200 text-amber-950" : "bg-slate-700 text-slate-100"}`}>
-            {c.priority === "ESCALATION" ? "Escalation" : "Routine"}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <TierBadge label={c.protocol_tier_label} colour={c.protocol_tier_colour} />
+            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${c.priority === "ESCALATION" ? "bg-amber-200 text-amber-950" : "bg-slate-700 text-slate-100"}`}>
+              {c.priority === "ESCALATION" ? "Escalation" : "Routine"}
+            </span>
+          </div>
         </div>
         <dl className="grid gap-3 border-t border-white/20 pt-4 sm:grid-cols-3">
           <div><dt className="text-slate-300">Customer</dt><dd className="font-semibold">{c.patient_name}</dd></div>

@@ -1,8 +1,9 @@
 "use client";
 import { RequestState } from "@/components/RequestState";
 import { TableFrame } from "@/components/TableFrame";
+import TierBadge from "@/components/TierBadge";
 import Link from "next/link";
-import { useContext, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { callStageLabel } from "@/lib/callWorkflow";
 import { RoleContext } from "@/lib/navigation";
@@ -12,6 +13,10 @@ const TABS: [string, string][] = [
   ["queue", "All due"], ["due_tomorrow", "Tomorrow"], ["due_this_week", "This week"], ["next_30_days", "Next 30 days"],
   ["overdue", "Overdue"], ["escalations", "Escalations"], ["low_potential", "Low potential (parked)"], ["done", "Done"],
 ];
+const PROTOCOL_TIERS = [
+  ["URGENT", "Urgent"], ["EARLY", "Early follow-up"], ["TREATMENT_RESPONSE", "Treatment response"],
+  ["METABOLIC", "Metabolic follow-up"], ["LONG_TERM", "Long-term monitoring"],
+];
 
 export default function Followups() {
   const role = useContext(RoleContext);
@@ -20,10 +25,23 @@ export default function Followups() {
   const [view, setView] = useState("queue");
   const [priority, setPriority] = useState("");
   const [tier, setTier] = useState("");
+  const [protocolTier, setProtocolTier] = useState("");
   const [bucket, setBucket] = useState("");
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const pt = new URLSearchParams(window.location.search).get("protocol_tier");
+      if (pt) setProtocolTier(pt);
+    }
+  }, []);
   const counts = useApi<Record<string, any>>("/followups/summary");
   const refills = useApi<any[]>(canOpenCallWorkspace ? "/refill-tasks" : "/followups/summary");
-  const qs = new URLSearchParams({ view, ...(priority && { priority }), ...(tier && { tier }), ...(bucket && { bucket }) }).toString();
+  const qs = new URLSearchParams({
+    view,
+    ...(priority && { priority }),
+    ...(tier && { tier }),
+    ...(protocolTier && { protocol_tier: protocolTier }),
+    ...(bucket && { bucket }),
+  }).toString();
   const { data, error, reload } = useApi<any[]>(`/followups?${qs}`);
   const full = data?.[0] ? "retest_tier" in data[0] : counts.data ? "low_potential" in counts.data : false; // callers get no clinical columns
   const buckets = Object.keys(counts.data?._buckets ?? {});
@@ -46,6 +64,10 @@ export default function Followups() {
       </div>
       {full && (
         <div className="flex flex-wrap gap-2 text-sm">
+          <select aria-label="Urgency tier" className="rounded border p-1" value={protocolTier} onChange={(e) => setProtocolTier(e.target.value)}>
+            <option value="">Any urgency tier</option>
+            {PROTOCOL_TIERS.map(([code, lbl]) => <option key={code} value={code}>{lbl}</option>)}
+          </select>
           <select aria-label="Priority" className="rounded border p-1" value={priority} onChange={(e) => setPriority(e.target.value)}>
             <option value="">Any priority</option><option>ROUTINE</option><option>ESCALATION</option>
           </select>
@@ -62,7 +84,7 @@ export default function Followups() {
       {!error && !!data?.length && (
         <TableFrame label="Follow-up cases">
           <table className="w-full bg-white text-left text-sm shadow">
-            <thead><tr><th className="p-2">{isCaller ? "Customer" : "Patient"}</th><th>Due</th><th>Report age</th><th>Priority</th><th>Status</th><th>{full ? "Deficits / Findings" : "Retest"}</th>{canOpenCallWorkspace && <th>Call workspace</th>}{full && <><th>Retest window</th><th>Buckets</th><th>Potential</th></>}</tr></thead>
+            <thead><tr><th className="p-2">{isCaller ? "Customer" : "Patient"}</th><th>Urgency</th><th>Due</th><th>Report age</th><th>Priority</th><th>Status</th><th>{full ? "Deficits / Findings" : "Retest"}</th>{canOpenCallWorkspace && <th>Call workspace</th>}{full && <><th>Retest window</th><th>Buckets</th><th>Potential</th></>}</tr></thead>
             <tbody>{data?.map((f) => {
               const winLabel = f.retest_status === "DOCTOR_TO_SET"
                 ? (full ? "Doctor to set retest date" : "Retest due")
@@ -70,8 +92,9 @@ export default function Followups() {
                   ? `${new Date(`${String(f.retest_window_start).slice(0, 10)}T00:00:00+05:30`).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric" })}${f.retest_window_end && f.retest_window_end !== f.retest_window_start ? ` \u2192 ${new Date(`${String(f.retest_window_end).slice(0, 10)}T00:00:00+05:30`).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric" })}` : ""}`
                   : "";
               return (
-              <tr key={f.id} className="border-t">
+              <tr key={f.id} className={`border-t ${full && f.protocol_tier === "URGENT" ? "bg-red-50/70" : ""}`}>
                 <td className="p-2">{full ? <Link className="underline" href={`/followups/view?id=${f.id}`}>{f.patient_name}</Link> : f.patient_name}</td>
+                <td><TierBadge label={f.protocol_tier_label} colour={f.protocol_tier_colour} /></td>
                 <td>{new Date(f.due_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
                 <td>{f.report_age_days != null ? `${f.report_age_days} days` : ""}</td>
                 <td className={f.priority === "ESCALATION" ? "font-medium text-red-700" : ""}>{f.priority === "ESCALATION" ? "Escalation" : "Routine"}</td>

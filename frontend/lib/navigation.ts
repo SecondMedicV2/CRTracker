@@ -27,6 +27,7 @@ export const NAV: { label: string; items: NavItem[] }[] = [
   { label: "Administration", items: [
     { href: "/users", label: "Users", roles: ["ADMIN"] },
     { href: "/doctors", label: "Doctors", roles: ["ADMIN"] },
+    { href: "/retesting-protocol", label: "Retesting protocol", roles: ["ADMIN"], description: "5-tier urgency windows, SLAs, and open counts." },
     { href: "/rules", label: "Rules", roles: ["ADMIN"] },
     { href: "/settings", label: "Settings", roles: ["ADMIN"] },
     { href: "/audit", label: "Audit log", roles: ["ADMIN"] },

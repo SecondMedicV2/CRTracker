@@ -55,11 +55,18 @@ import {
 } from "./lib/programs.js";
 import {
   DEFAULT_RETEST_PROTOCOLS,
+  DEFAULT_RETEST_TIERS,
   DEFAULT_TEST_CATALOGUE_P7,
   OVERRIDE_REASONS,
+  TIER_ORDER,
+  dateInTierWindow,
+  getTierMeta,
+  notifyUrgentInStore,
   overrideRetestInStore,
   planRetestInStore,
   retestReminderTickInStore,
+  slaTickInStore,
+  toIstDateStr,
 } from "./lib/retest.js";
 
 function consentingFamilySummaries(store, patientId) {
@@ -1649,9 +1656,11 @@ async function handleApiRequest(request, url, env) {
       };
       return { finding_code: fc, label: fMeta.label || fc, patients: total, primary_pct: pct("primary"), secondary_pct: pct("secondary"), third_pct: pct("third") };
     });
+    const urgent24h = (store.followups || []).filter((f) => !f.suppressed_reason && !DONE_STAGES.has(f.stage) && f.protocol_tier === "URGENT").length;
     return reply(200, {
       from: fromD,
       to: toD,
+      urgent_24h: urgent24h,
       orders: {
         imported: orders.length,
         by_status: {},
@@ -1663,7 +1672,7 @@ async function handleApiRequest(request, url, env) {
         abnormal: reports.filter((r) => r && r.classification === "ABNORMAL").length
       },
       patients_per_bucket: {},
-      followups_due: { today: 0, this_week: 0, overdue: 0, parked: 0 },
+      followups_due: { today: 0, this_week: 0, overdue: 0, parked: 0, urgent_24h: urgent24h },
       calls: {
         made: audit.filter((a) => a && a.action === "CALL_PLACED").length,
         by_outcome: {},
@@ -1837,12 +1846,18 @@ async function handleApiRequest(request, url, env) {
       retest_label: label,
       retest_window_start: f.retest_window_start ?? null,
       retest_window_end: f.retest_window_end ?? null,
+      protocol_tier_colour: getTierMeta(store.rules, f.protocol_tier || "LONG_TERM").colour_token,
+      protocol_tier_label: !full
+        ? getTierMeta(store.rules, f.protocol_tier || "LONG_TERM").caller_label
+        : getTierMeta(store.rules, f.protocol_tier || "LONG_TERM").label,
     };
     if (full) {
       out.buckets = f.buckets || [];
       out.finding_codes = f.finding_codes || [];
       out.retest_score = f.retest_score ?? 50;
       out.retest_tier = f.retest_tier || "MEDIUM";
+      out.protocol_tier = f.protocol_tier || "LONG_TERM";
+      out.sla_escalated_at = f.sla_escalated_at || null;
       out.assigned_doctor_id = f.assigned_doctor_id || null;
       out.treatment_anchor_on = f.treatment_anchor_on ?? null;
       out.reminder_on = f.reminder_on ?? null;
@@ -1851,21 +1866,49 @@ async function handleApiRequest(request, url, env) {
     }
     return out;
   };
+  const sortFollowupsUrgentFirst = (a, b) => {
+    const uA = a.protocol_tier === "URGENT" ? 0 : 1;
+    const uB = b.protocol_tier === "URGENT" ? 0 : 1;
+    if (uA !== uB) return uA - uB;
+    const pA = a.priority === "ESCALATION" || a.priority === "URGENT" ? 0 : a.priority === "PRIORITY" ? 1 : 2;
+    const pB = b.priority === "ESCALATION" || b.priority === "URGENT" ? 0 : b.priority === "PRIORITY" ? 1 : 2;
+    if (pA !== pB) return pA - pB;
+    const sDiff = Number(b.retest_score || 0) - Number(a.retest_score || 0);
+    if (sDiff !== 0) return sDiff;
+    return String(a.due_on || "").localeCompare(String(b.due_on || "")) || Number(a.id) - Number(b.id);
+  };
+  if (path === "/retesting-protocol/summary" && method === "GET") {
+    if (me.role !== "ADMIN") return reply(403, { detail: "Not allowed" });
+    const tiers = store.rules?.retest_tiers?.data || store.rules?.retest_tiers || DEFAULT_RETEST_TIERS;
+    const counts = {};
+    for (const f of store.followups || []) {
+      if (f.suppressed_reason || DONE_STAGES.has(f.stage)) continue;
+      const tc = f.protocol_tier || "LONG_TERM";
+      counts[tc] = (counts[tc] || 0) + 1;
+    }
+    const ordered = [...tiers].sort((a, b) => Number(a.order || 99) - Number(b.order || 99));
+    return reply(200, {
+      tiers: ordered.map((t) => ({ ...t, open_count: counts[t.code] || 0 })),
+      total_open: Object.values(counts).reduce((s, n) => s + n, 0),
+      urgent_24h: counts.URGENT || 0,
+    });
+  }
   if (path === "/followups" && method === "GET") {
     const isFull = me.role !== "CALLER" || Boolean(store.settings?.caller_can_view_results);
     const view = url.searchParams.get("view") || "queue";
     const bucketFilter = url.searchParams.get("bucket");
     const priorityFilter = url.searchParams.get("priority");
     const tierFilter = url.searchParams.get("tier");
-    if (!isFull && (view === "low_potential" || bucketFilter)) {
+    const protocolTierFilter = url.searchParams.get("protocol_tier");
+    if (!isFull && (view === "low_potential" || bucketFilter || protocolTierFilter)) {
       return reply(403, { detail: "Not allowed" });
     }
     const today = todayIstStr();
-    const list = (store.followups || [])
+    const list = [...(store.followups || [])]
       .filter((f) => {
         if (f.suppressed_reason) return false;
         const isDone = DONE_STAGES.has(f.stage);
-        const parked = f.priority === "ROUTINE" && f.retest_tier === "LOW";
+        const parked = f.priority === "ROUTINE" && f.retest_tier === "LOW" && f.protocol_tier !== "URGENT";
         if (view === "done") return isDone;
         if (view === "low_potential") return !isDone && parked;
         if (isDone || parked) return false;
@@ -1874,12 +1917,14 @@ async function handleApiRequest(request, url, env) {
         if (view === "due_this_week") return due >= today && due <= addDaysIso(today, 7);
         if (view === "next_30_days") return due >= today && due <= addDaysIso(today, 30);
         if (view === "overdue") return due < today;
-        if (view === "escalations") return f.priority === "ESCALATION" || f.priority === "URGENT";
+        if (view === "escalations") return f.priority === "ESCALATION" || f.priority === "URGENT" || f.protocol_tier === "URGENT";
         return true;
       })
       .filter((f) => (!priorityFilter || f.priority === priorityFilter))
       .filter((f) => (!tierFilter || f.retest_tier === tierFilter))
+      .filter((f) => (!protocolTierFilter || (f.protocol_tier || "LONG_TERM") === protocolTierFilter))
       .filter((f) => (!bucketFilter || (f.buckets || []).includes(bucketFilter)))
+      .sort(sortFollowupsUrgentFirst)
       .map((f) => fuRowOut(f, isFull));
     return reply(200, list);
   }
@@ -1887,7 +1932,7 @@ async function handleApiRequest(request, url, env) {
     const isFull = me.role !== "CALLER" || Boolean(store.settings?.caller_can_view_results);
     const today = todayIstStr();
     const live = (store.followups || []).filter((f) => !f.suppressed_reason && !DONE_STAGES.has(f.stage));
-    const active = live.filter((f) => !(f.priority === "ROUTINE" && f.retest_tier === "LOW"));
+    const active = live.filter((f) => !(f.priority === "ROUTINE" && f.retest_tier === "LOW" && f.protocol_tier !== "URGENT"));
     const done = (store.followups || []).filter((f) => !f.suppressed_reason && DONE_STAGES.has(f.stage)).length;
     const out = {
       queue: active.length,
@@ -1895,11 +1940,11 @@ async function handleApiRequest(request, url, env) {
       due_this_week: active.filter((f) => { const d = String(f.due_on || today).slice(0, 10); return d >= today && d <= addDaysIso(today, 7); }).length,
       next_30_days: active.filter((f) => { const d = String(f.due_on || today).slice(0, 10); return d >= today && d <= addDaysIso(today, 30); }).length,
       overdue: active.filter((f) => String(f.due_on || today).slice(0, 10) < today).length,
-      escalations: active.filter((f) => f.priority === "ESCALATION" || f.priority === "URGENT").length,
+      escalations: active.filter((f) => f.priority === "ESCALATION" || f.priority === "URGENT" || f.protocol_tier === "URGENT").length,
       done,
     };
     if (isFull) {
-      out.low_potential = live.filter((f) => f.priority === "ROUTINE" && f.retest_tier === "LOW").length;
+      out.low_potential = live.filter((f) => f.priority === "ROUTINE" && f.retest_tier === "LOW" && f.protocol_tier !== "URGENT").length;
       const _buckets = {};
       for (const f of store.followups || []) {
         for (const b of (f.buckets || [])) _buckets[b] = (_buckets[b] || 0) + 1;
@@ -1910,13 +1955,16 @@ async function handleApiRequest(request, url, env) {
   }
   if ((path === "/doctor/queue" || path === "/doctor-queue") && method === "GET") {
     if (me.role === "CALLER") return reply(403, { detail: "Not allowed" });
+    const protocolTierFilter = url.searchParams.get("protocol_tier");
     const progs = store.rules?.care_programs?.data || store.rules?.care_programs || DEFAULT_CARE_PROGRAMS;
     const considerCodes = new Set(progs.filter((p) => p.mode === "DOCTOR_CONSIDER").map((p) => p.code));
     const list = (me.role === "DOCTOR"
       ? store.followups.filter((f) => !f.assigned_doctor_id || f.assigned_doctor_id === me.id)
       : store.followups
     )
-      .filter((f) => !f.suppressed_reason && !DONE_STAGES.has(f.stage) && (["BOOKED", "CONSENT_GIVEN"].includes(f.stage) || ["ESCALATION", "URGENT"].includes(f.priority) || f.retest_status === "DOCTOR_TO_SET"))
+      .filter((f) => !f.suppressed_reason && !DONE_STAGES.has(f.stage) && (["BOOKED", "CONSENT_GIVEN"].includes(f.stage) || ["ESCALATION", "URGENT"].includes(f.priority) || f.retest_status === "DOCTOR_TO_SET" || f.protocol_tier === "URGENT"))
+      .filter((f) => (!protocolTierFilter || (f.protocol_tier || "LONG_TERM") === protocolTierFilter))
+      .sort(sortFollowupsUrgentFirst)
       .map((f) => {
         const recs = (store.program_recommendations || []).filter((r) => r.patient_id === f.patient_id && r.status === "SUGGESTED");
         return {
@@ -1960,8 +2008,30 @@ async function handleApiRequest(request, url, env) {
     const p = store.patients.find((item) => item.id === pid);
     if (!p) return reply(404, { detail: "No such patient" });
     const household = store.patients.filter((item) => item.household_tag && item.household_tag === p.household_tag && item.id !== p.id);
-    const repList = store.reports.filter((r) => r.patient_id === pid);
-    return reply(200, { ...patientOut(p, me), household: household.map((h) => patientOut(h, me)), reports: repList });
+    const fuByRep = Object.fromEntries((store.followups || []).filter((f) => f.patient_id === pid && f.report_id).map((f) => [f.report_id, f]));
+    let latestMeta = null;
+    let latestTier = null;
+    const repList = store.reports.filter((r) => r.patient_id === pid).map((r) => {
+      const f = fuByRep[r.id];
+      const tcode = f?.protocol_tier || null;
+      const tmeta = tcode ? getTierMeta(store.rules, tcode) : null;
+      if (f && !f.suppressed_reason && !latestTier) { latestTier = tcode; latestMeta = tmeta; }
+      return {
+        ...r,
+        followup_id: f?.id || null,
+        protocol_tier: tcode,
+        protocol_tier_label: tmeta?.label || null,
+        protocol_tier_colour: tmeta?.colour_token || null,
+      };
+    });
+    return reply(200, {
+      ...patientOut(p, me),
+      protocol_tier: latestTier,
+      protocol_tier_label: latestMeta?.label || null,
+      protocol_tier_colour: latestMeta?.colour_token || null,
+      household: household.map((h) => patientOut(h, me)),
+      reports: repList,
+    });
   }
   if (patMatch && method === "PATCH") {
     const pid = parseInt(patMatch[1], 10);
@@ -2507,12 +2577,47 @@ async function handleApiRequest(request, url, env) {
         fu.priority = body.priority;
       }
       if (body.assigned_doctor_id !== undefined) fu.assigned_doctor_id = body.assigned_doctor_id;
+      if (body.protocol_tier !== undefined) {
+        const tc = String(body.protocol_tier || "").trim().toUpperCase();
+        if (!TIER_ORDER[tc]) return reply(422, { detail: "Invalid protocol_tier" });
+        fu.protocol_tier = tc;
+        fu.retest_plan = {
+          ...(fu.retest_plan || {}),
+          manual_tier: tc,
+          protocol_tier: tc,
+          tier_meta: getTierMeta(store.rules, tc),
+        };
+        if (tc === "URGENT") notifyUrgentInStore(store, fu);
+      }
       if (body.treatment_anchor_on !== undefined) {
         fu.treatment_anchor_on = String(body.treatment_anchor_on).slice(0, 10);
         if (fu.retest_status !== "OVERRIDDEN") {
           const rep = fu.report_id ? (store.reports || []).find((r) => r.id === fu.report_id) : null;
           const pList = rep ? ((await kvGet(env, `report_params:${rep.id}`)) || []) : [];
           planRetestInStore(store, fu, { report: rep, params: pList });
+        }
+      }
+      if (body.retest_date !== undefined) {
+        const rd = String(body.retest_date || "").slice(0, 10);
+        const rep = fu.report_id ? (store.reports || []).find((r) => r.id === fu.report_id) : null;
+        const anchor = fu.treatment_anchor_on || (rep?.collected_on ? toIstDateStr(rep.collected_on) : todayIstStr());
+        const { ok, lo, hi } = dateInTierWindow(store.rules, fu.protocol_tier || "LONG_TERM", rd, anchor);
+        if (!ok) {
+          const reason = String(body.retest_override_reason || "").trim().toUpperCase();
+          if (!OVERRIDE_REASONS.includes(reason)) {
+            return reply(422, { detail: `Date falls outside ${fu.protocol_tier || "LONG_TERM"} tier window (${lo} to ${hi || "onward"}); override reason required` });
+          }
+          overrideRetestInStore(fu, { window_start: rd, window_end: rd, reason_code: reason, notes: body.retest_notes || "", user_id: me.id, rules: store.rules });
+          recordAudit(store, me, "retest_override", "followup", `${fid}:${reason}`);
+        } else {
+          fu.retest_window_start = rd;
+          fu.retest_window_end = rd;
+          fu.due_on = rd;
+          fu.next_followup_on = rd;
+          if (fu.retest_status === "DOCTOR_TO_SET") {
+            fu.retest_status = "DOCTOR_SET";
+            fu.retest_plan = { ...(fu.retest_plan || {}), status: "DOCTOR_SET", label: "Doctor set retest date" };
+          }
         }
       }
       recordAudit(store, me, "update", "followup", fid);
@@ -2531,7 +2636,7 @@ async function handleApiRequest(request, url, env) {
       const start = String(b.window_start || b.retest_date || "").slice(0, 10);
       const end = b.window_end ? String(b.window_end).slice(0, 10) : start;
       if (!start || (end && end < start)) return reply(422, { detail: "Invalid window_start or window_end" });
-      overrideRetestInStore(fu, { window_start: start, window_end: end, reason_code: reason, notes: b.notes || "", user_id: me.id });
+      overrideRetestInStore(fu, { window_start: start, window_end: end, reason_code: reason, notes: b.notes || "", user_id: me.id, rules: store.rules });
       recordAudit(store, me, "retest_override", "followup", `${fid}:${reason}`);
       await saveStore(env, store);
       return reply(200, fuRowOut(fu, true));
@@ -2664,6 +2769,7 @@ async function handleApiRequest(request, url, env) {
       const specialistBookings = (store.referrals || [])
         .filter(r => r.patient_id === fu?.patient_id && (r.status === "SUGGESTED" || r.status === "BOOKED"))
         .map(r => ({ id: r.id, label: "Specialist appointment to book", scheduled_for: r.scheduled_for || null, status: r.status }));
+      const tmeta = getTierMeta(store.rules, fu?.protocol_tier || "LONG_TERM");
       return reply(200, {
         followup_id: fid,
         patient_id: fu?.patient_id ?? null,
@@ -2676,6 +2782,8 @@ async function handleApiRequest(request, url, env) {
         script: card.content?.caller_script || {},
         do_not_say: card.content?.caller_script?.do_not_say || [],
         priority: fu?.priority || "ROUTINE",
+        protocol_tier_colour: tmeta.colour_token,
+        protocol_tier_label: tmeta.caller_label,
         program_followups: programFollowups,
         next_steps: nextSteps,
         refill_reminder: hasDueRefill ? "Pharmacy refill reminder call" : null,
@@ -3647,7 +3755,8 @@ async function handleApiRequest(request, url, env) {
     referral_specialties: DEFAULT_REFERRAL_SPECIALTIES,
     diagnostic_findings: DEFAULT_DIAGNOSTIC_FINDINGS,
     recommendation_combinations: DEFAULT_RECOMMENDATION_COMBINATIONS,
-    retest_protocols: DEFAULT_RETEST_PROTOCOLS
+    retest_protocols: DEFAULT_RETEST_PROTOCOLS,
+    retest_tiers: DEFAULT_RETEST_TIERS
   };
 
   if (path === "/rules" && method === "GET") {
@@ -3744,7 +3853,7 @@ export default {
       // LabTrace only pulls when the "Repeat Lab Sync Every (minutes)" setting says it is time.
       ctx.waitUntil((async () => {
         const store = await getStore(env);
-        if (refillTickInStore(store) + retestReminderTickInStore(store) > 0) await saveStore(env, store);
+        if (refillTickInStore(store) + retestReminderTickInStore(store) + slaTickInStore(store) > 0) await saveStore(env, store);
         if (!labtraceConfigured(env)) return;
         const every = Number(store.settings.pull_every_minutes) || 0;
         const last = Date.parse((store.labtrace_last_pull && store.labtrace_last_pull.at) || "") || 0;

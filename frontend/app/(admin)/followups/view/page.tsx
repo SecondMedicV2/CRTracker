@@ -10,6 +10,7 @@ import { useApi } from "@/lib/useApi";
 import FollowupCombinationsTable from "@/components/FollowupCombinationsTable";
 import ProgramsPanel from "@/components/ProgramsPanel";
 import RetestPlan from "@/components/RetestPlan";
+import TierBadge from "@/components/TierBadge";
 import Trends from "@/components/Trends";
 import CallCard from "./CallCard";
 import DoctorActions from "./DoctorActions";
@@ -25,7 +26,10 @@ function FollowupViewInner({ id }: { id: string }) {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">{f.patient_name}</h1>
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-xl font-semibold">{f.patient_name}</h1>
+        <TierBadge label={f.protocol_tier_label} colour={f.protocol_tier_colour} />
+      </div>
       <div className="text-sm">
         Due {f.due_on && !isNaN(Date.parse(f.due_on)) ? new Date(f.due_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "-"} · report {f.report_age_days} days old ·
         stage {f.stage}{f.report_id && <> · <Link className="underline" href={`/reports/view?id=${f.report_id}`}>see report</Link></>}

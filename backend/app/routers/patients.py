@@ -3,9 +3,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import identity, storage
+from .. import identity, retest as retest_svc, storage
+from ..analysis import load_rules
 from ..db import get_db
-from ..models import IdentityReview, Order, Patient, Report, User
+from ..models import Followup, IdentityReview, Order, Patient, Report, User
 from ..security import audit, require
 from ..settings_store import get_setting
 from ..telephony import MyOperatorDialer
@@ -46,14 +47,33 @@ def get_patient(pid: int, request: Request, db: Session = Depends(get_db), me: U
     if not p or p.merged_into_id:
         raise HTTPException(404, "No such patient")
     audit(db, request, me.id, "view", "patient", pid)
-    rows = db.execute(select(Order, Report).outerjoin(Report, Report.order_id == Order.id)
+    rows = db.execute(select(Order, Report, Followup).outerjoin(Report, Report.order_id == Order.id)
+                      .outerjoin(Followup, Followup.report_id == Report.id)
                       .where(Order.patient_id == pid).order_by(Order.collected_on.desc())).all()
+    tmap = retest_svc.tier_map(load_rules(db))
     house = db.scalars(select(Patient).where(Patient.household_tag == p.household_tag, Patient.id != pid,
                                              Patient.merged_into_id.is_(None))).all() if p.household_tag else []
+    rep_rows = []
+    latest_tier = None
+    for o, r, f in rows:
+        tcode = f.protocol_tier if f else None
+        tmeta = (tmap.get(tcode) or retest_svc.tier_meta(None, tcode)) if tcode else None
+        if f and not f.suppressed_reason and latest_tier is None:
+            latest_tier = (tcode, tmeta)
+        rep_rows.append({
+            "order_id": o.order_id_external, "status": o.status, "collected_on": o.collected_on,
+            "report_id": r.id if r else None, "classification": r.classification if r else "",
+            "followup_id": f.id if f else None,
+            "protocol_tier": tcode,
+            "protocol_tier_label": tmeta["label"] if tmeta else None,
+            "protocol_tier_colour": tmeta["colour_token"] if tmeta else None,
+        })
     return {**patient_out(p, me),
+            "protocol_tier": latest_tier[0] if latest_tier else None,
+            "protocol_tier_label": latest_tier[1]["label"] if latest_tier else None,
+            "protocol_tier_colour": latest_tier[1]["colour_token"] if latest_tier else None,
             "household": [{"id": h.id, "name": h.name} for h in house],
-            "reports": [{"order_id": o.order_id_external, "status": o.status, "collected_on": o.collected_on,
-                         "report_id": r.id if r else None, "classification": r.classification if r else ""} for o, r in rows]}
+            "reports": rep_rows}
 
 
 class PatientPatch(BaseModel):

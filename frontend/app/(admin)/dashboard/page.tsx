@@ -46,6 +46,19 @@ export default function Dashboard() {
       <RequestState loading={!d} error={error} retry={reload} />
       {d && !error && (
         <>
+          {Number(d.urgent_24h ?? d.followups_due?.urgent_24h ?? 0) > 0 && (
+            <section aria-labelledby="urgent-24h-heading" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-300 bg-red-50 px-6 py-4 text-sm text-red-950">
+              <div>
+                <h2 id="urgent-24h-heading" className="font-bold text-red-900">
+                  Urgent — action within 24 h ({d.urgent_24h ?? d.followups_due?.urgent_24h})
+                </h2>
+                <p className="mt-0.5 text-xs text-red-800">Immediate clinician review required for critical values or suspected acute kidney injury.</p>
+              </div>
+              <Link href="/followups?protocol_tier=URGENT" className="rounded-lg bg-red-700 px-3 py-2 text-xs font-semibold text-white hover:bg-red-800">
+                Open urgent queue
+              </Link>
+            </section>
+          )}
           {Object.values(d.needs_attention).some((n: any) => n > 0) && (
             <section aria-labelledby="attention-heading" className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900">
               <h2 id="attention-heading" className="font-semibold text-amber-950">Needs attention</h2>

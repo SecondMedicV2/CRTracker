@@ -138,9 +138,11 @@ def build(db: Session, order: Order) -> Followup | None:
     _refresh_buckets(db, order.patient_id, report, buckets)
     _suppress_older(db, order.patient_id, report, fu.abnormal_codes)
     from . import retest as retest_svc
-    retest_svc.plan_retest(db, fu, fallback_interval_days=interval, trends=param_trends(db, order.patient_id, report, abn))
-    if not fu.suppressed_reason and (not (fu.priority == "ROUTINE" and fu.retest_tier == "LOW") or fu.retest_status == "DOCTOR_TO_SET"):
+    retest_svc.plan_retest(db, fu, fallback_interval_days=interval, trends=param_trends(db, order.patient_id, report, abn), notify_urgent=False)
+    if not fu.suppressed_reason and (not (fu.priority == "ROUTINE" and fu.retest_tier == "LOW") or fu.retest_status == "DOCTOR_TO_SET" or fu.protocol_tier == "URGENT"):
         assign.assign(db, fu)  # parked and suppressed cases need no doctor yet
+    if fu.protocol_tier == "URGENT" and not fu.suppressed_reason:
+        retest_svc.notify_urgent(db, fu)
     db.commit()
     return fu
 

@@ -76,6 +76,10 @@ const RULE_METADATA: Record<string, { title: string; desc: string }> = {
   retest_protocols: {
     title: "Retesting Schedule Protocols (10 Findings)",
     desc: "Clinically grounded retest timeframes, repeat tests, clinical considerations, and AMI reminder schedules for all 10 findings."
+  },
+  retest_tiers: {
+    title: "Retesting Protocol Urgency Tiers (5 Tiers)",
+    desc: "Urgent, Early follow-up, Treatment response, Metabolic follow-up, and Long-term monitoring windows, SLAs, colours, and neutral caller labels."
   }
 };
 

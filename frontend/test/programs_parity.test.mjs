@@ -15,8 +15,10 @@ import {
 } from "../lib/programs.js";
 import {
   DEFAULT_RETEST_PROTOCOLS,
+  DEFAULT_RETEST_TIERS,
   planRetestInStore,
   retestReminderTickInStore,
+  slaTickInStore,
   toIstDateStr,
 } from "../lib/retest.js";
 
@@ -379,5 +381,82 @@ describe("Smart Diagnostics Pages 1-4 Worker Parity", () => {
     assert.strictEqual(rulesRes.data.length, 10);
     const catRes = await (await req(env, "GET", "/api/v1/rules/test_catalogue", docCookie)).json();
     assert.ok(catRes.data.some((t) => t.code === "ELECTROLYTES") && catRes.data.some((t) => t.code === "UACR"));
+  });
+
+  it("evaluates Page 9 5 urgency tiers, URGENT sorting, notifications, window validation, summary, and SLA cron in Worker", async () => {
+    assert.strictEqual(DEFAULT_RETEST_TIERS.length, 5);
+    assert.deepStrictEqual(DEFAULT_RETEST_TIERS.map((t) => t.code), ["URGENT", "EARLY", "TREATMENT_RESPONSE", "METABOLIC", "LONG_TERM"]);
+
+    const env = createTestEnv();
+    const aLogin = await req(env, "POST", "/api/v1/auth/login", null, { email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD });
+    const adminCookie = aLogin.headers.get("set-cookie").split(";")[0];
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Dr", email: "doc@sm.com", password: "DoctorPassword123!", role: "DOCTOR" });
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Cal", email: "cal@sm.com", password: "CallerPassword123!", role: "CALLER" });
+    const docCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "doc@sm.com", password: "DoctorPassword123!" })).headers.get("set-cookie").split(";")[0];
+    const calCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "cal@sm.com", password: "CallerPassword123!" })).headers.get("set-cookie").split(";")[0];
+
+    // Check critical_values is empty by default and retest_tiers rule exists
+    const cvRule = await (await req(env, "GET", "/api/v1/rules/critical_values", docCookie)).json();
+    assert.deepStrictEqual(cvRule.data, []);
+    const tiersRule = await (await req(env, "GET", "/api/v1/rules/retest_tiers", docCookie)).json();
+    assert.strictEqual(tiersRule.data[0].code, "URGENT");
+
+    // Manual URGENT promotion + tier window validation (METABOLIC 56-84d)
+    const today = todayIstStr();
+    await req(env, "GET", "/api/v1/followups/1/recommendations", docCookie);
+    assert.strictEqual((await req(env, "PATCH", "/api/v1/followups/2", docCookie, { protocol_tier: "METABOLIC", retest_date: addDaysIso(today, 5) })).status, 422);
+    const validPatch = await req(env, "PATCH", "/api/v1/followups/2", docCookie, {
+      protocol_tier: "URGENT",
+      retest_date: today,
+      retest_override_reason: "CLINICAL_JUDGMENT",
+    });
+    assert.strictEqual(validPatch.status, 200);
+    const fu2 = await validPatch.json();
+    assert.strictEqual(fu2.protocol_tier, "URGENT");
+    assert.strictEqual(fu2.protocol_tier_colour, "red");
+
+    // URGENT sorts first and triggers dashboard urgent_24h + summary counts
+    const list = await (await req(env, "GET", "/api/v1/followups", adminCookie)).json();
+    assert.strictEqual(list[0].id, 2);
+    const dash = await (await req(env, "GET", "/api/v1/dashboard", adminCookie)).json();
+    assert.ok(dash.urgent_24h >= 1);
+    const sumRes = await req(env, "GET", "/api/v1/retesting-protocol/summary", adminCookie);
+    assert.strictEqual(sumRes.status, 200);
+    assert.ok((await sumRes.json()).urgent_24h >= 1);
+    assert.strictEqual((await req(env, "GET", "/api/v1/retesting-protocol/summary", docCookie)).status, 403);
+    assert.strictEqual((await req(env, "GET", "/api/v1/retesting-protocol/summary", calCookie)).status, 403);
+
+    // Caller sees neutral label + colour only
+    const calList = await (await req(env, "GET", "/api/v1/followups", calCookie)).json();
+    const calUrgent = calList.find((x) => x.id === 2);
+    assert.strictEqual(calUrgent.protocol_tier_colour, "red");
+    assert.strictEqual(calUrgent.protocol_tier_label, "Priority call today");
+    assert.ok(!("protocol_tier" in calUrgent));
+
+    // Caller card includes neutral tier badge
+    await req(env, "POST", "/api/v1/followups/2/call-card/generate", docCookie, {});
+    const card = await (await req(env, "GET", "/api/v1/followups/2/caller-card", calCookie)).json();
+    assert.strictEqual(card.protocol_tier_colour, "red");
+    assert.strictEqual(card.protocol_tier_label, "Priority call today");
+
+    // SLA escalation tick after 24h unattended
+    const slaStore = {
+      followups: [{
+        id: 22,
+        stage: "QUEUED",
+        suppressed_reason: "",
+        protocol_tier: "URGENT",
+        accepted_at: null,
+        attempts: 0,
+        sla_escalated_at: null,
+        created_at: new Date(Date.now() - 26 * 3600 * 1000).toISOString(),
+      }],
+      notifications: { unread: 0, items: [] },
+      audit: [],
+    };
+    assert.strictEqual(slaTickInStore(slaStore, Date.now()), 1);
+    assert.strictEqual(slaTickInStore(slaStore, Date.now()), 0);
+    assert.ok(slaStore.notifications.items[0].text.includes("SLA overdue"));
+    assert.strictEqual(slaStore.audit[0].action, "sla_escalate");
   });
 });

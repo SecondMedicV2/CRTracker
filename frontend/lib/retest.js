@@ -1,5 +1,5 @@
 /**
- * Retesting Schedule Engine for the 10 Diagnostic Findings (Page 7).
+ * Retesting Schedule & 5 Urgency Tiers Engine (Pages 7 & 9).
  * Shared pure ES module used by Cloudflare Worker (worker.js) and parity tests.
  */
 import {
@@ -26,6 +26,71 @@ export const OVERRIDE_REASONS = [
   "PATIENT_PREFERENCE",
   "SYMPTOM_URGENCY",
   "OTHER",
+];
+
+export const TIER_ORDER = { URGENT: 1, EARLY: 2, TREATMENT_RESPONSE: 3, METABOLIC: 4, LONG_TERM: 5 };
+
+export const DEFAULT_RETEST_TIERS = [
+  {
+    order: 1,
+    code: "URGENT",
+    label: "Urgent",
+    window_text: "Same day to 48 hours, as clinically directed",
+    window_min_days: 0,
+    window_max_days: 2,
+    details_text: "Critical abnormalities, suspected acute kidney injury",
+    colour_token: "red",
+    sla_hours: 24,
+    caller_label: "Priority call today",
+  },
+  {
+    order: 2,
+    code: "EARLY",
+    label: "Early follow-up",
+    window_text: "1\u20134 weeks",
+    window_min_days: 7,
+    window_max_days: 28,
+    details_text: "Selected anemia and liver conditions",
+    colour_token: "teal",
+    sla_hours: null,
+    caller_label: "Follow-up call",
+  },
+  {
+    order: 3,
+    code: "TREATMENT_RESPONSE",
+    label: "Treatment response",
+    window_text: "4\u20138 weeks",
+    window_min_days: 28,
+    window_max_days: 56,
+    details_text: "Lipid treatment, thyroid medication adjustments",
+    colour_token: "navy blue",
+    sla_hours: null,
+    caller_label: "Follow-up call",
+  },
+  {
+    order: 4,
+    code: "METABOLIC",
+    label: "Metabolic follow-up",
+    window_text: "8\u201312 weeks",
+    window_min_days: 56,
+    window_max_days: 84,
+    details_text: "HbA1c, selected vitamin deficiencies",
+    colour_token: "amber",
+    sla_hours: null,
+    caller_label: "Follow-up call",
+  },
+  {
+    order: 5,
+    code: "LONG_TERM",
+    label: "Long-term monitoring",
+    window_text: "3\u201312 months or longer",
+    window_min_days: 90,
+    window_max_days: null,
+    details_text: "Stable chronic disease and preventive screening",
+    colour_token: "green",
+    sla_hours: null,
+    caller_label: "Follow-up call",
+  },
 ];
 
 const FINDING_DRUG_CLASSES = {
@@ -78,8 +143,8 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     ami_reminder_text: "Day 60\u201390",
     requires_indication: true,
     variants: [
-      { when: "indicated", window_min_days: 56, window_max_days: 84, anchor: "TREATMENT_START" },
-      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "REQUIRES_INDICATION" },
+      { when: "indicated", window_min_days: 56, window_max_days: 84, anchor: "TREATMENT_START", tier: "METABOLIC" },
+      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "REQUIRES_INDICATION", tier: "METABOLIC" },
     ],
     tests: [{ code: "VITD", optional: false }, { code: "CALCIUM", optional: true }],
     reminder: { mode: "FIXED", day_min: 60, day_max: 90 },
@@ -92,10 +157,10 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     considerations_text: "HbA1c reflects approximately 2\u20133 months of glycemic exposure.",
     ami_reminder_text: "Day 90",
     variants: [
-      { when: "treatment_changed", window_min_days: 90, window_max_days: 90, anchor: "TREATMENT_CHANGE" },
-      { when: "targets_unmet", window_min_days: 90, window_max_days: 90, anchor: "REPORT_DATE" },
-      { when: "stable_at_goal", window_min_days: 180, window_max_days: 180, anchor: "REPORT_DATE" },
-      { when: "default", window_min_days: 90, window_max_days: 90, anchor: "REPORT_DATE" },
+      { when: "treatment_changed", window_min_days: 90, window_max_days: 90, anchor: "TREATMENT_CHANGE", tier: "METABOLIC" },
+      { when: "targets_unmet", window_min_days: 90, window_max_days: 90, anchor: "REPORT_DATE", tier: "METABOLIC" },
+      { when: "stable_at_goal", window_min_days: 180, window_max_days: 180, anchor: "REPORT_DATE", tier: "LONG_TERM" },
+      { when: "default", window_min_days: 90, window_max_days: 90, anchor: "REPORT_DATE", tier: "METABOLIC" },
     ],
     tests: [{ code: "HBA1C", optional: false }, { code: "FBS", optional: true }],
     reminder: { mode: "FIXED", day_min: 90, day_max: 90 },
@@ -109,8 +174,8 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     ami_reminder_text: "Day 30\u201390",
     signoff_note: "Clinical team check: timeframe says 4\u201312 weeks (28\u201384 days) while AMI reminder says Day 30\u201390. Both preserved as written; confirm alignment during sign-off.",
     variants: [
-      { when: "treatment_changed", window_min_days: 28, window_max_days: 84, anchor: "TREATMENT_CHANGE" },
-      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "INDIVIDUALIZED" },
+      { when: "treatment_changed", window_min_days: 28, window_max_days: 84, anchor: "TREATMENT_CHANGE", tier: "TREATMENT_RESPONSE" },
+      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "INDIVIDUALIZED", tier: "LONG_TERM" },
     ],
     tests: [{ code: "LIPID", optional: false }],
     reminder: { mode: "FIXED", day_min: 30, day_max: 90 },
@@ -123,8 +188,8 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     considerations_text: "Mild untreated abnormalities may need confirmation before treatment.",
     ami_reminder_text: "Day 45\u201360",
     variants: [
-      { when: "treatment_changed", window_min_days: 42, window_max_days: 56, anchor: "TREATMENT_CHANGE" },
-      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "INDIVIDUALIZED" },
+      { when: "treatment_changed", window_min_days: 42, window_max_days: 56, anchor: "TREATMENT_CHANGE", tier: "TREATMENT_RESPONSE" },
+      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "INDIVIDUALIZED", tier: "TREATMENT_RESPONSE" },
     ],
     tests: [{ code: "TSH", optional: false }, { code: "FT4", optional: true }],
     reminder: { mode: "FIXED", day_min: 45, day_max: 60 },
@@ -137,8 +202,8 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     considerations_text: "Investigate the cause of anemia. Severe anemia or concerning symptoms require earlier evaluation.",
     ami_reminder_text: "Day 14\u201328",
     variants: [
-      { when: "on_treatment", window_min_days: 14, window_max_days: 28, anchor: "TREATMENT_START" },
-      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "DOCTOR_DECIDES" },
+      { when: "on_treatment", window_min_days: 14, window_max_days: 28, anchor: "TREATMENT_START", tier: "EARLY" },
+      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "DOCTOR_DECIDES", tier: "EARLY" },
     ],
     tests: [{ code: "CBC", optional: false }, { code: "RETIC", optional: true }],
     reminder: { mode: "FIXED", day_min: 14, day_max: 28 },
@@ -151,7 +216,7 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     considerations_text: "Possible acute kidney injury requires prompt evaluation and sometimes repeat testing within 24\u201348 hours or sooner.",
     ami_reminder_text: "Risk-based",
     variants: [
-      { when: "default", window_min_days: 0, window_max_days: 14, anchor: "REPORT_DATE", risk_based: true, mode: "RISK_BASED" },
+      { when: "default", window_min_days: 0, window_max_days: 14, anchor: "REPORT_DATE", risk_based: true, mode: "RISK_BASED", tier: "URGENT" },
     ],
     tests: [{ code: "KFT", optional: false }, { code: "ELECTROLYTES", optional: false }, { code: "URINE_ROUTINE", optional: true }, { code: "UACR", optional: true }],
     reminder: { mode: "RISK_BASED" },
@@ -164,8 +229,8 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     considerations_text: "Do not delay investigation of significant abnormalities, jaundice or concerning symptoms merely to repeat the test.",
     ami_reminder_text: "Day 14\u201328, if appropriate",
     variants: [
-      { when: "mild_stable", window_min_days: 14, window_max_days: 28, anchor: "REPORT_DATE" },
-      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "DOCTOR_DECIDES" },
+      { when: "mild_stable", window_min_days: 14, window_max_days: 28, anchor: "REPORT_DATE", tier: "EARLY" },
+      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "DOCTOR_DECIDES", tier: "EARLY" },
     ],
     tests: [{ code: "LFT", optional: false }],
     reminder: { mode: "IF_APPROPRIATE", day_min: 14, day_max: 28 },
@@ -178,7 +243,7 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     considerations_text: "Weight and BP can be monitored more frequently.",
     ami_reminder_text: "Day 90",
     variants: [
-      { when: "default", window_min_days: 90, window_max_days: 90, anchor: "REPORT_DATE" },
+      { when: "default", window_min_days: 90, window_max_days: 90, anchor: "REPORT_DATE", tier: "METABOLIC" },
     ],
     tests: [{ code: "HBA1C", optional: true }, { code: "FBS", optional: true }, { code: "LIPID", optional: true }],
     reminder: { mode: "FIXED", day_min: 90, day_max: 90 },
@@ -191,7 +256,7 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     considerations_text: "Each condition requires its own monitoring schedule.",
     ami_reminder_text: "Personalized",
     variants: [
-      { when: "default", window_min_days: 30, window_max_days: 90, anchor: "REPORT_DATE", personalized: true, mode: "PERSONALIZED" },
+      { when: "default", window_min_days: 30, window_max_days: 90, anchor: "REPORT_DATE", personalized: true, mode: "PERSONALIZED", tier: "LONG_TERM" },
     ],
     tests: [],
     reminder: { mode: "PERSONALIZED" },
@@ -204,12 +269,30 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     considerations_text: "Normal results do not automatically justify repeat testing at six months.",
     ami_reminder_text: "Risk-based",
     variants: [
-      { when: "default", window_min_days: 180, window_max_days: 365, anchor: "REPORT_DATE", risk_based: true, mode: "RISK_BASED" },
+      { when: "default", window_min_days: 180, window_max_days: 365, anchor: "REPORT_DATE", risk_based: true, mode: "RISK_BASED", tier: "LONG_TERM" },
     ],
     tests: [],
     reminder: { mode: "RISK_BASED" },
   },
 ];
+
+export function tierMapFromRules(rules) {
+  const list = rules?.retest_tiers?.data || rules?.retest_tiers || DEFAULT_RETEST_TIERS;
+  return Object.fromEntries(list.filter((t) => t?.code).map((t) => [t.code, t]));
+}
+
+export function getTierMeta(rules, code) {
+  const map = tierMapFromRules(rules);
+  return map[code || "LONG_TERM"] || map.LONG_TERM || DEFAULT_RETEST_TIERS[4];
+}
+
+export function dateInTierWindow(rules, tierCode, targetIso, anchorIso) {
+  const meta = getTierMeta(rules, tierCode);
+  const lo = addDaysIso(anchorIso, Number(meta.window_min_days || 0));
+  const hi = meta.window_max_days !== null && meta.window_max_days !== undefined ? addDaysIso(anchorIso, Number(meta.window_max_days)) : null;
+  const ok = targetIso >= lo && (hi === null || targetIso <= hi);
+  return { ok, lo, hi };
+}
 
 export function toIstDateStr(val) {
   if (!val) return todayIstStr();
@@ -239,18 +322,7 @@ function medAnchor(activeMeds, medCat, findingCode, anchorKind) {
   return dates.length ? dates.sort().slice(-1)[0] : null;
 }
 
-export function evaluateRetestFinding({
-  proto,
-  reportDateIst,
-  followup,
-  ctx,
-  medCat,
-  params = [],
-  trends = {},
-  catNames = {},
-  detectedCodes = [],
-  state = {},
-}) {
+export function evaluateRetestFinding({ proto, reportDateIst, followup, ctx, medCat, params = [], trends = {}, catNames = {}, detectedCodes = [], state = {} }) {
   const fc = proto.finding_code;
   const activeMeds = [...(ctx.activeMeds || []), ...(state.medicines || [])];
   const medChangeDate = medAnchor(activeMeds, medCat, fc, "TREATMENT_CHANGE");
@@ -269,10 +341,7 @@ export function evaluateRetestFinding({
   const lftParams = params.filter((p) => LFT_CODES.has(p.param_code) && p.system_flag === "HIGH");
   const mildStable = Boolean(
     state.mild_stable ||
-      (fc === "ABNORMAL_LFT" &&
-        lftParams.length > 0 &&
-        lftParams.every((p) => p.severity === "mild") &&
-        lftParams.some((p) => trends[p.param_code] === "stable_abnormal"))
+      (fc === "ABNORMAL_LFT" && lftParams.length > 0 && lftParams.every((p) => p.severity === "mild") && lftParams.some((p) => trends[p.param_code] === "stable_abnormal"))
   );
 
   const condFlags = { treatment_changed: treatmentChanged, on_treatment: onTreatment, indicated, stable_at_goal: stableAtGoal, targets_unmet: targetsUnmet, mild_stable: mildStable };
@@ -300,11 +369,13 @@ export function evaluateRetestFinding({
   const reminderOn = autoScheduled && (remMode === "FIXED" || remMode === "IF_APPROPRIATE") && remCfg.day_min != null
     ? addDaysIso(anchorDate, Number(remCfg.day_min))
     : null;
+  const tierCode = variant.tier || proto.tier || (fc === "HIGH_CREATININE" ? "URGENT" : "LONG_TERM");
 
   return {
     finding_code: fc,
     finding_name: proto.finding_name || fc,
     variant_when: variant.when || "default",
+    tier: tierCode,
     mode,
     auto_scheduled: autoScheduled,
     anchor: anchorKind,
@@ -321,6 +392,53 @@ export function evaluateRetestFinding({
     ami_reminder_text: proto.ami_reminder_text || "",
     tests: (proto.tests || []).filter((t) => t?.code).map((t) => ({ code: t.code, name: catNames[t.code] || t.code, optional: Boolean(t.optional) })),
   };
+}
+
+function isCriticalInStore(params, criticalValues) {
+  for (const cv of criticalValues || []) {
+    for (const p of params || []) {
+      if (p.param_code === cv.param_code && p.value_num !== null && p.value_num !== undefined) {
+        if ((cv.below !== null && cv.below !== undefined && p.value_num < cv.below) ||
+            (cv.above !== null && cv.above !== undefined && p.value_num > cv.above)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+export function resolveProtocolTierInStore(followup, params, rules, schedules, detected, fallbackDays) {
+  const critRules = rules?.critical_values?.data || rules?.critical_values || [];
+  if (isCriticalInStore(params, critRules)) return "URGENT";
+  const manual = followup?.retest_plan?.manual_tier;
+  if (manual && TIER_ORDER[manual]) return manual;
+  if (detected.includes("HIGH_CREATININE")) return "URGENT";
+  if (schedules.length) {
+    return [...schedules].map((s) => s.tier || "LONG_TERM").sort((a, b) => (TIER_ORDER[a] || 99) - (TIER_ORDER[b] || 99))[0];
+  }
+  if (followup.priority === "ESCALATION") return "URGENT";
+  if (fallbackDays <= 28) return "EARLY";
+  if (fallbackDays <= 56) return "TREATMENT_RESPONSE";
+  if (fallbackDays <= 84) return "METABOLIC";
+  return "LONG_TERM";
+}
+
+export function notifyUrgentInStore(store, fu) {
+  if (fu.protocol_tier !== "URGENT" || fu.suppressed_reason) return false;
+  if (fu.retest_plan?.urgent_notified) return false;
+  if (!store.notifications) store.notifications = { unread: 0, items: [] };
+  store.notifications.unread = (store.notifications.unread || 0) + 1;
+  store.notifications.items.unshift({
+    id: store.notifications.items.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
+    text: "Urgent retest needed (action within 24h)",
+    link: `/followups/view?id=${fu.id}`,
+    urgent: true,
+    read: false,
+    at: new Date().toISOString(),
+  });
+  fu.retest_plan = { ...(fu.retest_plan || {}), urgent_notified: true };
+  return true;
 }
 
 export function planRetestInStore(store, followup, { report = null, params = [], evalArgs = null, state = {}, fallbackDays = 90, force = false } = {}) {
@@ -352,6 +470,12 @@ export function planRetestInStore(store, followup, { report = null, params = [],
     evaluateRetestFinding({ proto: protos[fc], reportDateIst: collected, followup, ctx, medCat, params, trends, catNames, detectedCodes: detected, state })
   );
 
+  const protocolTier = resolveProtocolTierInStore(followup, params, rules, schedules, detected, fallbackDays);
+  const tmeta = getTierMeta(rules, protocolTier);
+  followup.protocol_tier = protocolTier;
+  const prevManual = followup.retest_plan?.manual_tier;
+  const prevNotified = Boolean(followup.retest_plan?.urgent_notified);
+
   if (!schedules.length) {
     const due = fallbackDays <= 0 ? today : addDaysIso(collected, fallbackDays);
     followup.retest_window_start = due;
@@ -359,7 +483,11 @@ export function planRetestInStore(store, followup, { report = null, params = [],
     followup.reminder_on = null;
     followup.due_on = due;
     followup.retest_status = "FALLBACK";
-    followup.retest_plan = { status: "FALLBACK", label: "Retest due", primary_finding: null, findings: [], default_tests: [] };
+    followup.retest_plan = {
+      status: "FALLBACK", label: "Retest due", primary_finding: null, findings: [], default_tests: [],
+      protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
+    };
+    notifyUrgentInStore(store, followup);
     return followup.retest_plan;
   }
 
@@ -372,7 +500,11 @@ export function planRetestInStore(store, followup, { report = null, params = [],
     followup.reminder_on = null;
     followup.due_on = today;
     followup.retest_status = "DOCTOR_TO_SET";
-    followup.retest_plan = { status: "DOCTOR_TO_SET", label: "Doctor to set retest date", primary_finding: top, findings: schedules, default_tests: defaultCodes };
+    followup.retest_plan = {
+      status: "DOCTOR_TO_SET", label: "Doctor to set retest date", primary_finding: top, findings: schedules, default_tests: defaultCodes,
+      protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
+    };
+    notifyUrgentInStore(store, followup);
     return followup.retest_plan;
   }
 
@@ -383,11 +515,15 @@ export function planRetestInStore(store, followup, { report = null, params = [],
   followup.reminder_on = chosen.reminder_on;
   followup.due_on = chosen.window_start;
   followup.retest_status = "AUTO_SCHEDULED";
-  followup.retest_plan = { status: "AUTO_SCHEDULED", label: "Retest due", primary_finding: chosen, findings: schedules, default_tests: defaultCodes };
+  followup.retest_plan = {
+    status: "AUTO_SCHEDULED", label: "Retest due", primary_finding: chosen, findings: schedules, default_tests: defaultCodes,
+    protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
+  };
+  notifyUrgentInStore(store, followup);
   return followup.retest_plan;
 }
 
-export function overrideRetestInStore(followup, { window_start, window_end, reason_code, notes = "", user_id = null }) {
+export function overrideRetestInStore(followup, { window_start, window_end, reason_code, notes = "", user_id = null, rules = null }) {
   const winEnd = window_end || window_start;
   const plan = { ...(followup.retest_plan || {}) };
   if (plan.primary_finding) {
@@ -395,6 +531,8 @@ export function overrideRetestInStore(followup, { window_start, window_end, reas
   }
   plan.status = "OVERRIDDEN";
   plan.label = "Retest due";
+  plan.protocol_tier = followup.protocol_tier || "LONG_TERM";
+  plan.tier_meta = getTierMeta(rules, plan.protocol_tier);
   plan.override = { reason_code, notes: String(notes || "").trim().slice(0, 300), by_user_id: user_id, at: new Date().toISOString() };
   followup.retest_window_start = window_start;
   followup.retest_window_end = winEnd;
@@ -426,4 +564,40 @@ export function retestReminderTickInStore(store, nowMs = Date.now()) {
     sent += 1;
   }
   return sent;
+}
+
+export function slaTickInStore(store, nowMs = Date.now()) {
+  const meta = getTierMeta(store.rules, "URGENT");
+  const slaHours = Number(meta.sla_hours || 24);
+  const cutoffMs = nowMs - slaHours * 3600 * 1000;
+  let escalated = 0;
+  for (const fu of store.followups || []) {
+    if (fu.suppressed_reason || DONE_STAGES.has(fu.stage)) continue;
+    if (fu.protocol_tier !== "URGENT" || fu.sla_escalated_at) continue;
+    if (fu.accepted_at || Number(fu.attempts || 0) > 0) continue;
+    const createdMs = Date.parse(fu.created_at || "");
+    if (Number.isNaN(createdMs) || createdMs > cutoffMs) continue;
+    fu.sla_escalated_at = new Date(nowMs).toISOString();
+    if (!store.notifications) store.notifications = { unread: 0, items: [] };
+    store.notifications.unread = (store.notifications.unread || 0) + 1;
+    store.notifications.items.unshift({
+      id: store.notifications.items.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
+      text: `SLA overdue: urgent follow-up unattended (>${slaHours}h)`,
+      link: `/followups/view?id=${fu.id}`,
+      urgent: true,
+      read: false,
+      at: new Date(nowMs).toISOString(),
+    });
+    if (!store.audit) store.audit = [];
+    store.audit.unshift({
+      id: store.audit.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
+      user_id: null,
+      action: "sla_escalate",
+      entity: "followup",
+      entity_id: String(fu.id),
+      at: new Date(nowMs).toISOString(),
+    });
+    escalated += 1;
+  }
+  return escalated;
 }

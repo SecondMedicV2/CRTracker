@@ -216,21 +216,27 @@ def workflow(fid: int, db: Session = Depends(get_db), me: User = Depends(staff3)
 
 # ---- doctor side ----
 @router.get("/doctor/queue")
-def doctor_queue(doctor_id: int | None = None, db: Session = Depends(get_db), me: User = Depends(doctors)):
-    """Escalations first, then HIGH/MEDIUM/LOW potential, then earliest due (Part 13.2)."""
+def doctor_queue(doctor_id: int | None = None, protocol_tier: str | None = None, db: Session = Depends(get_db), me: User = Depends(doctors)):
+    """URGENT tier and escalations first, then HIGH/MEDIUM/LOW potential, then earliest due."""
     mine = my_doctor(db, me) if me.role == "DOCTOR" else (db.get(Doctor, doctor_id) if doctor_id else None)
     if me.role == "DOCTOR" and not mine:
         return []
     q = (select(Followup, Patient, Report).join(Patient, Patient.id == Followup.patient_id).join(Report, Report.id == Followup.report_id)
          .where(Followup.suppressed_reason == "", Followup.stage.notin_(DONE),
                 or_(Followup.stage.in_(("BOOKED", "CONSENT_GIVEN")), Followup.priority.in_(("ESCALATION", "URGENT")),
-                    Followup.retest_status == "DOCTOR_TO_SET"))
-         .order_by(case((Followup.priority.in_(("URGENT", "ESCALATION")), 0), (Followup.priority == "PRIORITY", 1), else_=2),
+                    Followup.retest_status == "DOCTOR_TO_SET", Followup.protocol_tier == "URGENT"))
+         .order_by(case((Followup.protocol_tier == "URGENT", 0), else_=1),
+                   case((Followup.priority.in_(("URGENT", "ESCALATION")), 0), (Followup.priority == "PRIORITY", 1), else_=2),
                    Followup.retest_score.desc(),
                    case((Followup.retest_tier == "HIGH", 0), (Followup.retest_tier == "MEDIUM", 1), else_=2), Followup.due_on, Followup.id))
+    if protocol_tier:
+        q = q.where(Followup.protocol_tier == protocol_tier)
     if mine:
         q = q.where(Followup.assigned_doctor_id == mine.id)
-    consider_codes = {p["code"] for p in load_rules(db).get("care_programs", []) if p.get("mode") == "DOCTOR_CONSIDER"}
+    rules = load_rules(db)
+    from .. import retest as retest_svc
+    tmap = retest_svc.tier_map(rules)
+    consider_codes = {p["code"] for p in rules.get("care_programs", []) if p.get("mode") == "DOCTOR_CONSIDER"}
     rows_q = db.execute(q.limit(200)).all()
     pids = {f.patient_id for f, _, _ in rows_q}
     prog_counts: dict[int, list[int]] = {}
@@ -245,7 +251,7 @@ def doctor_queue(doctor_id: int | None = None, db: Session = Depends(get_db), me
         unread = db.scalar(select(func.count()).select_from(Comment).where(Comment.followup_id == f.id, Comment.role != "DOCTOR", Comment.read_at.is_(None)))
         appt = db.scalar(select(Appointment).where(Appointment.followup_id == f.id, Appointment.status == "BOOKED"))
         plans_n, consider_n = prog_counts.get(f.patient_id, [0, 0])
-        out.append({**row(f, p, r, me, True), "unread_comments": unread, "accepted": f.accepted_at is not None,
+        out.append({**row(f, p, r, me, True, tmap), "unread_comments": unread, "accepted": f.accepted_at is not None,
                     "slot_start": appt.slot_start if appt else None,
                     "pending_plans": plans_n, "pending_consider": consider_n})
     return out

@@ -1,23 +1,44 @@
 "use client";
 import { RequestState } from "@/components/RequestState";
 import { TableFrame } from "@/components/TableFrame";
+import TierBadge from "@/components/TierBadge";
 import Link from "next/link";
+import { useState } from "react";
 import { useApi } from "@/lib/useApi";
 
+const TIERS = [
+  ["URGENT", "Urgent"],
+  ["EARLY", "Early follow-up"],
+  ["TREATMENT_RESPONSE", "Treatment response"],
+  ["METABOLIC", "Metabolic follow-up"],
+  ["LONG_TERM", "Long-term monitoring"],
+];
+
 export default function DoctorQueue() {
-  const { data, error, reload } = useApi<any[]>("/doctor/queue");
+  const [protocolTier, setProtocolTier] = useState("");
+  const qs = protocolTier ? `?protocol_tier=${encodeURIComponent(protocolTier)}` : "";
+  const { data, error, reload } = useApi<any[]>(`/doctor/queue${qs}`);
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">My queue</h1>
-      <p className="text-sm text-slate-600">Escalations first, then higher retest potential, then earliest due.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">My queue</h1>
+          <p className="text-sm text-slate-600">Urgent tier and escalations first, then higher retest potential, then earliest due.</p>
+        </div>
+        <select aria-label="Urgency tier filter" className="rounded border bg-white px-2 py-1 text-sm" value={protocolTier} onChange={(e) => setProtocolTier(e.target.value)}>
+          <option value="">All urgency tiers</option>
+          {TIERS.map(([code, lbl]) => <option key={code} value={code}>{lbl}</option>)}
+        </select>
+      </div>
       <RequestState loading={!data} error={error} retry={reload} empty={data?.length === 0 ? ("Nothing assigned to you right now.") : undefined} />
       {!error && !!data?.length && (
         <TableFrame label="Assigned cases">
           <table className="w-full bg-white text-left text-sm shadow">
-            <thead><tr><th className="p-2">Patient</th><th>Priority</th><th>Potential</th><th>Stage</th><th>Retest schedule</th><th>Booked slot</th><th>Plans / Consider</th><th>Comments</th><th>Accepted</th><th>Action</th></tr></thead>
+            <thead><tr><th className="p-2">Patient</th><th>Urgency tier</th><th>Priority</th><th>Potential</th><th>Stage</th><th>Retest schedule</th><th>Booked slot</th><th>Plans / Consider</th><th>Comments</th><th>Accepted</th><th>Action</th></tr></thead>
             <tbody>{data?.map((f) => (
-              <tr key={f.id} className={`border-t ${f.priority === "ESCALATION" ? "bg-red-50" : ""}`}>
+              <tr key={f.id} className={`border-t ${f.protocol_tier === "URGENT" || f.priority === "ESCALATION" ? "bg-red-50" : ""}`}>
                 <td className="p-2"><Link className="underline" href={`/followups/view?id=${f.id}`}>{f.patient_name}</Link></td>
+                <td><TierBadge label={f.protocol_tier_label} colour={f.protocol_tier_colour} /></td>
                 <td className={f.priority === "ESCALATION" ? "font-medium text-red-700" : ""}>{f.priority}</td>
                 <td>{f.retest_tier} ({f.retest_score})</td><td>{f.stage}</td>
                 <td className="text-xs">

@@ -203,6 +203,8 @@ class Followup(Base, Stamped):
     reminder_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     treatment_anchor_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     retest_status: Mapped[str] = mapped_column(String(20), default="AUTO_SCHEDULED", index=True)
+    protocol_tier: Mapped[str] = mapped_column(String(24), default="LONG_TERM", index=True)
+    sla_escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retest_plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 

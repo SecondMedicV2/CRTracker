@@ -125,6 +125,7 @@ def run_once(budget: float = 20.0) -> dict:
             maybe_scheduled_pull(db)
             extended.refill_tick(db)
             retest.reminder_tick(db)
+            retest.sla_tick(db)
             n = (tick(db), extract_tick(db), callcard_tick(db), assign.cascade_tick(db))
         for key, v in zip(("fetched", "extracted", "cards", "reassigned"), n):
             total[key] += v

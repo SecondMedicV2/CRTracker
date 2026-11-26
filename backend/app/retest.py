@@ -1,4 +1,4 @@
-"""Retesting schedule engine for the 10 diagnostic findings (Page 7)."""
+"""Retesting schedule & 5 urgency tiers engine (Pages 7 & 9)."""
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -8,12 +8,14 @@ from sqlalchemy.orm import Session
 from . import assign, findings, programs as prog_svc
 from .analysis import load_rules
 from .models import Followup, Order, Patient, Report, ReportParameter, RetestRecommendation, User
-from .seed_data import RETEST_PROTOCOLS, TEST_CATALOGUE
+from .security import audit
+from .seed_data import RETEST_PROTOCOLS, RETEST_TIERS, TEST_CATALOGUE
 from .timeutil import IST, to_ist_date, today_ist
 
 NON_AUTO_MODES = {"REQUIRES_INDICATION", "RISK_BASED", "PERSONALIZED", "INDIVIDUALIZED", "DOCTOR_DECIDES"}
 OVERRIDE_REASONS = ("CLINICAL_JUDGMENT", "TREATMENT_CHANGE", "PATIENT_PREFERENCE", "SYMPTOM_URGENCY", "OTHER")
 DONE_STAGES = {"DOCTOR_DONE", "RETEST_RECOMMENDED", "RETEST_ORDERED", "DECLINED", "WRONG_NUMBER"}
+TIER_ORDER = {"URGENT": 1, "EARLY": 2, "TREATMENT_RESPONSE": 3, "METABOLIC": 4, "LONG_TERM": 5}
 
 FINDING_DRUG_CLASSES: dict[str, set[str]] = {
     "HIGH_HBA1C": {"BIGUANIDE", "SULFONYLUREA", "INSULIN"},
@@ -34,6 +36,27 @@ MED_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def tier_map(rules: dict | None = None) -> dict[str, dict]:
+    tiers = (rules or {}).get("retest_tiers") or RETEST_TIERS
+    return {t["code"]: t for t in tiers if isinstance(t, dict) and t.get("code")}
+
+
+def tier_meta(db_or_rules: Session | dict | None, code: str | None) -> dict:
+    rules = load_rules(db_or_rules) if isinstance(db_or_rules, Session) else (db_or_rules or {})
+    tmap = tier_map(rules)
+    return tmap.get(code or "LONG_TERM") or tmap.get("LONG_TERM") or RETEST_TIERS[-1]
+
+
+def date_in_tier_window(rules: dict, tier_code: str, target_date: date, anchor_date: date) -> tuple[bool, date, date | None]:
+    meta = tier_meta(rules, tier_code)
+    min_d = int(meta.get("window_min_days") or 0)
+    max_d = meta.get("window_max_days")
+    lo = anchor_date + timedelta(days=min_d)
+    hi = anchor_date + timedelta(days=int(max_d)) if max_d is not None else None
+    ok = target_date >= lo and (hi is None or target_date <= hi)
+    return ok, lo, hi
+
+
 def _parse_iso_date(val: Any) -> date | None:
     if isinstance(val, date) and not isinstance(val, datetime):
         return val
@@ -47,14 +70,7 @@ def _parse_iso_date(val: Any) -> date | None:
         return None
 
 
-def _medicine_anchor(
-    active_meds: list,
-    med_cat: dict[str, dict],
-    profile_meds: list,
-    finding_code: str,
-    anchor_kind: str,
-) -> date | None:
-    """Latest started_on or last_changed_on from active PatientMedication rows or dict state matching finding_code."""
+def _medicine_anchor(active_meds: list, med_cat: dict[str, dict], profile_meds: list, finding_code: str, anchor_kind: str) -> date | None:
     req_classes = FINDING_DRUG_CLASSES.get(finding_code, set())
     kws = MED_KEYWORDS.get(finding_code, ())
     dates: list[date] = []
@@ -67,8 +83,7 @@ def _medicine_anchor(
         if (dclass and dclass in req_classes) or (kws and any(kw in hay for kw in kws)):
             primary = getattr(m, "last_changed_on", None) if anchor_kind == "TREATMENT_CHANGE" else getattr(m, "started_on", None)
             secondary = getattr(m, "started_on", None) if anchor_kind == "TREATMENT_CHANGE" else getattr(m, "last_changed_on", None)
-            d = _parse_iso_date(primary) or _parse_iso_date(secondary)
-            if d:
+            if (d := _parse_iso_date(primary) or _parse_iso_date(secondary)):
                 dates.append(d)
     for m in profile_meds or []:
         if not isinstance(m, dict) or m.get("active") is False:
@@ -78,22 +93,12 @@ def _medicine_anchor(
         if fc == finding_code or (kws and any(kw in hay for kw in kws)):
             primary = m.get("last_changed_on") if anchor_kind == "TREATMENT_CHANGE" else m.get("started_on")
             secondary = m.get("started_on") if anchor_kind == "TREATMENT_CHANGE" else m.get("last_changed_on")
-            d = _parse_iso_date(primary) or _parse_iso_date(secondary)
-            if d:
+            if (d := _parse_iso_date(primary) or _parse_iso_date(secondary)):
                 dates.append(d)
     return max(dates) if dates else None
 
 
-def _condition_state(
-    finding_code: str,
-    ctx: dict[str, Any],
-    med_cat: dict[str, dict],
-    followup: Followup,
-    params: list,
-    trends: dict[str, str],
-    detected_codes: list[str],
-    explicit_state: dict[str, Any],
-) -> dict[str, Any]:
+def _condition_state(finding_code: str, ctx: dict[str, Any], med_cat: dict[str, dict], followup: Followup, params: list, trends: dict[str, str], detected_codes: list[str], explicit_state: dict[str, Any]) -> dict[str, Any]:
     profile = ctx.get("profile") or {}
     active_meds = ctx.get("active_meds") or []
     dict_meds = explicit_state.get("medicines") if "medicines" in explicit_state else (profile.get("medicines") or profile.get("medications") or [])
@@ -101,50 +106,21 @@ def _condition_state(
     med_start_date = _medicine_anchor(active_meds, med_cat, dict_meds, finding_code, "TREATMENT_START")
     manual_anchor = _parse_iso_date(explicit_state.get("treatment_anchor_on") or getattr(followup, "treatment_anchor_on", None))
 
-    treatment_changed = bool(
-        explicit_state.get("treatment_changed")
-        or med_change_date is not None
-        or (manual_anchor is not None and finding_code in ("HIGH_HBA1C", "HIGH_CHOLESTEROL", "HIGH_TSH"))
-    )
-    on_treatment = bool(
-        explicit_state.get("on_treatment")
-        or med_start_date is not None
-        or (manual_anchor is not None and finding_code == "LOW_HB")
-    )
-    only_non_treatment = not (TREATMENT_FINDINGS & set(detected_codes))
-    indicated = bool(
-        explicit_state.get("indicated")
-        or profile.get("vitd_retest_indicated")
-        or med_start_date is not None
-        or (manual_anchor is not None and finding_code == "LOW_VITD" and only_non_treatment)
-    )
+    treatment_changed = bool(explicit_state.get("treatment_changed") or med_change_date is not None or (manual_anchor is not None and finding_code in ("HIGH_HBA1C", "HIGH_CHOLESTEROL", "HIGH_TSH")))
+    on_treatment = bool(explicit_state.get("on_treatment") or med_start_date is not None or (manual_anchor is not None and finding_code == "LOW_HB"))
+    indicated = bool(explicit_state.get("indicated") or profile.get("vitd_retest_indicated") or med_start_date is not None or (manual_anchor is not None and finding_code == "LOW_VITD" and not (TREATMENT_FINDINGS & set(detected_codes))))
     stable_flag = bool(explicit_state.get("stable_at_goal") or profile.get("glycemic_at_goal"))
     explicit_unmet = explicit_state.get("targets_unmet")
     lab_unmet = finding_code == "HIGH_HBA1C" and any(getattr(p, "param_code", "") == "HBA1C" and getattr(p, "system_flag", "") == "HIGH" for p in params)
     targets_unmet = bool(explicit_unmet) if explicit_unmet is not None else (bool(lab_unmet) and not stable_flag)
     stable_at_goal = bool(stable_flag and not treatment_changed and not targets_unmet)
-
     lft_params = [p for p in params if getattr(p, "param_code", "") in LFT_CODES and getattr(p, "system_flag", "") == "HIGH"]
-    mild_stable = bool(
-        explicit_state.get("mild_stable")
-        or (
-            finding_code == "ABNORMAL_LFT"
-            and lft_params
-            and all(getattr(p, "severity", "") == "mild" for p in lft_params)
-            and any(trends.get(getattr(p, "param_code", "")) == "stable_abnormal" for p in lft_params)
-        )
-    )
+    mild_stable = bool(explicit_state.get("mild_stable") or (finding_code == "ABNORMAL_LFT" and lft_params and all(getattr(p, "severity", "") == "mild" for p in lft_params) and any(trends.get(getattr(p, "param_code", "")) == "stable_abnormal" for p in lft_params)))
     return {
-        "med_change_date": med_change_date,
-        "med_start_date": med_start_date,
-        "manual_anchor": manual_anchor,
-        "explicit_anchor": _parse_iso_date(explicit_state.get("anchor_date")),
-        "treatment_changed": treatment_changed,
-        "on_treatment": on_treatment,
-        "indicated": indicated,
-        "stable_at_goal": stable_at_goal,
-        "targets_unmet": targets_unmet,
-        "mild_stable": mild_stable,
+        "med_change_date": med_change_date, "med_start_date": med_start_date, "manual_anchor": manual_anchor,
+        "explicit_anchor": _parse_iso_date(explicit_state.get("anchor_date")), "treatment_changed": treatment_changed,
+        "on_treatment": on_treatment, "indicated": indicated, "stable_at_goal": stable_at_goal,
+        "targets_unmet": targets_unmet, "mild_stable": mild_stable,
     }
 
 
@@ -167,18 +143,7 @@ def _resolve_anchor_date(anchor_kind: str, report_date: date, cond: dict[str, An
     return report_date
 
 
-def evaluate_finding(
-    proto: dict,
-    report_date: date,
-    followup: Followup,
-    ctx: dict[str, Any],
-    med_cat: dict[str, dict],
-    params: list,
-    trends: dict[str, str],
-    catalogue_names: dict[str, str],
-    detected_codes: list[str],
-    explicit_state: dict[str, Any],
-) -> dict[str, Any]:
+def evaluate_finding(proto: dict, report_date: date, followup: Followup, ctx: dict[str, Any], med_cat: dict[str, dict], params: list, trends: dict[str, str], catalogue_names: dict[str, str], detected_codes: list[str], explicit_state: dict[str, Any]) -> dict[str, Any]:
     fc = proto["finding_code"]
     cond = _condition_state(fc, ctx, med_cat, followup, params, trends, detected_codes, explicit_state)
     variant = _pick_variant(proto, cond)
@@ -193,42 +158,22 @@ def evaluate_finding(
     auto_scheduled = mode not in NON_AUTO_MODES and variant.get("window_min_days") is not None
     anchor_kind = variant.get("anchor", "REPORT_DATE")
     anchor_date = _resolve_anchor_date(anchor_kind, report_date, cond)
-
     min_days, max_days = variant.get("window_min_days"), variant.get("window_max_days")
     win_start = anchor_date + timedelta(days=int(min_days)) if (auto_scheduled and min_days is not None) else None
     win_end = anchor_date + timedelta(days=int(max_days if max_days is not None else min_days)) if (auto_scheduled and min_days is not None) else None
-
     rem_cfg = proto.get("reminder") or {}
     rem_mode = rem_cfg.get("mode", "FIXED")
-    reminder_on = (
-        anchor_date + timedelta(days=int(rem_cfg["day_min"]))
-        if (auto_scheduled and rem_mode in ("FIXED", "IF_APPROPRIATE") and rem_cfg.get("day_min") is not None)
-        else None
-    )
-    tests = [
-        {"code": t["code"], "name": catalogue_names.get(t["code"], t["code"]), "optional": bool(t.get("optional"))}
-        for t in (proto.get("tests") or [])
-        if isinstance(t, dict) and t.get("code")
-    ]
+    reminder_on = anchor_date + timedelta(days=int(rem_cfg["day_min"])) if (auto_scheduled and rem_mode in ("FIXED", "IF_APPROPRIATE") and rem_cfg.get("day_min") is not None) else None
+    tests = [{"code": t["code"], "name": catalogue_names.get(t["code"], t["code"]), "optional": bool(t.get("optional"))} for t in (proto.get("tests") or []) if isinstance(t, dict) and t.get("code")]
+    tier_code = variant.get("tier") or proto.get("tier") or ("URGENT" if fc == "HIGH_CREATININE" else "LONG_TERM")
     return {
-        "finding_code": fc,
-        "finding_name": proto.get("finding_name", fc),
-        "variant_when": variant.get("when", "default"),
-        "mode": mode,
-        "auto_scheduled": auto_scheduled,
-        "anchor": anchor_kind,
-        "anchor_date": anchor_date.isoformat(),
-        "window_min_days": min_days,
-        "window_max_days": max_days,
-        "window_start": win_start.isoformat() if win_start else None,
-        "window_end": win_end.isoformat() if win_end else None,
-        "reminder_mode": rem_mode,
-        "reminder_on": reminder_on.isoformat() if reminder_on else None,
-        "timeframe_text": proto.get("timeframe_text", ""),
-        "tests_text": proto.get("tests_text", ""),
-        "considerations_text": proto.get("considerations_text", ""),
-        "ami_reminder_text": proto.get("ami_reminder_text", ""),
-        "tests": tests,
+        "finding_code": fc, "finding_name": proto.get("finding_name", fc), "variant_when": variant.get("when", "default"),
+        "tier": tier_code, "mode": mode, "auto_scheduled": auto_scheduled, "anchor": anchor_kind, "anchor_date": anchor_date.isoformat(),
+        "window_min_days": min_days, "window_max_days": max_days,
+        "window_start": win_start.isoformat() if win_start else None, "window_end": win_end.isoformat() if win_end else None,
+        "reminder_mode": rem_mode, "reminder_on": reminder_on.isoformat() if reminder_on else None,
+        "timeframe_text": proto.get("timeframe_text", ""), "tests_text": proto.get("tests_text", ""),
+        "considerations_text": proto.get("considerations_text", ""), "ami_reminder_text": proto.get("ami_reminder_text", ""), "tests": tests,
     }
 
 
@@ -236,9 +181,7 @@ def _sync_default_recommendation(db: Session, followup: Followup, test_codes: li
     if not test_codes:
         return
     clean_codes = sorted(set(test_codes))
-    existing = db.scalar(
-        select(RetestRecommendation).where(RetestRecommendation.followup_id == followup.id, RetestRecommendation.source == "PROTOCOL")
-    )
+    existing = db.scalar(select(RetestRecommendation).where(RetestRecommendation.followup_id == followup.id, RetestRecommendation.source == "PROTOCOL"))
     if existing:
         if not existing.ordered:
             existing.test_codes = clean_codes
@@ -246,17 +189,46 @@ def _sync_default_recommendation(db: Session, followup: Followup, test_codes: li
         db.add(RetestRecommendation(followup_id=followup.id, doctor_id=None, test_codes=clean_codes, source="PROTOCOL"))
 
 
-def plan_retest(
-    db: Session,
-    followup: Followup,
-    *,
-    state: dict[str, Any] | None = None,
-    fallback_interval_days: int | None = None,
-    detected: list[str] | None = None,
-    trends: dict[str, str] | None = None,
-    force: bool = False,
-) -> dict[str, Any]:
-    """Select matching retest protocol(s), compute IST windows & reminders, and update Followup."""
+def notify_urgent(db: Session, followup: Followup) -> None:
+    if followup.protocol_tier != "URGENT" or followup.suppressed_reason:
+        return
+    plan = dict(followup.retest_plan or {})
+    if plan.get("urgent_notified"):
+        return
+    recipients = set(assign.doctor_users(db, followup.assigned_doctor_id))
+    recipients.update(u for (u,) in db.execute(select(User.id).where(User.role == "ADMIN", User.active)))
+    if recipients:
+        assign.notify(db, recipients, "Urgent retest needed (action within 24h)", f"/followups/view?id={followup.id}", urgent=True)
+        plan["urgent_notified"] = True
+        followup.retest_plan = plan
+        db.flush()
+
+
+def _resolve_protocol_tier(followup: Followup, params: list, rules: dict, schedules: list[dict], detected: list[str], fallback_interval: int | None) -> str:
+    from . import followup as fu_svc
+    if fu_svc.is_critical(params, rules.get("critical_values", [])):
+        return "URGENT"
+    manual_tier = (followup.retest_plan or {}).get("manual_tier")
+    if manual_tier in TIER_ORDER:
+        return manual_tier
+    if "HIGH_CREATININE" in detected:
+        return "URGENT"
+    if schedules:
+        return min((s.get("tier") or "LONG_TERM" for s in schedules), key=lambda t: TIER_ORDER.get(t, 99))
+    if followup.priority == "ESCALATION":
+        return "URGENT"
+    if fallback_interval is not None:
+        if fallback_interval <= 28:
+            return "EARLY"
+        if fallback_interval <= 56:
+            return "TREATMENT_RESPONSE"
+        if fallback_interval <= 84:
+            return "METABOLIC"
+    return "LONG_TERM"
+
+
+def plan_retest(db: Session, followup: Followup, *, state: dict[str, Any] | None = None, fallback_interval_days: int | None = None, detected: list[str] | None = None, trends: dict[str, str] | None = None, force: bool = False, notify_urgent: bool = True) -> dict[str, Any]:
+    """Select matching retest protocol(s), compute IST windows, reminders & urgency tier, and update Followup."""
     if followup.retest_status == "OVERRIDDEN" and not force:
         return followup.retest_plan or {}
 
@@ -279,35 +251,40 @@ def plan_retest(
     trends = trends or {}
 
     collected = to_ist_date(
-        (report.collected_on if report else None)
-        or (order.collected_on if order else None)
-        or (report.reported_on if report else None)
-        or (order.reported_on if order else None)
+        (report.collected_on if report else None) or (order.collected_on if order else None)
+        or (report.reported_on if report else None) or (order.reported_on if order else None)
     )
     today = today_ist()
     protos = {p["finding_code"]: p for p in (rules.get("retest_protocols") or RETEST_PROTOCOLS) if isinstance(p, dict) and p.get("finding_code")}
     cat_names = {t["code"]: t["name"] for t in (rules.get("test_catalogue") or TEST_CATALOGUE) if isinstance(t, dict) and t.get("code")}
     med_cat = {m["code"]: m for m in rules.get("medicine_catalogue", []) if isinstance(m, dict) and m.get("code")}
 
-    schedules = [
-        evaluate_finding(protos[fc], collected, followup, ctx, med_cat, params, trends, cat_names, detected, state)
-        for fc in detected if fc in protos
-    ]
+    schedules = [evaluate_finding(protos[fc], collected, followup, ctx, med_cat, params, trends, cat_names, detected, state) for fc in detected if fc in protos]
+    if fallback_interval_days is None and not schedules:
+        from .settings_store import get_setting
+        buckets = fu_svc.assign_buckets(fu_svc.abnormal_params(params), rules.get("buckets", []))
+        fallback_interval_days = fu_svc.interval_for(buckets, get_setting(db, "default_interval_days"))
+
+    protocol_tier = _resolve_protocol_tier(followup, params, rules, schedules, detected, fallback_interval_days)
+    tmeta = tier_meta(rules, protocol_tier)
+    followup.protocol_tier = protocol_tier
+    prev_manual = (followup.retest_plan or {}).get("manual_tier")
+    prev_notified = bool((followup.retest_plan or {}).get("urgent_notified"))
 
     if not schedules:
-        if fallback_interval_days is None:
-            from .settings_store import get_setting
-            buckets = fu_svc.assign_buckets(fu_svc.abnormal_params(params), rules.get("buckets", []))
-            fallback_interval_days = fu_svc.interval_for(buckets, get_setting(db, "default_interval_days"))
-        due = today if fallback_interval_days <= 0 else collected + timedelta(days=fallback_interval_days)
-        followup.retest_window_start = due
-        followup.retest_window_end = due
-        followup.reminder_on = None
-        followup.due_on = due
-        followup.retest_status = "FALLBACK"
-        plan = {"status": "FALLBACK", "label": "Retest due", "primary_finding": None, "findings": [], "default_tests": []}
+        due = today if (fallback_interval_days or 0) <= 0 else collected + timedelta(days=fallback_interval_days or 90)
+        followup.retest_window_start, followup.retest_window_end, followup.reminder_on = due, due, None
+        followup.due_on, followup.retest_status = due, "FALLBACK"
+        plan = {"status": "FALLBACK", "label": "Retest due", "primary_finding": None, "findings": [], "default_tests": [],
+                "protocol_tier": protocol_tier, "tier_meta": tmeta}
+        if prev_manual:
+            plan["manual_tier"] = prev_manual
+        if prev_notified:
+            plan["urgent_notified"] = True
         followup.retest_plan = plan
         db.flush()
+        if notify_urgent and protocol_tier == "URGENT":
+            globals()["notify_urgent"](db, followup)
         return plan
 
     auto_items = [s for s in schedules if s["auto_scheduled"] and s["window_start"]]
@@ -320,56 +297,36 @@ def plan_retest(
         followup.retest_status = "DOCTOR_TO_SET"
         default_codes = sorted({t["code"] for t in primary_top["tests"] if not t["optional"] and t["code"] in cat_names})
         _sync_default_recommendation(db, followup, default_codes)
-        plan = {
-            "status": "DOCTOR_TO_SET",
-            "label": "Doctor to set retest date",
-            "primary_finding": primary_top,
-            "findings": schedules,
-            "default_tests": default_codes,
-        }
-        followup.retest_plan = plan
-        db.flush()
-        return plan
+        plan = {"status": "DOCTOR_TO_SET", "label": "Doctor to set retest date", "primary_finding": primary_top,
+                "findings": schedules, "default_tests": default_codes, "protocol_tier": protocol_tier, "tier_meta": tmeta}
+    else:
+        chosen = min(auto_items, key=lambda s: s["window_start"])
+        win_start, win_end = date.fromisoformat(chosen["window_start"]), date.fromisoformat(chosen["window_end"])
+        rem_on = date.fromisoformat(chosen["reminder_on"]) if chosen["reminder_on"] else None
+        followup.retest_window_start, followup.retest_window_end, followup.reminder_on = win_start, win_end, rem_on
+        followup.due_on, followup.retest_status = win_start, "AUTO_SCHEDULED"
+        default_codes = sorted({t["code"] for s in auto_items for t in s["tests"] if not t["optional"] and t["code"] in cat_names}) or sorted({t["code"] for t in chosen["tests"] if not t["optional"] and t["code"] in cat_names})
+        _sync_default_recommendation(db, followup, default_codes)
+        plan = {"status": "AUTO_SCHEDULED", "label": "Retest due", "primary_finding": chosen,
+                "findings": schedules, "default_tests": default_codes, "protocol_tier": protocol_tier, "tier_meta": tmeta}
 
-    chosen = min(auto_items, key=lambda s: s["window_start"])
-    win_start = date.fromisoformat(chosen["window_start"])
-    win_end = date.fromisoformat(chosen["window_end"])
-    rem_on = date.fromisoformat(chosen["reminder_on"]) if chosen["reminder_on"] else None
-
-    followup.retest_window_start = win_start
-    followup.retest_window_end = win_end
-    followup.reminder_on = rem_on
-    followup.due_on = win_start
-    followup.retest_status = "AUTO_SCHEDULED"
-
-    default_codes = sorted({t["code"] for s in auto_items for t in s["tests"] if not t["optional"] and t["code"] in cat_names})
-    if not default_codes:
-        default_codes = sorted({t["code"] for t in chosen["tests"] if not t["optional"] and t["code"] in cat_names})
-    _sync_default_recommendation(db, followup, default_codes)
-
-    plan = {
-        "status": "AUTO_SCHEDULED",
-        "label": "Retest due",
-        "primary_finding": chosen,
-        "findings": schedules,
-        "default_tests": default_codes,
-    }
+    if prev_manual:
+        plan["manual_tier"] = prev_manual
+    if prev_notified:
+        plan["urgent_notified"] = True
     followup.retest_plan = plan
     db.flush()
+    if notify_urgent and protocol_tier == "URGENT":
+        globals()["notify_urgent"](db, followup)
     return plan
 
 
-def override_retest(
-    db: Session,
-    followup: Followup,
-    *,
-    window_start: date,
-    window_end: date | None,
-    reason_code: str,
-    notes: str = "",
-    user_id: int | None = None,
-) -> dict[str, Any]:
+def override_retest(db: Session, followup: Followup, *, window_start: date, window_end: date | None, reason_code: str, notes: str = "", user_id: int | None = None) -> dict[str, Any]:
     win_end = window_end or window_start
+    rules = load_rules(db)
+    report = db.get(Report, followup.report_id) if followup.report_id else None
+    anchor = followup.treatment_anchor_on or (to_ist_date(report.collected_on) if report and report.collected_on else today_ist())
+    in_win, _, _ = date_in_tier_window(rules, followup.protocol_tier, window_start, anchor)
     plan = dict(followup.retest_plan or {})
     if plan.get("primary_finding"):
         pf = dict(plan["primary_finding"])
@@ -377,11 +334,11 @@ def override_retest(
         plan["primary_finding"] = pf
     plan["status"] = "OVERRIDDEN"
     plan["label"] = "Retest due"
+    plan["protocol_tier"] = followup.protocol_tier
+    plan["tier_meta"] = tier_meta(rules, followup.protocol_tier)
     plan["override"] = {
-        "reason_code": reason_code,
-        "notes": notes.strip()[:300],
-        "by_user_id": user_id,
-        "at": datetime.now(timezone.utc).isoformat(),
+        "reason_code": reason_code, "notes": notes.strip()[:300], "by_user_id": user_id,
+        "at": datetime.now(timezone.utc).isoformat(), "outside_tier_window": not in_win,
     }
     followup.retest_window_start = window_start
     followup.retest_window_end = win_end
@@ -399,12 +356,9 @@ def reminder_tick(db: Session, now: datetime | None = None) -> int:
     today = ts.astimezone(IST).date()
     due = list(db.scalars(
         select(Followup).where(
-            Followup.suppressed_reason == "",
-            Followup.stage.notin_(DONE_STAGES),
+            Followup.suppressed_reason == "", Followup.stage.notin_(DONE_STAGES),
             Followup.retest_status.in_(("AUTO_SCHEDULED", "OVERRIDDEN", "DOCTOR_SET")),
-            Followup.reminder_on.is_not(None),
-            Followup.reminder_on <= today,
-            Followup.reminder_sent_at.is_(None),
+            Followup.reminder_on.is_not(None), Followup.reminder_on <= today, Followup.reminder_sent_at.is_(None),
         )
     ))
     if not due:
@@ -420,3 +374,30 @@ def reminder_tick(db: Session, now: datetime | None = None) -> int:
         sent += 1
     db.commit()
     return sent
+
+
+def sla_tick(db: Session, now: datetime | None = None) -> int:
+    """Escalates unacted URGENT follow-ups to admins after tier sla_hours (default 24h)."""
+    ts = now or datetime.now(timezone.utc)
+    rules = load_rules(db)
+    sla_hours = int(tier_meta(rules, "URGENT").get("sla_hours") or 24)
+    cutoff = ts - timedelta(hours=sla_hours)
+    overdue = list(db.scalars(
+        select(Followup).where(
+            Followup.suppressed_reason == "", Followup.stage.notin_(DONE_STAGES),
+            Followup.protocol_tier == "URGENT", Followup.sla_escalated_at.is_(None),
+            Followup.accepted_at.is_(None), Followup.attempts == 0, Followup.created_at <= cutoff,
+        )
+    ))
+    if not overdue:
+        return 0
+    admin_ids = [u for (u,) in db.execute(select(User.id).where(User.role == "ADMIN", User.active))]
+    escalated = 0
+    for fu in overdue:
+        fu.sla_escalated_at = ts
+        if admin_ids:
+            assign.notify(db, admin_ids, f"SLA overdue: urgent follow-up unattended (>{sla_hours}h)", f"/followups/view?id={fu.id}", urgent=True)
+        audit(db, None, None, "sla_escalate", "followup", fu.id)
+        escalated += 1
+    db.commit()
+    return escalated

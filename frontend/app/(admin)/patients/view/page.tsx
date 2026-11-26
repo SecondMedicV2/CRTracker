@@ -9,6 +9,7 @@ import CareLoopCard from "@/components/CareLoopCard";
 import ExtendedCareTabs from "@/components/ExtendedCareTabs";
 import HealthProfileCard from "@/components/HealthProfileCard";
 import ProgramsPanel from "@/components/ProgramsPanel";
+import TierBadge from "@/components/TierBadge";
 import Trends from "@/components/Trends";
 import { useApi } from "@/lib/useApi";
 import { RoleContext } from "@/lib/navigation";
@@ -37,7 +38,10 @@ function PatientInner({ id }: { id: string }) {
   }
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">{p.name}</h1>
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-xl font-semibold">{p.name}</h1>
+        <TierBadge label={p.protocol_tier_label} colour={p.protocol_tier_colour} />
+      </div>
       <div className="text-sm">{p.age} · {p.gender} · <span className="font-mono">{p.mobile}</span></div>
       {role === "ADMIN" && (
         <div className="space-y-2">
@@ -64,12 +68,13 @@ function PatientInner({ id }: { id: string }) {
       )}
       <TableFrame label="Patient reports">
         <table className="w-full bg-white text-left text-sm shadow">
-          <thead><tr><th className="p-2">Order</th><th>Collected</th><th>Status</th><th>Result</th></tr></thead>
+          <thead><tr><th className="p-2">Order</th><th>Collected</th><th>Status</th><th>Result</th><th>Urgency tier</th></tr></thead>
           <tbody>{p.reports.map((r: any) => (
             <tr key={r.order_id} className="border-t">
               <td className="p-2 font-mono">{r.report_id ? <Link className="underline" href={`/reports/view?id=${r.report_id}`}>{r.order_id}</Link> : r.order_id}</td>
               <td>{r.collected_on ? new Date(r.collected_on).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : ""}</td>
               <td>{r.status}</td><td className={r.classification === "ABNORMAL" ? "text-red-700" : ""}>{r.classification}</td>
+              <td><TierBadge label={r.protocol_tier_label} colour={r.protocol_tier_colour} /></td>
             </tr>
           ))}</tbody>
         </table>

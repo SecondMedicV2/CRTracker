@@ -106,6 +106,69 @@ from .seed_programs import (CARE_PROGRAMS, DIAGNOSTIC_FINDINGS, DRUG_NUTRIENT_RU
                             RECOMMENDATION_COMBINATIONS, REFERRAL_SPECIALTIES, RELATIONSHIP_NEXT_STEPS)
 from .seed_scripts import CALLER_FORBIDDEN, SCRIPT_TEMPLATES  # noqa: E402
 
+RETEST_TIERS = [
+    {
+        "order": 1,
+        "code": "URGENT",
+        "label": "Urgent",
+        "window_text": "Same day to 48 hours, as clinically directed",
+        "window_min_days": 0,
+        "window_max_days": 2,
+        "details_text": "Critical abnormalities, suspected acute kidney injury",
+        "colour_token": "red",
+        "sla_hours": 24,
+        "caller_label": "Priority call today",
+    },
+    {
+        "order": 2,
+        "code": "EARLY",
+        "label": "Early follow-up",
+        "window_text": "1\u20134 weeks",
+        "window_min_days": 7,
+        "window_max_days": 28,
+        "details_text": "Selected anemia and liver conditions",
+        "colour_token": "teal",
+        "sla_hours": None,
+        "caller_label": "Follow-up call",
+    },
+    {
+        "order": 3,
+        "code": "TREATMENT_RESPONSE",
+        "label": "Treatment response",
+        "window_text": "4\u20138 weeks",
+        "window_min_days": 28,
+        "window_max_days": 56,
+        "details_text": "Lipid treatment, thyroid medication adjustments",
+        "colour_token": "navy blue",
+        "sla_hours": None,
+        "caller_label": "Follow-up call",
+    },
+    {
+        "order": 4,
+        "code": "METABOLIC",
+        "label": "Metabolic follow-up",
+        "window_text": "8\u201312 weeks",
+        "window_min_days": 56,
+        "window_max_days": 84,
+        "details_text": "HbA1c, selected vitamin deficiencies",
+        "colour_token": "amber",
+        "sla_hours": None,
+        "caller_label": "Follow-up call",
+    },
+    {
+        "order": 5,
+        "code": "LONG_TERM",
+        "label": "Long-term monitoring",
+        "window_text": "3\u201312 months or longer",
+        "window_min_days": 90,
+        "window_max_days": None,
+        "details_text": "Stable chronic disease and preventive screening",
+        "colour_token": "green",
+        "sla_hours": None,
+        "caller_label": "Follow-up call",
+    },
+]
+
 RETEST_PROTOCOLS = [
     {
         "finding_code": "LOW_VITD",
@@ -116,8 +179,8 @@ RETEST_PROTOCOLS = [
         "ami_reminder_text": "Day 60\u201390",
         "requires_indication": True,
         "variants": [
-            {"when": "indicated", "window_min_days": 56, "window_max_days": 84, "anchor": "TREATMENT_START"},
-            {"when": "default", "window_min_days": None, "window_max_days": None, "anchor": "REPORT_DATE", "mode": "REQUIRES_INDICATION"},
+            {"when": "indicated", "window_min_days": 56, "window_max_days": 84, "anchor": "TREATMENT_START", "tier": "METABOLIC"},
+            {"when": "default", "window_min_days": None, "window_max_days": None, "anchor": "REPORT_DATE", "mode": "REQUIRES_INDICATION", "tier": "METABOLIC"},
         ],
         "tests": [{"code": "VITD", "optional": False}, {"code": "CALCIUM", "optional": True}],
         "reminder": {"mode": "FIXED", "day_min": 60, "day_max": 90},
@@ -130,10 +193,10 @@ RETEST_PROTOCOLS = [
         "considerations_text": "HbA1c reflects approximately 2\u20133 months of glycemic exposure.",
         "ami_reminder_text": "Day 90",
         "variants": [
-            {"when": "treatment_changed", "window_min_days": 90, "window_max_days": 90, "anchor": "TREATMENT_CHANGE"},
-            {"when": "targets_unmet", "window_min_days": 90, "window_max_days": 90, "anchor": "REPORT_DATE"},
-            {"when": "stable_at_goal", "window_min_days": 180, "window_max_days": 180, "anchor": "REPORT_DATE"},
-            {"when": "default", "window_min_days": 90, "window_max_days": 90, "anchor": "REPORT_DATE"},
+            {"when": "treatment_changed", "window_min_days": 90, "window_max_days": 90, "anchor": "TREATMENT_CHANGE", "tier": "METABOLIC"},
+            {"when": "targets_unmet", "window_min_days": 90, "window_max_days": 90, "anchor": "REPORT_DATE", "tier": "METABOLIC"},
+            {"when": "stable_at_goal", "window_min_days": 180, "window_max_days": 180, "anchor": "REPORT_DATE", "tier": "LONG_TERM"},
+            {"when": "default", "window_min_days": 90, "window_max_days": 90, "anchor": "REPORT_DATE", "tier": "METABOLIC"},
         ],
         "tests": [{"code": "HBA1C", "optional": False}, {"code": "FBS", "optional": True}],
         "reminder": {"mode": "FIXED", "day_min": 90, "day_max": 90},
@@ -147,8 +210,8 @@ RETEST_PROTOCOLS = [
         "ami_reminder_text": "Day 30\u201390",
         "signoff_note": "Clinical team check: timeframe says 4\u201312 weeks (28\u201384 days) while AMI reminder says Day 30\u201390. Both preserved as written; confirm alignment during sign-off.",
         "variants": [
-            {"when": "treatment_changed", "window_min_days": 28, "window_max_days": 84, "anchor": "TREATMENT_CHANGE"},
-            {"when": "default", "window_min_days": None, "window_max_days": None, "anchor": "REPORT_DATE", "mode": "INDIVIDUALIZED"},
+            {"when": "treatment_changed", "window_min_days": 28, "window_max_days": 84, "anchor": "TREATMENT_CHANGE", "tier": "TREATMENT_RESPONSE"},
+            {"when": "default", "window_min_days": None, "window_max_days": None, "anchor": "REPORT_DATE", "mode": "INDIVIDUALIZED", "tier": "LONG_TERM"},
         ],
         "tests": [{"code": "LIPID", "optional": False}],
         "reminder": {"mode": "FIXED", "day_min": 30, "day_max": 90},
@@ -161,8 +224,8 @@ RETEST_PROTOCOLS = [
         "considerations_text": "Mild untreated abnormalities may need confirmation before treatment.",
         "ami_reminder_text": "Day 45\u201360",
         "variants": [
-            {"when": "treatment_changed", "window_min_days": 42, "window_max_days": 56, "anchor": "TREATMENT_CHANGE"},
-            {"when": "default", "window_min_days": None, "window_max_days": None, "anchor": "REPORT_DATE", "mode": "INDIVIDUALIZED"},
+            {"when": "treatment_changed", "window_min_days": 42, "window_max_days": 56, "anchor": "TREATMENT_CHANGE", "tier": "TREATMENT_RESPONSE"},
+            {"when": "default", "window_min_days": None, "window_max_days": None, "anchor": "REPORT_DATE", "mode": "INDIVIDUALIZED", "tier": "TREATMENT_RESPONSE"},
         ],
         "tests": [{"code": "TSH", "optional": False}, {"code": "FT4", "optional": True}],
         "reminder": {"mode": "FIXED", "day_min": 45, "day_max": 60},
@@ -175,8 +238,8 @@ RETEST_PROTOCOLS = [
         "considerations_text": "Investigate the cause of anemia. Severe anemia or concerning symptoms require earlier evaluation.",
         "ami_reminder_text": "Day 14\u201328",
         "variants": [
-            {"when": "on_treatment", "window_min_days": 14, "window_max_days": 28, "anchor": "TREATMENT_START"},
-            {"when": "default", "window_min_days": None, "window_max_days": None, "anchor": "REPORT_DATE", "mode": "DOCTOR_DECIDES"},
+            {"when": "on_treatment", "window_min_days": 14, "window_max_days": 28, "anchor": "TREATMENT_START", "tier": "EARLY"},
+            {"when": "default", "window_min_days": None, "window_max_days": None, "anchor": "REPORT_DATE", "mode": "DOCTOR_DECIDES", "tier": "EARLY"},
         ],
         "tests": [{"code": "CBC", "optional": False}, {"code": "RETIC", "optional": True}],
         "reminder": {"mode": "FIXED", "day_min": 14, "day_max": 28},
@@ -189,7 +252,7 @@ RETEST_PROTOCOLS = [
         "considerations_text": "Possible acute kidney injury requires prompt evaluation and sometimes repeat testing within 24\u201348 hours or sooner.",
         "ami_reminder_text": "Risk-based",
         "variants": [
-            {"when": "default", "window_min_days": 0, "window_max_days": 14, "anchor": "REPORT_DATE", "risk_based": True, "mode": "RISK_BASED"},
+            {"when": "default", "window_min_days": 0, "window_max_days": 14, "anchor": "REPORT_DATE", "risk_based": True, "mode": "RISK_BASED", "tier": "URGENT"},
         ],
         "tests": [{"code": "KFT", "optional": False}, {"code": "ELECTROLYTES", "optional": False}, {"code": "URINE_ROUTINE", "optional": True}, {"code": "UACR", "optional": True}],
         "reminder": {"mode": "RISK_BASED"},
@@ -202,8 +265,8 @@ RETEST_PROTOCOLS = [
         "considerations_text": "Do not delay investigation of significant abnormalities, jaundice or concerning symptoms merely to repeat the test.",
         "ami_reminder_text": "Day 14\u201328, if appropriate",
         "variants": [
-            {"when": "mild_stable", "window_min_days": 14, "window_max_days": 28, "anchor": "REPORT_DATE"},
-            {"when": "default", "window_min_days": None, "window_max_days": None, "anchor": "REPORT_DATE", "mode": "DOCTOR_DECIDES"},
+            {"when": "mild_stable", "window_min_days": 14, "window_max_days": 28, "anchor": "REPORT_DATE", "tier": "EARLY"},
+            {"when": "default", "window_min_days": None, "window_max_days": None, "anchor": "REPORT_DATE", "mode": "DOCTOR_DECIDES", "tier": "EARLY"},
         ],
         "tests": [{"code": "LFT", "optional": False}],
         "reminder": {"mode": "IF_APPROPRIATE", "day_min": 14, "day_max": 28},
@@ -216,7 +279,7 @@ RETEST_PROTOCOLS = [
         "considerations_text": "Weight and BP can be monitored more frequently.",
         "ami_reminder_text": "Day 90",
         "variants": [
-            {"when": "default", "window_min_days": 90, "window_max_days": 90, "anchor": "REPORT_DATE"},
+            {"when": "default", "window_min_days": 90, "window_max_days": 90, "anchor": "REPORT_DATE", "tier": "METABOLIC"},
         ],
         "tests": [{"code": "HBA1C", "optional": True}, {"code": "FBS", "optional": True}, {"code": "LIPID", "optional": True}],
         "reminder": {"mode": "FIXED", "day_min": 90, "day_max": 90},
@@ -229,7 +292,7 @@ RETEST_PROTOCOLS = [
         "considerations_text": "Each condition requires its own monitoring schedule.",
         "ami_reminder_text": "Personalized",
         "variants": [
-            {"when": "default", "window_min_days": 30, "window_max_days": 90, "anchor": "REPORT_DATE", "personalized": True, "mode": "PERSONALIZED"},
+            {"when": "default", "window_min_days": 30, "window_max_days": 90, "anchor": "REPORT_DATE", "personalized": True, "mode": "PERSONALIZED", "tier": "LONG_TERM"},
         ],
         "tests": [],
         "reminder": {"mode": "PERSONALIZED"},
@@ -242,7 +305,7 @@ RETEST_PROTOCOLS = [
         "considerations_text": "Normal results do not automatically justify repeat testing at six months.",
         "ami_reminder_text": "Risk-based",
         "variants": [
-            {"when": "default", "window_min_days": 180, "window_max_days": 365, "anchor": "REPORT_DATE", "risk_based": True, "mode": "RISK_BASED"},
+            {"when": "default", "window_min_days": 180, "window_max_days": 365, "anchor": "REPORT_DATE", "risk_based": True, "mode": "RISK_BASED", "tier": "LONG_TERM"},
         ],
         "tests": [],
         "reminder": {"mode": "RISK_BASED"},
@@ -269,4 +332,5 @@ RULE_SETS = {
     "diagnostic_findings": DIAGNOSTIC_FINDINGS,
     "recommendation_combinations": RECOMMENDATION_COMBINATIONS,
     "retest_protocols": RETEST_PROTOCOLS,
+    "retest_tiers": RETEST_TIERS,
 }

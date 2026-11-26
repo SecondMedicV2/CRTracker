@@ -55,12 +55,12 @@ def assign(db: Session, fu: Followup) -> Doctor | None:
     if d:
         fu.assigned_doctor_id, fu.assigned_at, fu.tried_doctor_ids = d.id, datetime.now(timezone.utc), []
         notify(db, doctor_users(db, d.id), "New follow-up assigned to you", f"/followups/view?id={fu.id}",
-               urgent=fu.priority == "ESCALATION")
+               urgent=fu.priority == "ESCALATION" or fu.protocol_tier == "URGENT")
     return d
 
 
 def needs_doctor(fu: Followup) -> bool:
-    return fu.stage in ("BOOKED", "CONSENT_GIVEN") or fu.priority == "ESCALATION" or fu.retest_status == "DOCTOR_TO_SET"
+    return fu.stage in ("BOOKED", "CONSENT_GIVEN") or fu.priority == "ESCALATION" or fu.retest_status == "DOCTOR_TO_SET" or fu.protocol_tier == "URGENT"
 
 
 def reassign(db: Session, fu: Followup, now: datetime) -> bool:

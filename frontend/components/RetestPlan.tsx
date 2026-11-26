@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { api } from "@/lib/api";
+import TierBadge from "@/components/TierBadge";
 
 const REASON_CODES = [
   ["CLINICAL_JUDGMENT", "Clinical judgment"],
@@ -127,6 +128,7 @@ export default function RetestPlan({ followup, onUpdated }: { followup: any; onU
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <h2 id="retest-plan-heading" className="text-lg font-semibold text-slate-900">Retest plan</h2>
+          <TierBadge label={followup.protocol_tier_label} colour={followup.protocol_tier_colour} />
           <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${badge.cls}`}>{badge.label}</span>
           {plan.override?.reason_code && (
             <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-mono text-slate-700">
@@ -134,13 +136,31 @@ export default function RetestPlan({ followup, onUpdated }: { followup: any; onU
             </span>
           )}
         </div>
-        <button
-          type="button"
-          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50"
-          onClick={() => setShowOverride((v) => !v)}
-        >
-          {showOverride ? "Cancel override" : "Override date"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {followup.protocol_tier !== "URGENT" && (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => {
+                setSaving(true);
+                api(`/followups/${followup.id}`, { method: "PATCH", body: { protocol_tier: "URGENT" } })
+                  .then(() => { setMsg(""); onUpdated(); })
+                  .catch((e) => setMsg(e.message || "Could not mark urgent"))
+                  .finally(() => setSaving(false));
+              }}
+              className="rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-100"
+            >
+              Mark Urgent (24h)
+            </button>
+          )}
+          <button
+            type="button"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+            onClick={() => setShowOverride((v) => !v)}
+          >
+            {showOverride ? "Cancel override" : "Override date"}
+          </button>
+        </div>
       </div>
 
       {msg && <p role="alert" className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">{msg}</p>}

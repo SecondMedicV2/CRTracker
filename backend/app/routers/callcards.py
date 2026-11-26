@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import callcard as cc, relationship as rel
+from .. import callcard as cc, relationship as rel, retest as retest_svc
 from ..analysis import load_rules
 from ..db import get_db
 from ..llm import LLMError
@@ -131,9 +131,11 @@ def caller_card(fid: int, request: Request, db: Session = Depends(get_db), me: U
         if (lbl := combo_labels.get(r.program_code) or catalogue.get(r.program_code, {}).get("caller_label"))
     ))
     audit(db, request, me.id, "view", "caller_card", fid)
+    tmeta = retest_svc.tier_meta(db, f.protocol_tier)
     return {"followup_id": fid, "patient_id": root_pid, "patient_name": p.name, "mobile": mobile_out(p, me), "language": c.language,
             "notice": c.notice, "report_age_days": c.content["summary"]["report_age_days"], "reason_for_call": cc.reason_for_call(c),
             "script": {k: v for k, v in script.items() if k != "do_not_say"}, "do_not_say": script["do_not_say"],
-            "priority": f.priority, "program_followups": program_followups, "next_steps": next_steps,
+            "priority": f.priority, "protocol_tier_colour": tmeta["colour_token"], "protocol_tier_label": tmeta["caller_label"],
+            "program_followups": program_followups, "next_steps": next_steps,
             "refill_reminder": "Pharmacy refill reminder call" if refill_due else None,
             "specialist_bookings": specialist_bookings}

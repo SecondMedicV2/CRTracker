@@ -158,8 +158,10 @@ def dashboard(frm: date | None = Query(None, alias="from"), to: date | None = No
             "upcoming_bookings": n(select(func.count()).select_from(Appointment).where(Appointment.doctor_id == d.id, Appointment.status == "BOOKED", Appointment.slot_start >= now)),
             "calls_done": n(select(func.count()).select_from(CallLog).where(CallLog.user_id == d.user_id, CallLog.outcome == "DOCTOR_DONE", in_range(CallLog.started_at))) if d.user_id else 0})
 
+    urgent_24h = n(select(func.count()).select_from(Followup).where(Followup.suppressed_reason == "", Followup.stage.notin_(DONE), Followup.protocol_tier == "URGENT"))
     return {
         "from": frm.isoformat(), "to": to.isoformat(),
+        "urgent_24h": urgent_24h,
         "orders": {"imported": sum(by_status.values()), "by_status": by_status, "reports_ready": by_status.get(status.READY, 0),
                    "failed": by_status.get(status.FAILED_FETCH, 0) + by_status.get(status.FAILED_EXTRACT, 0)},
         "results": {"normal": classes.get("NORMAL", 0), "abnormal": classes.get("ABNORMAL", 0)},
@@ -168,7 +170,8 @@ def dashboard(frm: date | None = Query(None, alias="from"), to: date | None = No
         "followups_due": {"today": n(select(func.count()).select_from(Followup).where(conditions("queue"), Followup.due_on == today)),
                           "this_week": n(select(func.count()).select_from(Followup).where(conditions("due_this_week"))),
                           "overdue": n(select(func.count()).select_from(Followup).where(conditions("overdue"))),
-                          "parked": n(select(func.count()).select_from(Followup).where(conditions("low_potential")))},
+                          "parked": n(select(func.count()).select_from(Followup).where(conditions("low_potential"))),
+                          "urgent_24h": urgent_24h},
         "calls": {"made": sum(calls.values()), "by_outcome": calls, "bookings": calls.get("BOOKED", 0),
                   "consent_rate_pct": round(100 * n_consented / n_attempted) if n_attempted else None,
                   "doctor_calls_done": n(select(func.count()).select_from(CallLog).where(in_range(CallLog.started_at), CallLog.outcome == "DOCTOR_DONE"))},

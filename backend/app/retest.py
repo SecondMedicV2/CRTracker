@@ -306,6 +306,8 @@ def evaluate_finding(proto: dict, report_date: date, followup: Followup, ctx: di
 
 
 def _sync_default_recommendation(db: Session, followup: Followup, test_codes: list[str]) -> None:
+    if (followup.retest_plan or {}).get("day90_clinically_appropriate") is False:
+        test_codes = [c for c in test_codes if c != "HBA1C"]
     if not test_codes:
         return
     clean_codes = sorted(set(test_codes))
@@ -417,8 +419,10 @@ def plan_retest(db: Session, followup: Followup, *, state: dict[str, Any] | None
     protocol_tier = _resolve_protocol_tier(followup, params, rules, schedules, active_detected, fallback_interval_days)
     tmeta = tier_meta(rules, protocol_tier)
     followup.protocol_tier = protocol_tier
-    prev_manual = (followup.retest_plan or {}).get("manual_tier")
-    prev_notified = bool((followup.retest_plan or {}).get("urgent_notified"))
+    prev_plan = followup.retest_plan or {}
+    prev_manual = prev_plan.get("manual_tier")
+    prev_notified = bool(prev_plan.get("urgent_notified"))
+    prev_day90 = {k: prev_plan[k] for k in ("day90_clinically_appropriate", "day90_confirmed_by", "day90_confirmed_at") if k in prev_plan}
 
     if not schedules:
         if non_lab_protocols:
@@ -441,6 +445,7 @@ def plan_retest(db: Session, followup: Followup, *, state: dict[str, Any] | None
             plan["manual_tier"] = prev_manual
         if prev_notified:
             plan["urgent_notified"] = True
+        plan.update(prev_day90)
         followup.retest_plan = plan
         db.flush()
         if notify_urgent and protocol_tier == "URGENT":
@@ -485,6 +490,7 @@ def plan_retest(db: Session, followup: Followup, *, state: dict[str, Any] | None
         plan["manual_tier"] = prev_manual
     if prev_notified:
         plan["urgent_notified"] = True
+    plan.update(prev_day90)
     followup.retest_plan = plan
     db.flush()
     if notify_urgent and protocol_tier == "URGENT":

@@ -289,6 +289,97 @@ export const DEFAULT_CLINICAL_TARGETS = {
     min_meaningful_change: 0.5,
     note: "starter value, clinician to confirm",
   },
+  GLUCOSE_FASTING: {
+    target_op: "<",
+    target_value: 100.0,
+    unit: "mg/dL",
+    direction: "LOWER_IS_BETTER",
+    min_meaningful_change: 10.0,
+    note: "starter value, clinician to confirm",
+  },
+  GLUCOSE_PP: {
+    target_op: "<",
+    target_value: 140.0,
+    unit: "mg/dL",
+    direction: "LOWER_IS_BETTER",
+    min_meaningful_change: 15.0,
+    note: "starter value, clinician to confirm",
+  },
+  CHOL_TOTAL: {
+    target_op: "<",
+    target_value: 200.0,
+    unit: "mg/dL",
+    direction: "LOWER_IS_BETTER",
+    min_meaningful_change: 15.0,
+    note: "starter value, clinician to confirm",
+  },
+  LDL: {
+    target_op: "<",
+    target_value: 100.0,
+    unit: "mg/dL",
+    direction: "LOWER_IS_BETTER",
+    min_meaningful_change: 10.0,
+    note: "starter value, clinician to confirm",
+  },
+  TRIGLYCERIDES: {
+    target_op: "<",
+    target_value: 150.0,
+    unit: "mg/dL",
+    direction: "LOWER_IS_BETTER",
+    min_meaningful_change: 15.0,
+    note: "starter value, clinician to confirm",
+  },
+  HDL: {
+    target_op: ">=",
+    target_value: 40.0,
+    target_value_f: 50.0,
+    unit: "mg/dL",
+    direction: "HIGHER_IS_BETTER",
+    min_meaningful_change: 5.0,
+    note: "starter value, clinician to confirm",
+  },
+  HEMOGLOBIN: {
+    target_op: ">=",
+    target_value: 13.0,
+    target_value_f: 12.0,
+    unit: "g/dL",
+    direction: "HIGHER_IS_BETTER",
+    min_meaningful_change: 0.5,
+    note: "starter value, clinician to confirm",
+  },
+  VITAMIN_D: {
+    target_op: ">=",
+    target_value: 30.0,
+    unit: "ng/mL",
+    direction: "HIGHER_IS_BETTER",
+    min_meaningful_change: 5.0,
+    note: "starter value, clinician to confirm",
+  },
+  EGFR: {
+    target_op: ">=",
+    target_value: 60.0,
+    unit: "mL/min/1.73m2",
+    direction: "HIGHER_IS_BETTER",
+    min_meaningful_change: 5.0,
+    note: "starter value, clinician to confirm",
+  },
+  CREATININE: {
+    target_op: "<=",
+    target_value: 1.2,
+    unit: "mg/dL",
+    direction: "LOWER_IS_BETTER",
+    min_meaningful_change: 0.2,
+    note: "starter value, clinician to confirm",
+  },
+  TSH: {
+    target_op: "RANGE",
+    target_low: 0.4,
+    target_high: 4.5,
+    unit: "mIU/L",
+    direction: "RANGE",
+    min_meaningful_change: 0.5,
+    note: "starter value, clinician to confirm",
+  },
 };
 
 export const DEFAULT_CONDITION_PROTOCOLS = [
@@ -1007,8 +1098,13 @@ export function planRetestInStore(store, followup, { report = null, params = [],
   const protocolTier = resolveProtocolTierInStore(followup, params, rules, schedules, activeDetected, fallbackDays);
   const tmeta = getTierMeta(rules, protocolTier);
   followup.protocol_tier = protocolTier;
-  const prevManual = followup.retest_plan?.manual_tier;
-  const prevNotified = Boolean(followup.retest_plan?.urgent_notified);
+  const prevPlan = followup.retest_plan || {};
+  const prevManual = prevPlan.manual_tier;
+  const prevNotified = Boolean(prevPlan.urgent_notified);
+  const prevDay90 = {};
+  for (const k of ["day90_clinically_appropriate", "day90_confirmed_by", "day90_confirmed_at"]) {
+    if (k in prevPlan) prevDay90[k] = prevPlan[k];
+  }
 
   if (!schedules.length) {
     if (nonLabProtocols.length) {
@@ -1021,7 +1117,7 @@ export function planRetestInStore(store, followup, { report = null, params = [],
         status: "DOCTOR_TO_SET", label: "Doctor to set retest date", source: "CONDITION",
         primary_finding: nonLabProtocols[0], findings: [], non_lab_protocols: nonLabProtocols,
         overridden_findings: [...overriddenFindings].sort(), default_tests: [],
-        protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
+        protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}), ...prevDay90,
       };
     } else {
       const due = fallbackDays <= 0 ? today : addDaysIso(collected, fallbackDays);
@@ -1033,7 +1129,7 @@ export function planRetestInStore(store, followup, { report = null, params = [],
       followup.retest_plan = {
         status: "FALLBACK", label: "Retest due", source: "FALLBACK", primary_finding: null, findings: [],
         non_lab_protocols: [], overridden_findings: [], default_tests: [],
-        protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
+        protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}), ...prevDay90,
       };
     }
     notifyUrgentInStore(store, followup);
@@ -1054,7 +1150,7 @@ export function planRetestInStore(store, followup, { report = null, params = [],
       status: "DOCTOR_TO_SET", label: "Doctor to set retest date", source: top.source || "FINDING",
       primary_finding: top, findings: schedules, non_lab_protocols: nonLabProtocols,
       overridden_findings: [...overriddenFindings].sort(), default_tests: defaultCodes,
-      protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
+      protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}), ...prevDay90,
     };
     notifyUrgentInStore(store, followup);
     return followup.retest_plan;
@@ -1071,7 +1167,7 @@ export function planRetestInStore(store, followup, { report = null, params = [],
     status: "AUTO_SCHEDULED", label: "Retest due", source: chosen.source || "FINDING",
     primary_finding: chosen, findings: schedules, non_lab_protocols: nonLabProtocols,
     overridden_findings: [...overriddenFindings].sort(), default_tests: defaultCodes,
-    protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
+    protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}), ...prevDay90,
   };
   notifyUrgentInStore(store, followup);
   return followup.retest_plan;

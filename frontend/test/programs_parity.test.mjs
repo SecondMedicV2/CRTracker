@@ -554,4 +554,99 @@ describe("Smart Diagnostics Pages 1-4 Worker Parity", () => {
     assert.ok(condAudits.length >= 2);
     assert.ok(!JSON.stringify(condAudits).includes("Rohan") && !JSON.stringify(condAudits).includes("9876500010") && !JSON.stringify(condAudits).includes("6.8"));
   });
+
+  it("evaluates Page 10 AMI parameter comparison, targets, HBA1C_90 journey, Day 90 confirmation, and caller privacy in Worker", async () => {
+    const env = createTestEnv();
+    const aLogin = await req(env, "POST", "/api/v1/auth/login", null, { email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD });
+    const adminCookie = aLogin.headers.get("set-cookie").split(";")[0];
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Dr", email: "doc@sm.com", password: "DoctorPassword123!", role: "DOCTOR" });
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Cal", email: "cal@sm.com", password: "CallerPassword123!", role: "CALLER" });
+    const docCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "doc@sm.com", password: "DoctorPassword123!" })).headers.get("set-cookie").split(";")[0];
+    const calCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "cal@sm.com", password: "CallerPassword123!" })).headers.get("set-cookie").split(";")[0];
+
+    const st0 = await env.CRTRACKER_DATA.get("app_state_v5", "json");
+    st0.reports = [
+      { id: 1, order_id: "ORD-1", patient_id: 1, patient_name: "Meera K", gender: "F", status: "READY", collected_on: "2026-08-01T08:00:00Z", classification: "ABNORMAL" },
+      { id: 2, order_id: "ORD-2", patient_id: 1, patient_name: "Meera K", gender: "F", status: "READY", collected_on: "2026-11-01T08:00:00Z", classification: "ABNORMAL" },
+      { id: 3, order_id: "ORD-3", patient_id: 2, patient_name: "Unit Pat", gender: "M", status: "READY", collected_on: "2026-09-01T08:00:00Z", classification: "ABNORMAL" },
+      { id: 4, order_id: "ORD-4", patient_id: 2, patient_name: "Unit Pat", gender: "M", status: "READY", collected_on: "2026-11-02T08:00:00Z", classification: "ABNORMAL" },
+    ];
+    st0.followups = [
+      { id: 2, patient_id: 1, report_id: 2, patient_name: "Meera K", due_on: "2027-01-30", priority: "ROUTINE", stage: "NOT_CALLED", buckets: ["DIABETES"], finding_codes: ["HIGH_HBA1C"] },
+    ];
+    st0.callcards = {
+      2: {
+        id: 1, followup_id: 2, version: 1, language: "en", validation_status: "VALID", notice: null,
+        content: { summary: { report_age_days: 5 }, caller_script: { opening: "Hi", identity_check: "Meera?", free_followup_pitch: "Follow-up", consent_request: "Consent?", slot_offer: "Slot?", objection_handling: [], do_not_say: [], urgent_symptom_protocol: "Urgent", closing: "Bye" } },
+      },
+    };
+    await env.CRTRACKER_DATA.put("app_state_v5", JSON.stringify(st0));
+    await env.CRTRACKER_DATA.put("report_params:1", JSON.stringify([
+      { id: 1, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 8.2, unit: "%", system_flag: "HIGH" },
+      { id: 2, param_code: "HDL", param_name_raw: "HDL", value_num: 35, unit: "mg/dL", system_flag: "LOW" },
+    ]));
+    await env.CRTRACKER_DATA.put("report_params:2", JSON.stringify([
+      { id: 3, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 7.1, unit: "%", system_flag: "HIGH" },
+      { id: 4, param_code: "HDL", param_name_raw: "HDL", value_num: 52, unit: "mg/dL", system_flag: "NORMAL" },
+    ]));
+    await env.CRTRACKER_DATA.put("report_params:3", JSON.stringify([
+      { id: 5, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 66, unit: "mmol/mol", system_flag: "HIGH" },
+    ]));
+    await env.CRTRACKER_DATA.put("report_params:4", JSON.stringify([
+      { id: 6, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 7.9, unit: "%", system_flag: "HIGH" },
+    ]));
+
+    // Slide example + HIGHER_IS_BETTER + <3 points trend
+    const c2 = await (await req(env, "GET", "/api/v1/reports/2/compare", docCookie)).json();
+    const a1c = c2.rows.find((r) => r.param_code === "HBA1C");
+    const hdl = c2.rows.find((r) => r.param_code === "HDL");
+    assert.strictEqual(a1c.change_display, "\u22121.1 percentage points");
+    assert.strictEqual(a1c.target_status, "Above target");
+    assert.strictEqual(a1c.change_status, "Improved");
+    assert.strictEqual(a1c.next_action, "Continue clinical follow-up");
+    assert.strictEqual(a1c.trend, null);
+    assert.strictEqual(hdl.direction, "HIGHER_IS_BETTER");
+    assert.strictEqual(hdl.target_status, "At target");
+    assert.strictEqual(hdl.change_status, "Improved");
+
+    // Units differ -> not compared
+    const c4 = await (await req(env, "GET", "/api/v1/reports/4/compare", docCookie)).json();
+    assert.strictEqual(c4.rows[0].units_differ, true);
+    assert.strictEqual(c4.rows[0].change_display, "Units differ \u2014 not compared");
+
+    // 3rd report + min_meaningful_change (7.1 -> 6.8 is -0.3 < 0.5 -> No meaningful change; 3 pts [8.2, 7.1, 6.8] -> Positive trend)
+    const st = await env.CRTRACKER_DATA.get("app_state_v5", "json");
+    st.reports.push({ id: 5, order_id: "ORD-5", patient_id: 1, patient_name: "Meera K", gender: "F", status: "READY", collected_on: "2027-02-01T08:00:00Z", classification: "NORMAL" });
+    await env.CRTRACKER_DATA.put("app_state_v5", JSON.stringify(st));
+    await env.CRTRACKER_DATA.put("report_params:5", JSON.stringify([
+      { id: 7, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 6.8, unit: "%", system_flag: "NORMAL" },
+    ]));
+    const c5 = await (await req(env, "GET", "/api/v1/reports/5/compare", docCookie)).json();
+    assert.strictEqual(c5.rows[0].change_status, "No meaningful change");
+    assert.strictEqual(c5.rows[0].target_status, "At target");
+    assert.strictEqual(c5.rows[0].trend, "Positive trend");
+    assert.strictEqual(c5.rows[0].next_action, "Continue current plan; routine monitoring");
+
+    // HBA1C_90 journey + Day 90 confirm RBAC + Caller privacy
+    assert.strictEqual(c2.journey.template_code, "HBA1C_90");
+    assert.strictEqual(c2.journey.steps.length, 5);
+    assert.ok(c2.journey.disclaimer.includes("Medication changes remain the responsibility of the treating clinician."));
+    assert.strictEqual((await req(env, "POST", "/api/v1/followups/2/journey/day90-confirm", adminCookie, { clinically_appropriate: true })).status, 403);
+    assert.strictEqual((await req(env, "POST", "/api/v1/followups/2/journey/day90-confirm", calCookie, { clinically_appropriate: true })).status, 403);
+    const d90Res = await req(env, "POST", "/api/v1/followups/2/journey/day90-confirm", docCookie, { clinically_appropriate: false });
+    assert.strictEqual(d90Res.status, 200);
+    assert.strictEqual((await d90Res.json()).journey.day90_clinically_appropriate, false);
+
+    assert.strictEqual((await req(env, "GET", "/api/v1/reports/2/compare", calCookie)).status, 403);
+    assert.strictEqual((await req(env, "GET", "/api/v1/followups/2/compare", calCookie)).status, 403);
+    assert.strictEqual((await req(env, "GET", "/api/v1/patients/1/compare", calCookie)).status, 403);
+    assert.strictEqual((await req(env, "GET", "/api/v1/rules/next_action_rules", calCookie)).status, 403);
+    assert.strictEqual((await req(env, "GET", "/api/v1/rules/journey_templates", calCookie)).status, 403);
+
+    const calCard = await (await req(env, "GET", "/api/v1/followups/2/caller-card", calCookie)).json();
+    assert.strictEqual(calCard.comparison_notice, "Results compared \u2014 doctor review scheduled");
+    assert.ok(calCard.comparison_date);
+    const calBlob = JSON.stringify(calCard).toLowerCase();
+    assert.ok(!calBlob.includes("8.2") && !calBlob.includes("7.1") && !calBlob.includes("hba1c") && !calBlob.includes("metformin"));
+  });
 });

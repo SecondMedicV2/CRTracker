@@ -14,7 +14,7 @@ from ..db import get_db
 from ..models import (Appointment, CallLog, Consent, CriticalRule, Doctor, Followup, IdentityReview, Order, Patient, PatientBucket,
                       ProgramRecommendation, Report, ReportInsight, ReportParameter, RetestRecommendation, User)
 from ..security import audit, current_user, require
-from .. import ai_insights, biomarkers, units
+from .. import ai_insights, biomarkers, compare as compare_svc, journeys, relationship as rel, units
 from ..timeutil import IST, today_ist
 from .followups import DONE, conditions, list_followups
 from .patients import mobile_out
@@ -451,3 +451,86 @@ def update_critical_rule(rule_id: str, body: CriticalRulePatch, request: Request
     db.commit()
     audit(db, request, me.id, "CRITICAL_RULE_UPDATED", "critical_rule", rule_id)
     return {"ok": True, "active": rule.active}
+
+
+# ---------------- AMI Parameter Display & Condition Journey (Page 10) ----------------
+def _compare_payload(db: Session, patient_id: int | None, report: Report, *, fu: Followup | None = None) -> dict:
+    order = db.get(Order, report.order_id)
+    pid = patient_id or (order.patient_id if order else None)
+    root_pid = rel.canonical_patient_id(db, pid) if pid else None
+    patient = db.get(Patient, root_pid) if root_pid else None
+    rows = compare_svc.compare(db, root_pid, report.id) if root_pid else []
+    journey = journeys.build_journey(db, root_pid, report.id, fu) if root_pid else None
+    if fu is None:
+        fu = db.scalar(select(Followup).where(Followup.report_id == report.id))
+    prev_rep_id = next((r["previous_report_id"] for r in rows if r.get("previous_report_id")), None)
+    prev_date = next((r["previous_date"] for r in rows if r.get("previous_date")), None)
+    curr_date = to_ist_date_iso(report, order)
+    return {
+        "report_id": report.id,
+        "patient_id": root_pid,
+        "patient_name": (patient.name if patient else report.patient_name) or "",
+        "followup_id": fu.id if fu else None,
+        "previous_report_id": prev_rep_id,
+        "previous_collected_on": prev_date,
+        "current_collected_on": curr_date,
+        "rows": rows,
+        "journey": journey,
+        "printable_disclaimer": journeys.CLINICAL_DISCLAIMER,
+    }
+
+
+def to_ist_date_iso(report: Report, order: Order | None) -> str | None:
+    dt = report.collected_on or (order.collected_on if order else None) or report.reported_on or (order.reported_on if order else None)
+    return dt.astimezone(IST).date().isoformat() if dt else None
+
+
+@router.get("/reports/{rid}/compare")
+def compare_report(rid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(staff)):
+    r = db.get(Report, rid)
+    if not r:
+        raise HTTPException(404, "No such report")
+    order = db.get(Order, r.order_id)
+    pid = order.patient_id if order else None
+    audit(db, request, me.id, "view", "report_compare", rid)
+    return _compare_payload(db, pid, r)
+
+
+@router.get("/followups/{fid}/compare")
+def compare_followup(fid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(staff)):
+    f = db.get(Followup, fid)
+    if not f:
+        raise HTTPException(404, "No such follow-up")
+    r = db.get(Report, f.report_id)
+    if not r:
+        raise HTTPException(404, "No such report")
+    audit(db, request, me.id, "view", "followup_compare", fid)
+    return _compare_payload(db, f.patient_id, r, fu=f)
+
+
+@router.get("/patients/{pid}/compare")
+def compare_patient(pid: int, request: Request, report_id: int | None = None, db: Session = Depends(get_db), me: User = Depends(staff)):
+    p = _patient(db, pid)
+    root_pid = rel.canonical_patient_id(db, p.id)
+    pids = [root_pid, *db.scalars(select(Patient.id).where(Patient.merged_into_id == root_pid))]
+    if report_id is not None:
+        r = db.scalar(
+            select(Report).join(Order, Order.id == Report.order_id)
+            .where(Report.id == report_id, Order.patient_id.in_(pids))
+        )
+        if not r:
+            raise HTTPException(404, "No such report for this patient")
+    else:
+        r = db.scalar(
+            select(Report).join(Order, Order.id == Report.order_id)
+            .where(Order.patient_id.in_(pids), Order.status == status.READY)
+            .order_by(Report.collected_on.desc(), Report.id.desc()).limit(1)
+        )
+    audit(db, request, me.id, "view", "patient_compare", root_pid)
+    if not r:
+        return {
+            "report_id": None, "patient_id": root_pid, "patient_name": p.name, "followup_id": None,
+            "previous_report_id": None, "previous_collected_on": None, "current_collected_on": None,
+            "rows": [], "journey": None, "printable_disclaimer": journeys.CLINICAL_DISCLAIMER,
+        }
+    return _compare_payload(db, root_pid, r)

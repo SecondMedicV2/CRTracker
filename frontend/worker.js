@@ -77,6 +77,15 @@ import {
   toIstDateStr,
   validConditionCodes,
 } from "./lib/retest.js";
+import {
+  CLINICAL_DISCLAIMER,
+  DEFAULT_JOURNEY_TEMPLATES,
+  DEFAULT_NEXT_ACTION_RULES,
+  buildJourneyInStore,
+  compareInStore,
+  confirmDay90InStore,
+  hasComparisonInStore,
+} from "./lib/compare.js";
 
 function consentingFamilySummaries(store, patientId) {
   const links = (store.family_links || []).filter((l) => l.patient_id === patientId);
@@ -581,6 +590,7 @@ function forbidden(path, method, role) {
   if (role === "ADMIN") {
     if ((method === "POST" || method === "DELETE") && /^\/patients\/\d+\/conditions(\/|$)/.test(path)) return true;
     if (method === "POST" && /^\/clinical-tasks\/\d+\/complete$/.test(path)) return true;
+    if (method === "POST" && /^\/followups\/\d+\/journey\/day90-confirm$/.test(path)) return true;
     return false;
   }
   if (/^\/(imports|users|admin|audit|integrations|orders)(\/|$)/.test(path)) {
@@ -593,7 +603,8 @@ function forbidden(path, method, role) {
   if (role === "CALLER") {
     if (method === "GET" && /^\/patients\/\d+\/(relationship|programs|referrals)$/.test(path)) return false;
     if (/^\/reports\/\d+\/insight(?:\/|$)/.test(path) && method === "GET") return false;
-    if (/^\/followups\/\d+\/recommendations$/.test(path)) return true;
+    if (/^\/(settings|rules)(\/|$)/.test(path)) return true;
+    if (/^\/followups\/\d+\/(recommendations|compare|journey\/day90-confirm)$/.test(path)) return true;
     if (/^\/(reports|patients|trends|exports\/trends|touchpoints|program-recommendations|medicines|home-visits|family-links|clinical-tasks|monitoring-schedules)(\/|$)/.test(path)) return true;
   }
   return false;
@@ -1846,7 +1857,35 @@ async function handleApiRequest(request, url, env) {
   }
 
   // --- FOLLOWUPS ---
-  const fuRowOut = (f, full, hasMonitoring = false) => {
+  async function loadParamsByReport(pid) {
+    const map = {};
+    for (const r of (store.reports || [])) {
+      if (r.patient_id === pid) map[r.id] = (await kvGet(env, `report_params:${r.id}`)) || [];
+    }
+    return map;
+  }
+  async function buildComparePayload(pid, rep, fu = null) {
+    const pat = (store.patients || []).find((x) => x.id === pid) || null;
+    const paramsMap = pid ? await loadParamsByReport(pid) : {};
+    const rows = pid ? compareInStore(store, pid, rep.id, paramsMap) : [];
+    const targetFu = fu || (store.followups || []).find((f) => f.report_id === rep.id) || null;
+    const journey = pid ? buildJourneyInStore(store, pid, rep.id, targetFu, paramsMap) : null;
+    const prevRow = rows.find((r) => r.previous_report_id);
+    const currDate = rep.collected_on ? toIstDateStr(rep.collected_on) : (rep.reported_on ? toIstDateStr(rep.reported_on) : null);
+    return {
+      report_id: rep.id,
+      patient_id: pid,
+      patient_name: pat?.name || rep.patient_name || "",
+      followup_id: targetFu?.id ?? null,
+      previous_report_id: prevRow ? prevRow.previous_report_id : null,
+      previous_collected_on: prevRow ? prevRow.previous_date : null,
+      current_collected_on: currDate,
+      rows,
+      journey,
+      printable_disclaimer: CLINICAL_DISCLAIMER,
+    };
+  }
+  const fuRowOut = (f, full, hasMonitoring = false, hasComparison = false) => {
     let label;
     if (!full) {
       if (f.retest_plan?.source === "CONDITION" || hasMonitoring) {
@@ -1880,6 +1919,10 @@ async function handleApiRequest(request, url, env) {
         ? getTierMeta(store.rules, f.protocol_tier || "LONG_TERM").caller_label
         : getTierMeta(store.rules, f.protocol_tier || "LONG_TERM").label,
     };
+    if (!full && hasComparison) {
+      out.comparison_notice = "Results compared \u2014 doctor review scheduled";
+      out.comparison_date = String(f.due_on || todayIstStr()).slice(0, 10);
+    }
     if (full) {
       out.buckets = f.buckets || [];
       out.finding_codes = f.finding_codes || [];
@@ -1953,12 +1996,19 @@ async function handleApiRequest(request, url, env) {
       .filter((f) => (!tierFilter || f.retest_tier === tierFilter))
       .filter((f) => (!protocolTierFilter || (f.protocol_tier || "LONG_TERM") === protocolTierFilter))
       .filter((f) => (!bucketFilter || (f.buckets || []).includes(bucketFilter)))
-      .sort(sortFollowupsUrgentFirst)
-      .map((f) => {
-        const hasMon = (store.monitoring_schedules || []).some((s) => s.patient_id === f.patient_id && s.status === "ACTIVE");
-        return fuRowOut(f, isFull, hasMon);
-      });
-    return reply(200, list);
+      .sort(sortFollowupsUrgentFirst);
+    const outRows = [];
+    const paramsCache = {};
+    for (const f of list) {
+      const hasMon = (store.monitoring_schedules || []).some((s) => s.patient_id === f.patient_id && s.status === "ACTIVE");
+      let hasComp = false;
+      if (!isFull && f.report_id) {
+        if (!paramsCache[f.patient_id]) paramsCache[f.patient_id] = await loadParamsByReport(f.patient_id);
+        hasComp = hasComparisonInStore(store, f.patient_id, f.report_id, paramsCache[f.patient_id]);
+      }
+      outRows.push(fuRowOut(f, isFull, hasMon, hasComp));
+    }
+    return reply(200, outRows);
   }
   if (path === "/followups/summary" && method === "GET") {
     const isFull = me.role !== "CALLER" || Boolean(store.settings?.caller_can_view_results);
@@ -2195,6 +2245,38 @@ async function handleApiRequest(request, url, env) {
     }
     await saveStore(env, store);
     return reply(200, { ok: true, status: "READY" });
+  }
+
+  const reportCompMatch = path.match(/^\/reports\/(\d+)\/compare$/);
+  if (reportCompMatch && method === "GET") {
+    const rid = parseInt(reportCompMatch[1], 10);
+    const rep = (store.reports || []).find((r) => r.id === rid);
+    if (!rep) return reply(404, { detail: "No such report" });
+    recordAudit(store, me, "view", "report_compare", rid);
+    await saveStore(env, store);
+    return reply(200, await buildComparePayload(rep.patient_id, rep));
+  }
+
+  const patientCompMatch = path.match(/^\/patients\/(\d+)\/compare$/);
+  if (patientCompMatch && method === "GET") {
+    const pid = parseInt(patientCompMatch[1], 10);
+    const p = (store.patients || []).find((x) => x.id === pid);
+    if (!p) return reply(404, { detail: "No such patient" });
+    const reqRid = url.searchParams.get("report_id");
+    const ready = (store.reports || []).filter((r) => r.patient_id === pid && (reqRid ? r.id === parseInt(reqRid, 10) : r.status === "READY"))
+      .sort((a, b) => String(b.collected_on || "").localeCompare(String(a.collected_on || "")) || b.id - a.id);
+    const rep = ready[0] || null;
+    if (reqRid && !rep) return reply(404, { detail: "No such report for this patient" });
+    recordAudit(store, me, "view", "patient_compare", pid);
+    await saveStore(env, store);
+    if (!rep) {
+      return reply(200, {
+        report_id: null, patient_id: pid, patient_name: p.name, followup_id: null,
+        previous_report_id: null, previous_collected_on: null, current_collected_on: null,
+        rows: [], journey: null, printable_disclaimer: CLINICAL_DISCLAIMER,
+      });
+    }
+    return reply(200, await buildComparePayload(pid, rep));
   }
 
   const insightMatch = path.match(/^\/reports\/(\d+)\/insight(.*)$/);
@@ -2535,6 +2617,27 @@ async function handleApiRequest(request, url, env) {
       return reply(200, body);
     }
     const fuExists = store.followups.some((f) => f.id === fid);
+    if (sub === "/compare" && method === "GET") {
+      const fu = store.followups.find((f) => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      const rep = (store.reports || []).find((r) => r.id === fu.report_id);
+      if (!rep) return reply(404, { detail: "No such report" });
+      recordAudit(store, me, "view", "followup_compare", fid);
+      await saveStore(env, store);
+      return reply(200, await buildComparePayload(fu.patient_id, rep, fu));
+    }
+    if (sub === "/journey/day90-confirm" && method === "POST") {
+      if (me.role !== "DOCTOR") return reply(403, { detail: "Only doctors may confirm Day 90 retesting" });
+      const fu = store.followups.find((f) => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      const b = await request.json().catch(() => ({}));
+      if (typeof b.clinically_appropriate !== "boolean") return reply(422, { detail: "clinically_appropriate must be a boolean" });
+      const paramsMap = await loadParamsByReport(fu.patient_id);
+      const j = confirmDay90InStore(store, fu, b.clinically_appropriate, me.id, paramsMap);
+      recordAudit(store, me, "day90_confirm", "followup", `${fid}:${b.clinically_appropriate ? 1 : 0}`);
+      await saveStore(env, store);
+      return reply(200, { followup_id: fid, journey: j });
+    }
     if (!sub && method === "GET") {
       if (me.role === "CALLER" && !store.settings?.caller_can_view_results) {
         return reply(403, { detail: "Not allowed" });
@@ -2808,6 +2911,14 @@ async function handleApiRequest(request, url, env) {
         const d = fu?.retest_window_start || fu?.due_on;
         monitoringDue = d ? `Monitoring due on ${String(d).slice(0, 10)}` : "Monitoring due";
       }
+      const paramsMap = fu?.patient_id ? await loadParamsByReport(fu.patient_id) : {};
+      const hasComp = Boolean(fu?.report_id && hasComparisonInStore(store, fu.patient_id, fu.report_id, paramsMap));
+      const j = fu?.report_id ? buildJourneyInStore(store, fu.patient_id, fu.report_id, fu, paramsMap) : null;
+      let jCallerLabel = null;
+      if (j?.steps?.length) {
+        const act = j.steps.find((s) => s.status === "DUE") || [...j.steps].reverse().find((s) => s.status === "DONE") || j.steps[0];
+        jCallerLabel = act?.caller_label || null;
+      }
       return reply(200, {
         followup_id: fid,
         patient_id: fu?.patient_id ?? null,
@@ -2823,6 +2934,9 @@ async function handleApiRequest(request, url, env) {
         protocol_tier_colour: tmeta.colour_token,
         protocol_tier_label: tmeta.caller_label,
         monitoring_due: monitoringDue,
+        comparison_notice: hasComp ? "Results compared \u2014 doctor review scheduled" : null,
+        comparison_date: hasComp ? String(fu?.due_on || todayIstStr()).slice(0, 10) : null,
+        journey_caller_label: jCallerLabel,
         program_followups: programFollowups,
         next_steps: nextSteps,
         refill_reminder: hasDueRefill ? "Pharmacy refill reminder call" : null,
@@ -3064,6 +3178,12 @@ async function handleApiRequest(request, url, env) {
         const norm = (arr) => JSON.stringify((arr || []).map((c) => [c.code, c.status, c.stage || "", c.since || ""]));
         if (norm(curClean.conditions) !== norm(inc)) {
           return reply(403, { detail: "Only a doctor can confirm, change, or remove conditions" });
+        }
+      }
+      if (b.targets !== undefined && me.role !== "DOCTOR") {
+        const incT = cleanProfile({ targets: b.targets }).targets;
+        if (JSON.stringify(curClean.targets || {}) !== JSON.stringify(incT || {})) {
+          return reply(403, { detail: "Only a doctor can set or change per-patient clinical targets" });
         }
       }
       const mergedBody = { ...(b || {}) };
@@ -4034,6 +4154,8 @@ async function handleApiRequest(request, url, env) {
     diagnostic_findings: DEFAULT_DIAGNOSTIC_FINDINGS,
     recommendation_combinations: DEFAULT_RECOMMENDATION_COMBINATIONS,
     clinical_targets: DEFAULT_CLINICAL_TARGETS,
+    next_action_rules: DEFAULT_NEXT_ACTION_RULES,
+    journey_templates: DEFAULT_JOURNEY_TEMPLATES,
     retest_protocols: DEFAULT_RETEST_PROTOCOLS,
     retest_tiers: DEFAULT_RETEST_TIERS
   };

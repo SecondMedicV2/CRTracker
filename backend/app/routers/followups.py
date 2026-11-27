@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import assign, followup as fu_svc, retest as retest_svc
+from .. import assign, compare as compare_svc, followup as fu_svc, journeys, retest as retest_svc
 from .. import status
 from ..analysis import load_rules
 from ..db import get_db
@@ -43,7 +43,7 @@ def can_see_results(user: User, db: Session) -> bool:
     return user.role in ("ADMIN", "DOCTOR") or get_setting(db, "caller_can_view_results")
 
 
-def row(f: Followup, p: Patient, r: Report, user: User, full: bool, tmap: dict | None = None, has_monitoring: bool = False) -> dict:
+def row(f: Followup, p: Patient, r: Report, user: User, full: bool, tmap: dict | None = None, has_monitoring: bool = False, has_comparison: bool = False) -> dict:
     plan = f.retest_plan or {}
     if not full:
         if plan.get("source") == "CONDITION" or has_monitoring:
@@ -62,6 +62,10 @@ def row(f: Followup, p: Patient, r: Report, user: User, full: bool, tmap: dict |
            "retest_window_start": f.retest_window_start, "retest_window_end": f.retest_window_end,
            "protocol_tier_colour": meta["colour_token"],
            "protocol_tier_label": meta["caller_label"] if not full else meta["label"]}
+    if not full and has_comparison:
+        comp_d = f.due_on or today_ist()
+        out["comparison_notice"] = "Results compared \u2014 doctor review scheduled"
+        out["comparison_date"] = comp_d.isoformat()
     if full:  # callers get no clinical content by default (Part 3.2)
         out |= {"buckets": f.bucket_codes, "retest_score": f.retest_score, "retest_tier": f.retest_tier,
                 "protocol_tier": tier_code, "sla_escalated_at": f.sla_escalated_at,
@@ -98,7 +102,9 @@ def list_followups(view: str = "queue", bucket: str | None = None, priority: str
                    Followup.due_on, Followup.id).limit(min(limit, 2000))
     tmap = retest_svc.tier_map(load_rules(db))
     mon_pids = set(db.scalars(select(MonitoringSchedule.patient_id).where(MonitoringSchedule.status == "ACTIVE")))
-    rows = [row(f, p, r, me, full, tmap, p.id in mon_pids) for f, p, r in db.execute(q)]
+    raw_items = db.execute(q).all()
+    comp_rids = {r.id for _, p, r in raw_items if not full and compare_svc.has_comparison(db, p.id, r.id)}
+    rows = [row(f, p, r, me, full, tmap, p.id in mon_pids, r.id in comp_rids) for f, p, r in raw_items]
     if bucket:
         if not full:
             raise HTTPException(403, "Not allowed")
@@ -227,6 +233,21 @@ def override_retest(fid: int, body: RetestOverrideIn, request: Request, db: Sess
     db.commit()
     audit(db, request, me.id, "retest_override", "followup", f"{fid}:{reason}")
     return row(f, db.get(Patient, f.patient_id), db.get(Report, f.report_id), me, True, retest_svc.tier_map(load_rules(db)))
+
+
+class Day90ConfirmIn(BaseModel):
+    clinically_appropriate: bool
+
+
+@router.post("/followups/{fid}/journey/day90-confirm")
+def confirm_day90_retest(fid: int, body: Day90ConfirmIn, request: Request, db: Session = Depends(get_db),
+                         me: User = Depends(require("DOCTOR"))):
+    f = db.get(Followup, fid)
+    if not f:
+        raise HTTPException(404, "No such follow-up")
+    j = journeys.confirm_day90(db, f, body.clinically_appropriate, me.id)
+    audit(db, request, me.id, "day90_confirm", "followup", f"{fid}:{int(body.clinically_appropriate)}")
+    return {"followup_id": fid, "journey": j}
 
 
 @router.get("/retesting-protocol/summary")

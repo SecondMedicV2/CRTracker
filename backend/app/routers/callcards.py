@@ -4,13 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import callcard as cc, relationship as rel, retest as retest_svc
+from .. import callcard as cc, compare as compare_svc, journeys, relationship as rel, retest as retest_svc
 from ..analysis import load_rules
 from ..db import get_db
 from ..llm import LLMError
 from ..models import CallCard, Followup, MonitoringSchedule, Patient, ProgramRecommendation, Referral, RefillSchedule, User
 from ..security import audit, current_user, require
 from ..settings_store import get_setting
+from ..timeutil import today_ist
 from .patients import mobile_out
 
 router = APIRouter(tags=["call-cards"])
@@ -139,11 +140,22 @@ def caller_card(fid: int, request: Request, db: Session = Depends(get_db), me: U
     if (f.retest_plan or {}).get("source") == "CONDITION" or has_mon:
         due_d = f.retest_window_start or f.due_on
         monitoring_due = f"Monitoring due on {due_d.isoformat()}" if due_d else "Monitoring due"
+    has_comp = compare_svc.has_comparison(db, root_pid, f.report_id)
+    rules = load_rules(db)
+    j = journeys.build_journey(db, root_pid, f.report_id, f, rules=rules)
+    j_caller_label = None
+    if j and j.get("steps"):
+        active_step = next((s for s in j["steps"] if s["status"] == "DUE"), None) or next((s for s in reversed(j["steps"]) if s["status"] == "DONE"), j["steps"][0])
+        j_caller_label = active_step.get("caller_label")
+    comp_d = (f.due_on or today_ist()).isoformat() if has_comp else None
     return {"followup_id": fid, "patient_id": root_pid, "patient_name": p.name, "mobile": mobile_out(p, me), "language": c.language,
             "notice": c.notice, "report_age_days": c.content["summary"]["report_age_days"], "reason_for_call": cc.reason_for_call(c),
             "script": {k: v for k, v in script.items() if k != "do_not_say"}, "do_not_say": script["do_not_say"],
             "priority": f.priority, "protocol_tier_colour": tmeta["colour_token"], "protocol_tier_label": tmeta["caller_label"],
             "monitoring_due": monitoring_due,
+            "comparison_notice": "Results compared \u2014 doctor review scheduled" if has_comp else None,
+            "comparison_date": comp_d,
+            "journey_caller_label": j_caller_label,
             "program_followups": program_followups, "next_steps": next_steps,
             "refill_reminder": "Pharmacy refill reminder call" if refill_due else None,
             "specialist_bookings": specialist_bookings}

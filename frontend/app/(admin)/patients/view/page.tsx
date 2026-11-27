@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { api } from "@/lib/api";
 import CareLoopCard from "@/components/CareLoopCard";
+import ComparisonPanel from "@/components/ComparisonPanel";
 import ConditionsMonitoringCard from "@/components/ConditionsMonitoringCard";
 import ExtendedCareTabs from "@/components/ExtendedCareTabs";
 import HealthProfileCard from "@/components/HealthProfileCard";
@@ -80,6 +81,7 @@ function PatientInner({ id }: { id: string }) {
           ))}</tbody>
         </table>
       </TableFrame>
+      <ComparisonPanel endpoint={`/patients/${id}/compare`} refreshKey={refreshKey} onUpdated={() => setRefreshKey((n) => n + 1)} />
       <Trends patientId={id} />
       <CareLoopCard patientId={id} role={role} refreshKey={refreshKey} />
       <ConditionsMonitoringCard patientId={id} role={role} refreshKey={refreshKey} onChanged={() => setRefreshKey((n) => n + 1)} />

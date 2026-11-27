@@ -105,6 +105,9 @@ export default function Followups() {
                       <span className="inline-block rounded bg-teal-50 px-2 py-0.5 font-medium text-teal-900 border border-teal-200">
                         {f.retest_label || "Retest due"}
                       </span>
+                      {f.comparison_notice && (
+                        <div className="font-medium text-teal-900">{f.comparison_notice}{f.comparison_date ? ` · ${f.comparison_date}` : ""}</div>
+                      )}
                       {winLabel && <div className="text-slate-600">{winLabel}</div>}
                     </div>
                   ) : f.deficits_summary ? (

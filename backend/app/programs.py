@@ -135,13 +135,24 @@ def _clean_profile(raw: dict | None) -> dict:
                 continue
             if isinstance(v, (int, float)):
                 clean_t[code] = {"target_op": "<", "target_value": float(v), "unit": "%" if code == "HBA1C" else ""}
-            elif isinstance(v, dict) and v.get("target_value") not in (None, ""):
-                op = str(v.get("target_op") or "<").strip()
-                clean_t[code] = {
-                    "target_op": op if op in ("<", "<=", ">", ">=", "==") else "<",
-                    "target_value": float(v["target_value"]),
-                    "unit": str(v.get("unit") or ("%" if code == "HBA1C" else ""))[:20],
-                }
+            elif isinstance(v, dict):
+                op = str(v.get("target_op") or ("RANGE" if v.get("target_low") is not None or v.get("target_high") is not None else "<")).strip().upper()
+                if op not in ("<", "<=", ">", ">=", "==", "RANGE"):
+                    op = "<"
+                direction = str(v.get("direction") or "").strip().upper()
+                entry: dict = {"target_op": op, "unit": str(v.get("unit") or ("%" if code == "HBA1C" else ""))[:20]}
+                if v.get("target_value") not in (None, ""):
+                    entry["target_value"] = float(v["target_value"])
+                if v.get("target_low") not in (None, ""):
+                    entry["target_low"] = float(v["target_low"])
+                if v.get("target_high") not in (None, ""):
+                    entry["target_high"] = float(v["target_high"])
+                if direction in ("LOWER_IS_BETTER", "HIGHER_IS_BETTER", "RANGE"):
+                    entry["direction"] = direction
+                if v.get("min_meaningful_change") not in (None, ""):
+                    entry["min_meaningful_change"] = float(v["min_meaningful_change"])
+                if "target_value" in entry or "target_low" in entry or "target_high" in entry:
+                    clean_t[code] = entry
         base["targets"] = clean_t
     if isinstance(raw.get("imaging_findings"), list):
         base["imaging_findings"] = [

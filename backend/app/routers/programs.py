@@ -38,13 +38,21 @@ def get_health_profile(pid: int, request: Request, db: Session = Depends(get_db)
 @router.put("/patients/{pid}/health-profile")
 def put_health_profile(pid: int, body: dict, request: Request, db: Session = Depends(get_db), me: User = Depends(clinical)):
     p = _patient(db, pid)
-    if "conditions" in body and me.role != "DOCTOR":
-        cur_prof, _, _ = prog_svc.get_profile(db, p.id)
-        incoming_conds = prog_svc._clean_profile({"conditions": body.get("conditions")})["conditions"]
-        cur_norm = [(c.get("code"), c.get("status"), c.get("stage", ""), c.get("since", "")) for c in cur_prof.get("conditions", [])]
-        inc_norm = [(c.get("code"), c.get("status"), c.get("stage", ""), c.get("since", "")) for c in incoming_conds]
-        if cur_norm != inc_norm:
-            raise HTTPException(403, "Only a doctor can confirm, change, or remove conditions")
+    if me.role != "DOCTOR":
+        cur_prof = None
+        if "conditions" in body:
+            cur_prof, _, _ = prog_svc.get_profile(db, p.id)
+            incoming_conds = prog_svc._clean_profile({"conditions": body.get("conditions")})["conditions"]
+            cur_norm = [(c.get("code"), c.get("status"), c.get("stage", ""), c.get("since", "")) for c in cur_prof.get("conditions", [])]
+            inc_norm = [(c.get("code"), c.get("status"), c.get("stage", ""), c.get("since", "")) for c in incoming_conds]
+            if cur_norm != inc_norm:
+                raise HTTPException(403, "Only a doctor can confirm, change, or remove conditions")
+        if "targets" in body:
+            if cur_prof is None:
+                cur_prof, _, _ = prog_svc.get_profile(db, p.id)
+            inc_targets = prog_svc._clean_profile({"targets": body.get("targets")})["targets"]
+            if cur_prof.get("targets", {}) != inc_targets:
+                raise HTTPException(403, "Only a doctor can set or change per-patient clinical targets")
     try:
         profile, row = prog_svc.save_profile(db, p.id, body, me.id)
     except ValueError as err:

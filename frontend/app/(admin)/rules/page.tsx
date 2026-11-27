@@ -79,7 +79,15 @@ const RULE_METADATA: Record<string, { title: string; desc: string }> = {
   },
   clinical_targets: {
     title: "Clinical Targets (Page 10/11)",
-    desc: "Starter clinical target rules (e.g. HbA1c < 7.0%) used for parameter status and stable/uncontrolled diabetes classification."
+    desc: "Starter clinical target rules (e.g. HbA1c < 7.0%) with direction and min meaningful change."
+  },
+  next_action_rules: {
+    title: "Parameter Display Next Action Rules (Page 10)",
+    desc: "Starter deterministic next-action rules combining Target Status and Change Status."
+  },
+  journey_templates: {
+    title: "Patient Journey Templates (HBA1C_90 / STANDARD_92)",
+    desc: "Selection rules, day windows, owners, neutral caller labels, and clinician disclaimers for follow-up journeys."
   },
   retest_tiers: {
     title: "Retesting Protocol Urgency Tiers (5 Tiers)",

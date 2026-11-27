@@ -7,6 +7,7 @@ import { Suspense } from "react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
+import ComparisonPanel from "@/components/ComparisonPanel";
 import FollowupCombinationsTable from "@/components/FollowupCombinationsTable";
 import ProgramsPanel from "@/components/ProgramsPanel";
 import RetestPlan from "@/components/RetestPlan";
@@ -51,6 +52,7 @@ function FollowupViewInner({ id }: { id: string }) {
       </div>
       {me.data && <CallCard fid={id} role={me.data.role} />}
       <RetestPlan followup={f} onUpdated={reload} />
+      <ComparisonPanel endpoint={`/followups/${id}/compare`} refreshKey={refreshKey} onUpdated={reload} />
       {f.patient_id && <Trends patientId={f.patient_id} />}
       <DoctorActions fid={id} />
       <FollowupCombinationsTable fid={id} onChanged={() => setRefreshKey((n) => n + 1)} />

@@ -7,6 +7,7 @@ import { Suspense } from "react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
+import ComparisonPanel from "@/components/ComparisonPanel";
 import ReportInsights from "@/components/ReportInsights";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
@@ -138,6 +139,8 @@ function ReportViewInner({ id }: { id: string }) {
         </div>
       )}
       {msg && <p role="alert" className="text-sm font-medium text-red-600">{msg}</p>}
+
+      <ComparisonPanel endpoint={`/reports/${id}/compare`} onUpdated={reload} />
 
       {/* Test Parameters / Blood Report Results */}
       <section className="space-y-3">

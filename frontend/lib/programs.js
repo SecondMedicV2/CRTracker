@@ -474,7 +474,7 @@ const SYNONYM_PAIRS = [
   ["CREAT", "CREATININE"], ["ALT", "SGPT"], ["AST", "SGOT"], ["ALB", "ALBUMIN"],
   ["BILI_T", "BILIRUBIN"], ["GLU_F", "GLUCOSE_FASTING"], ["GLU_PP", "GLUCOSE_PP"], ["GLU_R", "GLUCOSE_RANDOM"],
 ];
-const SYNONYMS = {};
+export const SYNONYMS = {};
 for (const [a, b] of SYNONYM_PAIRS) {
   const s = new Set([a, b]);
   SYNONYMS[a] = s;
@@ -581,13 +581,19 @@ export function cleanProfile(raw) {
       if (!code) continue;
       if (typeof v === "number") {
         cleanT[code] = { target_op: "<", target_value: Number(v), unit: code === "HBA1C" ? "%" : "" };
-      } else if (v && typeof v === "object" && v.target_value !== null && v.target_value !== undefined && v.target_value !== "") {
-        const op = String(v.target_op || "<").trim();
-        cleanT[code] = {
-          target_op: ["<", "<=", ">", ">=", "=="].includes(op) ? op : "<",
-          target_value: Number(v.target_value),
-          unit: String(v.unit || (code === "HBA1C" ? "%" : "")).slice(0, 20),
-        };
+      } else if (v && typeof v === "object") {
+        const rawOp = String(v.target_op || (v.target_low !== undefined || v.target_high !== undefined ? "RANGE" : "<")).trim().toUpperCase();
+        const op = ["<", "<=", ">", ">=", "==", "RANGE"].includes(rawOp) ? rawOp : "<";
+        const dir = String(v.direction || "").trim().toUpperCase();
+        const entry = { target_op: op, unit: String(v.unit || (code === "HBA1C" ? "%" : "")).slice(0, 20) };
+        if (v.target_value !== null && v.target_value !== undefined && v.target_value !== "") entry.target_value = Number(v.target_value);
+        if (v.target_low !== null && v.target_low !== undefined && v.target_low !== "") entry.target_low = Number(v.target_low);
+        if (v.target_high !== null && v.target_high !== undefined && v.target_high !== "") entry.target_high = Number(v.target_high);
+        if (["LOWER_IS_BETTER", "HIGHER_IS_BETTER", "RANGE"].includes(dir)) entry.direction = dir;
+        if (v.min_meaningful_change !== null && v.min_meaningful_change !== undefined && v.min_meaningful_change !== "") {
+          entry.min_meaningful_change = Number(v.min_meaningful_change);
+        }
+        if ("target_value" in entry || "target_low" in entry || "target_high" in entry) cleanT[code] = entry;
       }
     }
     base.targets = cleanT;

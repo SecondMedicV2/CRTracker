@@ -23,6 +23,9 @@ type CallerCardData = {
   protocol_tier_colour?: string;
   protocol_tier_label?: string;
   monitoring_due?: string | null;
+  comparison_notice?: string | null;
+  comparison_date?: string | null;
+  journey_caller_label?: string | null;
   notice?: string;
   report_age_days: number | null;
   reason_for_call: string;
@@ -83,6 +86,14 @@ function CallerCardInner({ id }: { id: string }) {
         )}
         {c.monitoring_due && (
           <p className="mt-2 text-xs font-semibold text-teal-900">{c.monitoring_due}</p>
+        )}
+        {c.comparison_notice && (
+          <p className="mt-1 text-xs font-semibold text-teal-900">
+            {c.comparison_notice}{c.comparison_date ? ` (${c.comparison_date})` : ""}
+          </p>
+        )}
+        {c.journey_caller_label && (
+          <p className="mt-1 text-xs font-medium text-teal-900">Journey step: {c.journey_caller_label}</p>
         )}
         {c.program_followups && c.program_followups.length > 0 && (
           <p className="mt-1 text-xs font-medium text-teal-900">Care follow-up: {c.program_followups.join(", ")}</p>

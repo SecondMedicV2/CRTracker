@@ -9,6 +9,7 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import ComparisonPanel from "@/components/ComparisonPanel";
 import FollowupCombinationsTable from "@/components/FollowupCombinationsTable";
+import JourneyTimeline from "@/components/JourneyTimeline";
 import ProgramsPanel from "@/components/ProgramsPanel";
 import RetestPlan from "@/components/RetestPlan";
 import TierBadge from "@/components/TierBadge";
@@ -51,6 +52,7 @@ function FollowupViewInner({ id }: { id: string }) {
         </label>
       </div>
       {me.data && <CallCard fid={id} role={me.data.role} />}
+      <JourneyTimeline followupId={id} role={me.data?.role} refreshKey={refreshKey} onChanged={() => { setRefreshKey((n) => n + 1); reload(); }} />
       <RetestPlan followup={f} role={me.data?.role} onUpdated={reload} />
       <ComparisonPanel endpoint={`/followups/${id}/compare`} refreshKey={refreshKey} onUpdated={reload} />
       {f.patient_id && <Trends patientId={f.patient_id} />}

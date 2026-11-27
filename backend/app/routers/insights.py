@@ -185,6 +185,7 @@ def dashboard(frm: date | None = Query(None, alias="from"), to: date | None = No
                             "pending_identity": n(select(func.count()).select_from(IdentityReview).where(IdentityReview.status == "PENDING"))},
         "programs": _program_counts(db, start, end),
         "finding_funnel": _finding_funnel(db, start, end),
+        "journeys": journeys.dashboard_journeys(db),
     }
 
 

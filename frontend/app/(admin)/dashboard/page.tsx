@@ -202,6 +202,52 @@ export default function Dashboard() {
               </TableFrame>
             </section>
           )}
+
+          {d.journeys && (
+            <section className="space-y-4 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">Follow-up Journeys (Day 0 to Day 92)</h2>
+                  <p className="mt-0.5 text-sm text-slate-500">Active and completed care journeys, overdue steps, and D0 to D92 completion funnel.</p>
+                </div>
+                <div className="flex flex-wrap gap-3 text-xs font-semibold">
+                  <span className="rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-teal-900">Active: {d.journeys.active ?? 0}</span>
+                  <span className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-emerald-900">Completed: {d.journeys.completed ?? 0}</span>
+                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-slate-700">Superseded/Stopped: {d.journeys.stopped ?? 0}</span>
+                </div>
+              </div>
+              <div className="grid gap-6 md:grid-cols-2">
+                <div>
+                  <h3 className="mb-2 text-sm font-semibold text-slate-800">Journey drop-off funnel (D0 → D92)</h3>
+                  <ul className="space-y-2 text-xs">
+                    {(d.journeys.funnel || []).map((s: any) => {
+                      const topJ = d.journeys.funnel?.[0]?.count || 0;
+                      return (
+                        <li key={s.step_code} className="flex items-center gap-2">
+                          <span className="w-16 shrink-0 font-semibold text-slate-700">{s.window_label}</span>
+                          <div className="h-2.5 flex-1 rounded-full bg-slate-100">
+                            <div className="h-2.5 rounded-full bg-teal-600" style={{ width: `${topJ ? (s.count / topJ) * 100 : 0}%` }} />
+                          </div>
+                          <span className="w-8 text-right font-semibold text-slate-900">{s.count}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+                <div>
+                  <h3 className="mb-2 text-sm font-semibold text-slate-800">Overdue steps by milestone</h3>
+                  <ul className="grid grid-cols-3 gap-2 text-xs">
+                    {(d.journeys.overdue_by_step || []).map((o: any) => (
+                      <li key={o.step_code} className={`rounded-lg border p-2 ${o.count > 0 ? "border-rose-200 bg-rose-50 text-rose-900" : "border-slate-100 bg-slate-50 text-slate-600"}`}>
+                        <div className="font-semibold">{o.window_label}</div>
+                        <div className="text-base font-bold">{o.count}</div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </section>
+          )}
         </>
       )}
     </div>

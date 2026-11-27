@@ -82,6 +82,8 @@ class CallIn(BaseModel):
     slot_start: datetime | None = None
     slot_minutes: int = 15
     doctor_id: int | None = None
+    adherence_code: str = ""
+    symptom_code: str = ""
 
 
 @router.post("/followups/{fid}/calls", status_code=201)
@@ -128,10 +130,22 @@ def log_call(fid: int, body: CallIn, request: Request, db: Session = Depends(get
         f.stage = body.outcome
     else:  # DO_NOT_CALL
         p.do_not_call, f.stage = True, "DECLINED"
-    db.add(CallLog(followup_id=fid, user_id=me.id, role=me.role, outcome=body.outcome, notes=body.notes.strip()[:500]))
+    adh = body.adherence_code.strip().upper()
+    sym = body.symptom_code.strip().upper()
+    from .. import journeys as jsvc
+    if adh and adh not in jsvc.ADHERENCE_CODES:
+        raise HTTPException(422, f"adherence_code must be one of {sorted(jsvc.ADHERENCE_CODES)}")
+    if sym and sym not in jsvc.SYMPTOM_CODES:
+        raise HTTPException(422, f"symptom_code must be one of {sorted(jsvc.SYMPTOM_CODES)}")
+    db.add(CallLog(followup_id=fid, user_id=me.id, role=me.role, outcome=body.outcome, adherence_code=adh, symptom_code=sym, notes=body.notes.strip()[:500]))
     f.attempts, f.last_attempt_at = f.attempts + 1, now
     if body.outcome in ("NOT_REACHABLE", "CALL_LATER") and tries + 1 >= maxn:
         f.suppressed_reason = "Maximum call attempts reached"  # stop chasing (Part 8.5)
+    db.flush()
+    if adh or sym:
+        jsvc.record_checkin(db, f, adherence_code=adh, symptom_code=sym, user_id=me.id, role=me.role)
+    else:
+        jsvc.sync_journey_events(db, followup_id=fid)
     db.commit()
     audit(db, request, me.id, "call", "followup", f"{fid}:{body.outcome}")
     return {"stage": f.stage, "attempts": f.attempts, "suppressed_reason": f.suppressed_reason,
@@ -328,6 +342,8 @@ def doctor_outcome(fid: int, body: DoctorOutcome, request: Request, db: Session 
         raise HTTPException(422, "Outcome must be DOCTOR_DONE or RECALL_CALLER")
     f.accepted_at = f.accepted_at or now
     rel.sync_touchpoints(db, f.patient_id, commit=False)
+    from .. import journeys as jsvc
+    jsvc.sync_journey_events(db, followup_id=fid)
     db.commit()
     audit(db, request, me.id, "doctor_outcome", "followup", f"{fid}:{body.outcome}")
     return {"stage": f.stage}

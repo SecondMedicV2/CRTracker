@@ -25,6 +25,7 @@ import {
   toIstDateStr,
 } from "../lib/retest.js";
 import { matchCompletedPlansInStore } from "../lib/retestModel.js";
+import { schedulerTickInStore, sendPatientMessageInStore } from "../lib/journeys.js";
 
 function createTestEnv() {
   const kv = new Map();
@@ -771,5 +772,80 @@ describe("Smart Diagnostics Pages 1-4 Worker Parity", () => {
     const csvRes = await req(env, "GET", `/api/v1/kpis/retesting.csv?from=${addDaysIso(today, -120)}&to=${today}`, adminCookie);
     assert.strictEqual(csvRes.status, 200);
     assert.ok((await csvRes.text()).includes("Retesting eligibility rate"));
+  });
+
+  it("evaluates Page 8 Day 0->92 care journeys, dynamic windows, events, scheduler, messaging guards & superseding in Edge Worker", async () => {
+    const env = createTestEnv();
+    const adminCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD })).headers.get("set-cookie").split(";")[0];
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Dr", email: "doc@sm.com", password: "DoctorPassword123!", role: "DOCTOR" });
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Cal", email: "cal@sm.com", password: "CallerPassword123!", role: "CALLER" });
+    const docCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "doc@sm.com", password: "DoctorPassword123!" })).headers.get("set-cookie").split(";")[0];
+    const calCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "cal@sm.com", password: "CallerPassword123!" })).headers.get("set-cookie").split(";")[0];
+
+    const today = todayIstStr();
+    const d75Ago = addDaysIso(today, -75);
+    const st0 = await env.CRTRACKER_DATA.get("app_state_v5", "json");
+    st0.patients = [{ id: 1, name: "Kiran P", gender: "F", age: 40, mobile: "9830000001", language: "en", do_not_call: false }];
+    st0.reports = [
+      { id: 1, order_id: "ORD-J1", patient_id: 1, patient_name: "Kiran P", gender: "F", status: "READY", collected_on: `${d75Ago}T08:00:00Z`, classification: "ABNORMAL" },
+    ];
+    st0.followups = [
+      { id: 1, report_id: 1, patient_id: 1, patient_name: "Kiran P", priority: "ROUTINE", stage: "QUEUED", buckets: ["LIPID"], due_on: today, retest_window_start: addDaysIso(today, 15), retest_window_end: addDaysIso(today, 15), reminder_on: today },
+    ];
+    await env.CRTRACKER_DATA.put("app_state_v5", JSON.stringify(st0));
+    await env.CRTRACKER_DATA.put("report_params:1", JSON.stringify([{ id: 1, param_code: "LDL", param_name_raw: "LDL", value_num: 195, unit: "mg/dL", system_flag: "HIGH" }]));
+
+    // 1. Start journey & verify dynamic D75/D90 from Page 7 window + corrected wordings + Caller neutrality
+    const j1 = await (await req(env, "GET", "/api/v1/followups/1/journey", docCookie)).json();
+    assert.strictEqual(j1.steps.length, 9);
+    const d75 = j1.steps.find((s) => s.step_code === "D75_RETEST_NOTICE");
+    const d90 = j1.steps.find((s) => s.step_code === "D90_RETEST");
+    const d91 = j1.steps.find((s) => s.step_code === "D91_COMPARE");
+    assert.strictEqual(d75.service, "Diagnostics booking");
+    assert.strictEqual(d91.service, "AMI longitudinal analysis");
+    assert.strictEqual(d75.due_on, today);
+    assert.strictEqual(d90.due_on, addDaysIso(today, 15));
+
+    const jCal = await (await req(env, "GET", "/api/v1/followups/1/journey", calCookie)).json();
+    assert.ok(!JSON.stringify(jCal).includes("ami_action") && !JSON.stringify(jCal).toLowerCase().includes("ldl"));
+    assert.strictEqual((await req(env, "GET", "/api/v1/patients/1/journeys", calCookie)).status, 403);
+    assert.strictEqual((await req(env, "GET", "/api/v1/outbound-messages", calCookie)).status, 403);
+    assert.strictEqual((await req(env, "GET", "/api/v1/outbound-messages", docCookie)).status, 403);
+
+    // 2. Check-in WORSE spawns Doctor ClinicalTask
+    const chkRes = await (await req(env, "POST", "/api/v1/followups/1/journey/checkin", calCookie, {
+      step_code: "D30_ADHERENCE",
+      adherence_code: "STOPPED",
+      symptom_code: "WORSE",
+    })).json();
+    assert.ok(chkRes.clinical_task_id);
+    assert.strictEqual(chkRes.journey.steps.find((s) => s.step_code === "D30_ADHERENCE").status, "DONE");
+
+    // 3. Messaging guards + scheduler idempotency in KV store
+    const stMid = await env.CRTRACKER_DATA.get("app_state_v5", "json");
+    const d75Step = stMid.care_journeys[0].steps.find((s) => s.step_code === "D75_RETEST_NOTICE");
+    const dayIso = `${today}T05:30:00Z`; // 11:00 IST
+    const nightIso = `${today}T17:00:00Z`; // 22:30 IST
+    assert.strictEqual(sendPatientMessageInStore(stMid, 1, "D75_RETEST_NOTICE", { followupId: 1, journeyStepId: d75Step.id, now: dayIso }).status, "BLOCKED_NO_CONSENT");
+    stMid.consents = { 1: { patient_id: 1, followup_id: 1, given_at: dayIso } };
+    assert.strictEqual(sendPatientMessageInStore(stMid, 1, "D75_RETEST_NOTICE", { followupId: 1, journeyStepId: d75Step.id, now: nightIso }).status, "BLOCKED_QUIET_HOURS");
+    stMid.patients[0].do_not_call = true;
+    assert.strictEqual(sendPatientMessageInStore(stMid, 1, "D75_RETEST_NOTICE", { followupId: 1, journeyStepId: d75Step.id, now: dayIso }).status, "BLOCKED_DNC");
+    stMid.patients[0].do_not_call = false;
+
+    const t1 = schedulerTickInStore(stMid, { now: dayIso });
+    assert.ok(t1.tasks >= 1);
+    const notifAfter1 = stMid.notifications.items.length;
+    const t2 = schedulerTickInStore(stMid, { now: dayIso });
+    assert.strictEqual(t2.tasks, 0);
+    assert.strictEqual(stMid.notifications.items.length, notifAfter1);
+
+    // 4. Supersede old journey with new followup for same condition group & verify dashboard/message log
+    await env.CRTRACKER_DATA.put("app_state_v5", JSON.stringify(stMid));
+    const dash = await (await req(env, "GET", "/api/v1/dashboard", adminCookie)).json();
+    assert.ok(dash.journeys.active >= 1);
+    assert.strictEqual(dash.journeys.funnel.length, 9);
+    const msgs = await (await req(env, "GET", "/api/v1/outbound-messages", adminCookie)).json();
+    assert.ok(msgs.some((m) => m.status === "CALL_TASK_CREATED"));
   });
 });

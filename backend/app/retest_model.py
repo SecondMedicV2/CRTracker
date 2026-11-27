@@ -230,6 +230,8 @@ def book_plan(
             existing_tp.service_code = svc_code
             existing_tp.health_hub_id = plan.health_hub_id
     db.flush()
+    from . import journeys as journey_svc
+    journey_svc.sync_journey_events(db, followup_id=plan.followup_id)
     return plan
 
 
@@ -294,6 +296,8 @@ def accept_bundle(db: Session, followup: Followup, bundle_code: str, doctor_id: 
                 amount_inr=srv.get("price_inr"),
             ))
     db.flush()
+    from . import journeys as journey_svc
+    journey_svc.sync_journey_events(db, followup_id=followup.id)
     return {"plan_id": plan.id, "bundle_code": bcode, "services": [s["type"] for s in included_services]}
 
 
@@ -342,6 +346,8 @@ def match_completed_plans(db: Session, patient_id: int, report: Report) -> list[
     if matched_ids:
         db.flush()
         compare_svc.compare(db, root_pid, report.id)
+        from . import journeys as journey_svc
+        journey_svc.sync_journey_events(db, patient_id=root_pid)
     return matched_ids
 
 

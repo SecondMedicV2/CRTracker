@@ -502,6 +502,8 @@ def plan_retest(db: Session, followup: Followup, *, state: dict[str, Any] | None
     followup.retest_plan = plan
     db.flush()
     _sync_retest_model_plans(db, followup, rules)
+    from . import journeys as journey_svc
+    journey_svc.start_or_sync_journey(db, followup, rules=rules)
     if notify_urgent and protocol_tier == "URGENT":
         globals()["notify_urgent"](db, followup)
     return plan
@@ -534,6 +536,8 @@ def override_retest(db: Session, followup: Followup, *, window_start: date, wind
     followup.retest_plan = plan
     db.flush()
     _sync_retest_model_plans(db, followup, rules)
+    from . import journeys as journey_svc
+    journey_svc.start_or_sync_journey(db, followup, rules=rules)
     return plan
 
 

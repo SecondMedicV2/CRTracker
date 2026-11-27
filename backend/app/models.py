@@ -226,6 +226,8 @@ class CallLog(Base):
     user_id: Mapped[int] = mapped_column(Integer)
     role: Mapped[str] = mapped_column(String(10))
     outcome: Mapped[str] = mapped_column(String(20))
+    adherence_code: Mapped[str] = mapped_column(String(20), default="")  # TAKING | MISSED | STOPPED
+    symptom_code: Mapped[str] = mapped_column(String(20), default="")  # BETTER | SAME | WORSE
     notes: Mapped[str] = mapped_column(String(500), default="")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
 
@@ -568,4 +570,56 @@ class ClinicalTask(Base):
     assigned_doctor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class CareJourney(Base):
+    """Scheduled Day 0 -> Day 92 follow-up journey instance per abnormal follow-up/condition group (Page 8)."""
+
+    __tablename__ = "care_journeys"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    followup_id: Mapped[int | None] = mapped_column(ForeignKey("followups.id"), nullable=True, index=True)
+    condition_group: Mapped[str] = mapped_column(String(40), default="GENERAL", index=True)
+    template_code: Mapped[str] = mapped_column(String(40), default="STANDARD_92", index=True)
+    template_version: Mapped[int] = mapped_column(Integer, default=1)
+    started_on: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)  # ACTIVE | COMPLETED | STOPPED
+    stop_reason: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class JourneyStep(Base):
+    """Individual scheduled milestones (D0 -> D92) inside a CareJourney."""
+
+    __tablename__ = "journey_steps"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    journey_id: Mapped[int] = mapped_column(ForeignKey("care_journeys.id"), index=True)
+    step_order: Mapped[int] = mapped_column(Integer, default=0)
+    step_code: Mapped[str] = mapped_column(String(40), index=True)
+    due_on: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)  # PENDING | DUE | DONE | SKIPPED | OVERDUE
+    completed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    completed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_event: Mapped[str] = mapped_column(String(80), default="")
+    task_ref: Mapped[str] = mapped_column(String(80), default="")
+    waiting_for_data: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class OutboundMessage(Base):
+    """Consent- and quiet-hours-guarded patient messaging audit log (Page 8)."""
+
+    __tablename__ = "outbound_messages"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    followup_id: Mapped[int | None] = mapped_column(ForeignKey("followups.id"), nullable=True, index=True)
+    journey_step_id: Mapped[int | None] = mapped_column(ForeignKey("journey_steps.id"), nullable=True, index=True)
+    template_code: Mapped[str] = mapped_column(String(40), index=True)
+    language: Mapped[str] = mapped_column(String(16), default="en")
+    channel: Mapped[str] = mapped_column(String(20), default="CALL_TASK")  # WHATSAPP | SMS | CALL_TASK
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_ref: Mapped[str] = mapped_column(String(120), default="")
+    error: Mapped[str] = mapped_column(String(240), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

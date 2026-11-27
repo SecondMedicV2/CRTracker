@@ -246,6 +246,9 @@ def decide_program(rec_id: int, body: ProgramDecision, request: Request, db: Ses
             if fu and fu.next_followup_on is None:
                 fu.next_followup_on = today_ist() + timedelta(days=30)
 
+    if rec.followup_id:
+        from .. import journeys as jsvc
+        jsvc.sync_journey_events(db, followup_id=rec.followup_id)
     db.commit()
     # Audit only the recommendation row id, never program_code or patient PII.
     audit(db, request, me.id, f"program_{decision.lower()}", "program_recommendation", rec.id)

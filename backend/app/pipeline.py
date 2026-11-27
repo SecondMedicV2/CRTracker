@@ -27,6 +27,9 @@ def conclude(db: Session, order: Order, report: Report) -> None:
             relationship.sync_touchpoints(db, order.patient_id, commit=False)
             programs.evaluate(db, order.patient_id, report.id, commit=False, notify_consider=not (fu and fu.assigned_doctor_id))
             findings.sync_combinations(db, order.patient_id, report.id, commit=False)
+            if fu:
+                from . import journeys as journey_svc
+                journey_svc.start_or_sync_journey(db, fu)
             db.commit()
             ai_insights.generate_insight_for_report(db, report)
         except Exception:

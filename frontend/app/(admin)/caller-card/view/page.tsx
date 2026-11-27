@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { RequestState } from "@/components/RequestState";
+import JourneyTimeline from "@/components/JourneyTimeline";
 import TierBadge from "@/components/TierBadge";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useContext, useEffect, useState } from "react";
@@ -235,6 +236,7 @@ function CallerCardInner({ id }: { id: string }) {
           <FollowupBookingCard fid={id} />
         </div>
       </div>
+      <JourneyTimeline followupId={id} role="CALLER" />
     </div>
   );
 }

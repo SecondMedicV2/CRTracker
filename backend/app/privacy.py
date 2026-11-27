@@ -16,9 +16,9 @@ from sqlalchemy.orm import Session
 from . import storage
 from .config import env
 from .db import SessionLocal
-from .models import (Appointment, CallCard, CallLog, CareTouchpoint, ClinicalTask, Comment, Consent, FamilyLink,
-                     Followup, HealthProfile, HomeReading, HomeVisit, IdentityReview, MonitoringSchedule,
-                     Notification, Order, Patient, PatientBucket, PatientMedication, ProgramRecommendation, Referral,
+from .models import (Appointment, CallCard, CallLog, CareJourney, CareTouchpoint, ClinicalTask, Comment, Consent, FamilyLink,
+                     Followup, HealthProfile, HomeReading, HomeVisit, IdentityReview, JourneyStep, MonitoringSchedule,
+                     Notification, Order, OutboundMessage, Patient, PatientBucket, PatientMedication, ProgramRecommendation, Referral,
                      RefillSchedule, Report, ReportParameter, RetestRecommendation)
 from .security import audit
 
@@ -76,6 +76,9 @@ def export_patient(db: Session, pid: int) -> dict:
         rd["address"] = storage.decrypt_str(r.address_enc) if getattr(r, "address_enc", "") else ""
         rd.pop("address_enc", None)
         retest_recs.append(rd)
+    cj_rows = rows(CareJourney, CareJourney.patient_id, x["patients"])
+    cj_ids = [c.id for c in cj_rows]
+    j_steps = [plain(s) for s in db.scalars(select(JourneyStep).where(JourneyStep.journey_id.in_(cj_ids)))] if cj_ids else []
     return {"patients": people, "orders": [plain(o) for o in x["orders"]], "reports": reports,
             "followups": [plain(f) for f in rows(Followup, Followup.id, x["followups"])],
             "buckets": [plain(b) for b in rows(PatientBucket, PatientBucket.patient_id, x["patients"])],
@@ -86,6 +89,9 @@ def export_patient(db: Session, pid: int) -> dict:
             "appointments": [plain(a) for a in rows(Appointment, Appointment.followup_id, x["followups"])],
             "retest_recommendations": retest_recs,
             "care_touchpoints": [plain(t) for t in rows(CareTouchpoint, CareTouchpoint.patient_id, x["patients"])],
+            "care_journeys": [plain(c) for c in cj_rows],
+            "journey_steps": j_steps,
+            "outbound_messages": [plain(m) for m in rows(OutboundMessage, OutboundMessage.patient_id, x["patients"])],
             "health_profiles": profiles,
             "program_recommendations": [plain(r) for r in rows(ProgramRecommendation, ProgramRecommendation.patient_id, x["patients"])],
             "patient_medications": meds,
@@ -115,6 +121,11 @@ def erase_patient(db: Session, pid: int) -> dict:
         for name, model in (("call_cards", CallCard), ("calls", CallLog), ("comments", Comment),
                             ("appointments", Appointment), ("retest_recommendations", RetestRecommendation)):
             wipe(name, delete(model).where(model.followup_id.in_(fids)))
+    wipe("outbound_messages", delete(OutboundMessage).where(OutboundMessage.patient_id.in_(pids)))
+    cj_ids = list(db.scalars(select(CareJourney.id).where(CareJourney.patient_id.in_(pids))))
+    if cj_ids:
+        wipe("journey_steps", delete(JourneyStep).where(JourneyStep.journey_id.in_(cj_ids)))
+    wipe("care_journeys", delete(CareJourney).where(CareJourney.patient_id.in_(pids)))
     wipe("family_links", delete(FamilyLink).where(or_(FamilyLink.patient_id.in_(pids), FamilyLink.related_patient_id.in_(pids))))
     wipe("consents", delete(Consent).where(or_(Consent.patient_id.in_(pids), Consent.followup_id.in_(fids or [0]))))
     wipe("refill_schedules", delete(RefillSchedule).where(RefillSchedule.patient_id.in_(pids)))

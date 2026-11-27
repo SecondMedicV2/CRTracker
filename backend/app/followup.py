@@ -148,6 +148,8 @@ def build(db: Session, order: Order) -> Followup | None:
         assign.assign(db, fu)  # parked and suppressed cases need no doctor yet
     if fu.protocol_tier == "URGENT" and not fu.suppressed_reason:
         retest_svc.notify_urgent(db, fu)
+    from . import journeys as journey_svc
+    journey_svc.start_or_sync_journey(db, fu, rules=rules)
     db.commit()
     return fu
 

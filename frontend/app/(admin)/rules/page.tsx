@@ -96,6 +96,10 @@ const RULE_METADATA: Record<string, { title: string; desc: string }> = {
   protocol_bundles: {
     title: "Integrated Protocol Bundles & Service Pricing (Page 12)",
     desc: "Clinically approved 5 condition bundles linking Diagnostics, Physician Consult, conditional Pharmacy (active meds), and Nutrition."
+  },
+  message_templates: {
+    title: "Patient Messaging Templates (Page 8)",
+    desc: "Neutral English and Hindi reminder messages checked for zero clinical words/values and guarded by Consent, Do-Not-Call, and 09:00-20:00 IST hours."
   }
 };
 
@@ -343,6 +347,59 @@ function CriticalRules() {
   );
 }
 
+function OutboundMessageLog() {
+  const { data, error, reload } = useApi<any[]>("/outbound-messages");
+  return (
+    <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h2 className="text-base font-semibold text-slate-900">Patient Outbound Message Log (Page 8)</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Delivery and guard outcomes (Consent, DNC, Quiet Hours 09:00–20:00 IST). Neutral reminder templates only.
+          </p>
+        </div>
+        <button type="button" onClick={reload} className="rounded border px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50">
+          Refresh
+        </button>
+      </div>
+      {error && <p className="text-xs text-rose-600">{error}</p>}
+      {data && data.length === 0 && <p className="text-xs text-slate-500">No outbound messages or guarded blocks logged yet.</p>}
+      {data && data.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 text-slate-600">
+                <th className="py-2 pr-3">Patient</th>
+                <th className="py-2 pr-3">Template</th>
+                <th className="py-2 pr-3">Channel</th>
+                <th className="py-2 pr-3">Lang</th>
+                <th className="py-2 pr-3">Status</th>
+                <th className="py-2">Ref / Guard Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((m: any) => (
+                <tr key={m.id} className="border-b border-slate-100">
+                  <td className="py-2 pr-3 font-medium text-slate-900">{m.patient_name || `#${m.patient_id}`}</td>
+                  <td className="py-2 pr-3 font-mono">{m.template_code}</td>
+                  <td className="py-2 pr-3">{m.channel}</td>
+                  <td className="py-2 pr-3 uppercase">{m.language}</td>
+                  <td className="py-2 pr-3">
+                    <span className={`rounded px-1.5 py-0.5 font-semibold ${m.status?.startsWith("BLOCKED") ? "bg-amber-100 text-amber-900" : "bg-emerald-100 text-emerald-900"}`}>
+                      {m.status}
+                    </span>
+                  </td>
+                  <td className="py-2 text-slate-600">{m.error || m.provider_ref || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Rules() {
   const { data, error, reload } = useApi<any[]>("/rules");
   const pending = data?.some((r) => r.pending_signoff);
@@ -367,6 +424,7 @@ export default function Rules() {
         {data?.map((r) => <Rule key={r.key} k={r.key} onChange={reload} />)}
       </div>
       <CriticalRules />
+      <OutboundMessageLog />
     </div>
   );
 }

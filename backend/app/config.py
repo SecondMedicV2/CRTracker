@@ -75,4 +75,6 @@ SETTING_DEFAULTS = {
         {"code": "TELECONSULT", "name": "Doctor teleconsultation", "stage": "CONSULTATIONS", "default_amount_inr": 499},
     ],
     "relationship_thresholds": {"new_days": 30, "active_days": 90, "at_risk_days": 180},
+    "whatsapp_enabled": False,
+    "callback_number": "",
 }

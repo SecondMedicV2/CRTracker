@@ -100,6 +100,18 @@ import {
   planOutInStore,
   syncSignedOffProtocolPlansInStore,
 } from "./lib/retestModel.js";
+import {
+  ADHERENCE_CODES,
+  DEFAULT_MESSAGE_TEMPLATES,
+  SYMPTOM_CODES,
+  dashboardJourneysInStore,
+  journeyOutInStore,
+  recordCheckinInStore,
+  schedulerTickInStore,
+  sendPatientMessageInStore,
+  startOrSyncJourneyInStore,
+  syncJourneyEventsInStore,
+} from "./lib/journeys.js";
 
 function consentingFamilySummaries(store, patientId) {
   const links = (store.family_links || []).filter((l) => l.patient_id === patientId);
@@ -248,6 +260,7 @@ async function syncProgramsInStore(env, store, patientId, reportId, params, nowI
       }
       ensurePlanForFollowupInStore(store, fu, { report: args.report, params: args.params });
     }
+    startOrSyncJourneyInStore(store, fu);
   }
   if (newConsider) {
     if (!store.notifications) store.notifications = { unread: 0, items: [] };
@@ -615,6 +628,7 @@ function forbidden(path, method, role) {
     return true;
   }
   if (path === "/relationship/summary") return true;
+  if (path === "/outbound-messages") return true;
   if (/^\/kpis\/retesting(\.csv)?$/.test(path)) return true;
   if (method !== "GET" && /^\/health-hubs(\/|$)/.test(path)) return true;
   if (role === "DOCTOR" && method === "POST" && /^\/rules\/[a-zA-Z0-9_]+\/signoff$/.test(path)) return false;
@@ -1280,7 +1294,9 @@ function getDefaultStore() {
     pull_every_minutes: 20,
     pull_lookback_days: 7,
     care_services: DEFAULT_CARE_SERVICES,
-    relationship_thresholds: DEFAULT_RELATIONSHIP_THRESHOLDS
+    relationship_thresholds: DEFAULT_RELATIONSHIP_THRESHOLDS,
+    whatsapp_enabled: false,
+    callback_number: ""
   };
   const followups = [];
   const reports = [];
@@ -1317,7 +1333,9 @@ function getDefaultStore() {
     family_links: [],
     family_consents: [],
     recommendations: {},
-    health_hubs: HEALTH_HUBS_STARTER.map((h) => ({ ...h }))
+    health_hubs: HEALTH_HUBS_STARTER.map((h) => ({ ...h })),
+    care_journeys: [],
+    outbound_messages: []
   };
 }
 
@@ -1383,6 +1401,10 @@ async function getStore(env) {
         if (!data.family_links) data.family_links = [];
         if (!data.family_consents) data.family_consents = [];
         if (!data.recommendations) data.recommendations = {};
+        if (!data.care_journeys) data.care_journeys = [];
+        if (!data.outbound_messages) data.outbound_messages = [];
+        if (data.settings && data.settings.whatsapp_enabled === undefined) data.settings.whatsapp_enabled = false;
+        if (data.settings && data.settings.callback_number === undefined) data.settings.callback_number = "";
         ensureHubs(data);
         if (!data.followups) data.followups = [];
         for (const r of data.reports || []) {
@@ -1742,7 +1764,8 @@ async function handleApiRequest(request, url, env) {
       },
       doctors: [],
       programs: Object.values(progMap).sort((a, b) => a.code.localeCompare(b.code)),
-      finding_funnel: findingFunnel
+      finding_funnel: findingFunnel,
+      journeys: dashboardJourneysInStore(store)
     });
   }
 
@@ -1864,6 +1887,8 @@ async function handleApiRequest(request, url, env) {
     store.family_links = [];
     store.family_consents = [];
     store.recommendations = {};
+    store.care_journeys = [];
+    store.outbound_messages = [];
     ensureHubs(store);
     store.dashboard = {
       from: "",
@@ -2203,9 +2228,11 @@ async function handleApiRequest(request, url, env) {
 
     recordAudit(store, me, "extract", "report", rid);
     if (rep.patient_id) {
+      const pMap = await loadParamsByReport(rep.patient_id);
       syncTouchpointsInStore(store, rep.patient_id);
       await syncProgramsInStore(env, store, rep.patient_id, rid, sampleParams);
-      matchCompletedPlansInStore(store, rep.patient_id, rep, sampleParams, await loadParamsByReport(rep.patient_id));
+      matchCompletedPlansInStore(store, rep.patient_id, rep, sampleParams, pMap);
+      syncJourneyEventsInStore(store, { patientId: rep.patient_id, paramsByReport: pMap });
     }
     await saveStore(env, store);
     return reply(200, { ok: true, parameters: sampleParams, confidence: 90 });
@@ -2267,9 +2294,11 @@ async function handleApiRequest(request, url, env) {
     recordAudit(store, me, "approve", "report", rid);
     if (rep.patient_id) {
       const pList = (await kvGet(env, `report_params:${rid}`)) || [];
+      const pMap = await loadParamsByReport(rep.patient_id);
       syncTouchpointsInStore(store, rep.patient_id);
       await syncProgramsInStore(env, store, rep.patient_id, rid, pList);
-      matchCompletedPlansInStore(store, rep.patient_id, rep, pList, await loadParamsByReport(rep.patient_id));
+      matchCompletedPlansInStore(store, rep.patient_id, rep, pList, pMap);
+      syncJourneyEventsInStore(store, { patientId: rep.patient_id, paramsByReport: pMap });
     }
     await saveStore(env, store);
     return reply(200, { ok: true, status: "READY" });
@@ -2598,6 +2627,7 @@ async function handleApiRequest(request, url, env) {
     }
     const pList = fu.report_id ? ((await kvGet(env, `report_params:${fu.report_id}`)) || []) : [];
     const paramsMap = fu.patient_id ? await loadParamsByReport(fu.patient_id) : {};
+    syncJourneyEventsInStore(store, { followupId: fu.id, paramsByReport: paramsMap });
     recordAudit(store, me, "book", "retest_plan", `${plan.id}:${plan.collection_mode}`);
     await saveStore(env, store);
     return reply(200, planOutInStore(store, plan, fu, { role: me.role, params: pList, paramsByReport: paramsMap, secret: env.SESSION_SECRET || "crtracker-edge-key" }));
@@ -2658,6 +2688,38 @@ async function handleApiRequest(request, url, env) {
         "Cache-Control": "no-store",
       },
     });
+  }
+
+  // --- OUTBOUND MESSAGES LOG & PATIENT JOURNEYS (Page 8) ---
+  if (path === "/outbound-messages" && method === "GET") {
+    const pidParam = url.searchParams.get("patient_id");
+    const pidFilter = pidParam ? parseInt(pidParam, 10) : null;
+    const rows = (store.outbound_messages || [])
+      .filter((m) => pidFilter == null || m.patient_id === pidFilter)
+      .slice(0, 200);
+    recordAudit(store, me, "view", "outbound_messages", pidParam || "all");
+    await saveStore(env, store);
+    return reply(200, rows);
+  }
+  const patJourneysMatch = path.match(/^\/patients\/(\d+)\/journeys$/);
+  if (patJourneysMatch && method === "GET") {
+    const pid = parseInt(patJourneysMatch[1], 10);
+    const p = (store.patients || []).find((x) => x.id === pid);
+    if (!p) return reply(404, { detail: "No such patient" });
+    const paramsMap = await loadParamsByReport(pid);
+    for (const fu of (store.followups || []).filter((f) => f.patient_id === pid && !f.suppressed_reason)) {
+      if (!(store.care_journeys || []).some((j) => j.followup_id === fu.id)) {
+        startOrSyncJourneyInStore(store, fu, { paramsByReport: paramsMap });
+      }
+    }
+    syncJourneyEventsInStore(store, { patientId: pid, paramsByReport: paramsMap });
+    const rows = (store.care_journeys || [])
+      .filter((j) => j.patient_id === pid)
+      .sort((a, b) => b.id - a.id)
+      .map((j) => journeyOutInStore(store, j, { role: me.role }));
+    recordAudit(store, me, "view", "patient_journeys", pid);
+    await saveStore(env, store);
+    return reply(200, { patient_id: pid, journeys: rows });
   }
 
   if (path === "/rules/test_catalogue" || path === "/rules/test-catalogue") {
@@ -2807,6 +2869,35 @@ async function handleApiRequest(request, url, env) {
       await saveStore(env, store);
       return reply(200, { followup_id: fid, journey: j });
     }
+    if (sub === "/journey" && method === "GET") {
+      const fu = store.followups.find((f) => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      const paramsMap = fu.patient_id ? await loadParamsByReport(fu.patient_id) : {};
+      const j = startOrSyncJourneyInStore(store, fu, { paramsByReport: paramsMap });
+      recordAudit(store, me, "view", "care_journey", fid);
+      await saveStore(env, store);
+      return reply(200, j ? journeyOutInStore(store, j, { role: me.role }) : { id: null, followup_id: fid, status: "NONE", steps: [] });
+    }
+    if (sub === "/journey/checkin" && method === "POST") {
+      const fu = store.followups.find((f) => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      const b = await request.json().catch(() => ({}));
+      let res;
+      try {
+        res = recordCheckinInStore(store, fu, {
+          stepCode: b.step_code || "",
+          adherenceCode: b.adherence_code || "",
+          symptomCode: b.symptom_code || "",
+          userId: me.id,
+          role: me.role,
+        });
+      } catch (err) {
+        return reply(err.status || 422, { detail: err.message });
+      }
+      recordAudit(store, me, "checkin", "care_journey", `${fid}:${res.adherence_code}:${res.symptom_code}`);
+      await saveStore(env, store);
+      return reply(200, res);
+    }
     if (sub === "/retest-plan" && method === "GET") {
       const fu = store.followups.find((f) => f.id === fid);
       if (!fu) return reply(404, { detail: "Follow-up not found." });
@@ -2834,6 +2925,7 @@ async function handleApiRequest(request, url, env) {
         return reply(err.status || 422, { detail: err.message });
       }
       const paramsMap = fu.patient_id ? await loadParamsByReport(fu.patient_id) : {};
+      syncJourneyEventsInStore(store, { followupId: fu.id, paramsByReport: paramsMap });
       recordAudit(store, me, "accept_bundle", "protocol_bundle", `${res.plan_id}:${res.bundle_code}`);
       await saveStore(env, store);
       return reply(200, {
@@ -2961,6 +3053,7 @@ async function handleApiRequest(request, url, env) {
         }
       }
       recordAudit(store, me, "update", "followup", fid);
+      startOrSyncJourneyInStore(store, fu);
       await saveStore(env, store);
       return reply(200, fuRowOut(fu, true));
     }
@@ -2977,6 +3070,7 @@ async function handleApiRequest(request, url, env) {
       const end = b.window_end ? String(b.window_end).slice(0, 10) : start;
       if (!start || (end && end < start)) return reply(422, { detail: "Invalid window_start or window_end" });
       overrideRetestInStore(fu, { window_start: start, window_end: end, reason_code: reason, notes: b.notes || "", user_id: me.id, rules: store.rules });
+      startOrSyncJourneyInStore(store, fu);
       recordAudit(store, me, "retest_override", "followup", `${fid}:${reason}`);
       await saveStore(env, store);
       return reply(200, fuRowOut(fu, true));
@@ -3169,13 +3263,19 @@ async function handleApiRequest(request, url, env) {
       const fu = store.followups.find(f => f.id === fid);
       if (!fu) return reply(404, { detail: "Follow-up not found" });
       const b = await request.json().catch(() => ({}));
+      const adh = String(b.adherence_code || "").trim().toUpperCase();
+      const sym = String(b.symptom_code || "").trim().toUpperCase();
+      if (adh && !ADHERENCE_CODES.has(adh)) return reply(422, { detail: "Invalid adherence_code" });
+      if (sym && !SYMPTOM_CODES.has(sym)) return reply(422, { detail: "Invalid symptom_code" });
       if (!store.workflows[fid]) store.workflows[fid] = { calls: [] };
       if (!store.workflows[fid].calls) store.workflows[fid].calls = [];
-      const callLog = { outcome: b.outcome || "NOT_REACHABLE", role: me.role, notes: b.notes || "", started_at: new Date().toISOString() };
+      const callLog = { outcome: b.outcome || "NOT_REACHABLE", role: me.role, adherence_code: adh, symptom_code: sym, notes: b.notes || "", started_at: new Date().toISOString() };
       store.workflows[fid].calls.unshift(callLog);
       fu.attempts = (fu.attempts || 0) + 1;
       if (b.outcome === "BOOKED") fu.stage = "BOOKED";
       else if (b.outcome) fu.stage = b.outcome;
+      if (adh || sym) recordCheckinInStore(store, fu, { adherenceCode: adh, symptomCode: sym, userId: me.id, role: me.role });
+      else syncJourneyEventsInStore(store, { followupId: fid });
       await saveStore(env, store);
       return reply(201, { stage: fu.stage, attempts: fu.attempts, appointment: null });
     }
@@ -3212,6 +3312,7 @@ async function handleApiRequest(request, url, env) {
       } else if (b.outcome === "RECALL_CALLER") {
         fu.stage = "CALL_LATER";
       }
+      syncJourneyEventsInStore(store, { followupId: fid });
       await saveStore(env, store);
       return reply(200, { stage: fu.stage });
     }
@@ -3782,6 +3883,7 @@ async function handleApiRequest(request, url, env) {
         if (fu && !fu.next_followup_on) fu.next_followup_on = addDaysIso(todayIstStr(), 30);
       }
     }
+    if (rec.followup_id) syncJourneyEventsInStore(store, { followupId: rec.followup_id });
     recordAudit(store, me, `program_${decision.toLowerCase()}`, "program_recommendation", rec.id);
     await saveStore(env, store);
     return reply(200, {
@@ -4366,7 +4468,8 @@ async function handleApiRequest(request, url, env) {
     journey_templates: DEFAULT_JOURNEY_TEMPLATES,
     retest_protocols: DEFAULT_RETEST_PROTOCOLS,
     retest_tiers: DEFAULT_RETEST_TIERS,
-    protocol_bundles: DEFAULT_PROTOCOL_BUNDLES
+    protocol_bundles: DEFAULT_PROTOCOL_BUNDLES,
+    message_templates: DEFAULT_MESSAGE_TEMPLATES
   };
 
   if (path === "/rules" && method === "GET") {
@@ -4464,7 +4567,8 @@ export default {
       // LabTrace only pulls when the "Repeat Lab Sync Every (minutes)" setting says it is time.
       ctx.waitUntil((async () => {
         const store = await getStore(env);
-        if (refillTickInStore(store) + retestReminderTickInStore(store) + slaTickInStore(store) > 0) await saveStore(env, store);
+        const jTick = schedulerTickInStore(store);
+        if (refillTickInStore(store) + retestReminderTickInStore(store) + slaTickInStore(store) + jTick.due + jTick.overdue + jTick.tasks + jTick.messages > 0) await saveStore(env, store);
         if (!labtraceConfigured(env)) return;
         const every = Number(store.settings.pull_every_minutes) || 0;
         const last = Date.parse((store.labtrace_last_pull && store.labtrace_last_pull.at) || "") || 0;

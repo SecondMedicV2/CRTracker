@@ -10,6 +10,7 @@ import ComparisonPanel from "@/components/ComparisonPanel";
 import ConditionsMonitoringCard from "@/components/ConditionsMonitoringCard";
 import ExtendedCareTabs from "@/components/ExtendedCareTabs";
 import HealthProfileCard from "@/components/HealthProfileCard";
+import JourneyTimeline from "@/components/JourneyTimeline";
 import ProgramsPanel from "@/components/ProgramsPanel";
 import TierBadge from "@/components/TierBadge";
 import Trends from "@/components/Trends";
@@ -82,6 +83,7 @@ function PatientInner({ id }: { id: string }) {
         </table>
       </TableFrame>
       <ComparisonPanel endpoint={`/patients/${id}/compare`} refreshKey={refreshKey} onUpdated={() => setRefreshKey((n) => n + 1)} />
+      <JourneyTimeline patientId={id} role={role} refreshKey={refreshKey} onChanged={() => setRefreshKey((n) => n + 1)} />
       <Trends patientId={id} />
       <CareLoopCard patientId={id} role={role} refreshKey={refreshKey} />
       <ConditionsMonitoringCard patientId={id} role={role} refreshKey={refreshKey} onChanged={() => setRefreshKey((n) => n + 1)} />

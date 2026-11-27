@@ -100,6 +100,7 @@ function createSeedStore() {
         collected_on: "2026-05-10T08:00:00Z",
         status: "READY",
         source: "labtrace",
+        labtrace_work_order_id: "WO-041",
         confidence: null,
         needs_review: false,
         review_reasons: [],
@@ -431,6 +432,32 @@ Total Cholesterol PHOTOMETRY 210 mg/dL <200`,
     ADMIN_PASSWORD: "AdminPassword123!",
     GOOGLE_API_KEY: "test-google-api-key",
   };
+}
+
+// Stands in for LabTrace (sign-in, report list, a tiny PDF) and fails every other outbound call,
+// so extraction runs the real PDF path instead of a shortcut.
+async function withLabTraceStub(env, fn) {
+  const realFetch = globalThis.fetch;
+  env.LABTRACE_LOGIN_ID = "master";
+  env.LABTRACE_PASSWORD = "secret";
+  globalThis.fetch = async (input, init) => {
+    const url = String(input?.url || input);
+    if (url.endsWith("/api/auth/login")) {
+      return new Response(JSON.stringify({ role: "master_manager" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Set-Cookie": "session=abc; Path=/; HttpOnly" },
+      });
+    }
+    if (url.includes("/api/reports?workOrderId=")) {
+      return new Response(JSON.stringify([{ pdf_url: "data:application/pdf;base64,JVBERi0xLjUK" }]), { status: 200 });
+    }
+    return new Response("{}", { status: 503 });
+  };
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 }
 
 async function fetchRoute(workerInstance, env, method, path, { cookie, body, headers = {} } = {}) {
@@ -1107,9 +1134,9 @@ describe("Tier 3: Cross-Feature Interactions (X1 to X6)", () => {
     const { doctorCookie } = await getAuthCookies(worker, env);
 
     // 1. Trigger extraction on Report 41
-    const extractRes = await fetchRoute(worker, env, "POST", "/api/v1/reports/41/extract", {
+    const extractRes = await withLabTraceStub(env, () => fetchRoute(worker, env, "POST", "/api/v1/reports/41/extract", {
       cookie: doctorCookie,
-    });
+    }));
     assert.ok([200, 201].includes(extractRes.status), "Extraction should return 200 or 201");
 
     // 2. Verify KV report_params:41 is populated
@@ -1279,9 +1306,9 @@ describe("Tier 4: Real-World Application Scenarios (S1 to S5)", () => {
     assert.strictEqual(preRep.parameters?.length || 0, 0);
 
     // 2. Trigger backfill / on-demand extract
-    const extractRes = await fetchRoute(worker, env, "POST", "/api/v1/reports/41/extract", {
+    const extractRes = await withLabTraceStub(env, () => fetchRoute(worker, env, "POST", "/api/v1/reports/41/extract", {
       cookie: adminCookie,
-    });
+    }));
     assert.ok([200, 201].includes(extractRes.status));
 
     // 3. Parameters saved in KV and report classification updated
@@ -1446,5 +1473,82 @@ describe("Tier 4: Real-World Application Scenarios (S1 to S5)", () => {
     assert.strictEqual(callerCardRes.status, 200);
     const ccBody = await callerCardRes.json();
     assert.ok(ccBody.script);
+  });
+});
+
+describe("PDF extraction: Workers AI fallback", () => {
+  const ODD_LAYOUT = `THYROCARE REPORT
+Patient Name: John Doe
+Mobile: 9876500001
+TEST NAME TECHNOLOGY VALUE UNITS
+HbA1c
+Fasting Blood Sugar
+H.P.L.C
+PHOTOMETRY
+7.2
+115
+%
+mg/dL`;
+
+  it("uses AI-read values that are printed in the PDF, drops invented ones, and sends the report for review", async () => {
+    const env = createMockEnv();
+    delete env.GOOGLE_API_KEY;
+    const prompts = [];
+    env.AI.toMarkdown = async () => [{ name: "report.pdf", format: "text", data: ODD_LAYOUT }];
+    env.AI.run = async (_model, input) => {
+      prompts.push(input.messages.map((m) => m.content).join("\n"));
+      return {
+        response: {
+          parameters: [
+            { name: "HbA1c", value: "7.2", unit: "%", ref_range: "<5.7" },
+            { name: "Fasting Blood Sugar", value: "115", unit: "mg/dL", ref_range: "70-100" },
+            { name: "Vitamin D", value: "18.4", unit: "ng/mL", ref_range: "30-100" },
+          ],
+        },
+      };
+    };
+    const { adminCookie } = await getAuthCookies(worker, env);
+    const res = await withLabTraceStub(env, () =>
+      fetchRoute(worker, env, "POST", "/api/v1/reports/41/extract", { cookie: adminCookie })
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.parameters.map((p) => p.param_name_raw).sort(), ["Fasting Blood Sugar", "HbA1c"]);
+    assert.equal(body.report.extract_status, "DONE");
+    assert.equal(body.report.needs_review, true);
+    assert.ok(body.report.review_reasons.some((r) => /read by AI/.test(r)));
+    assert.equal(prompts.length, 1);
+    assert.ok(!prompts[0].includes("John"), "patient name must not reach the AI");
+    assert.ok(!prompts[0].includes("9876500001"), "mobile must not reach the AI");
+  });
+
+  it("marks NO_VALUES (not 'scanned') when the text was read but no values were found", async () => {
+    const env = createMockEnv();
+    delete env.GOOGLE_API_KEY;
+    env.AI.toMarkdown = async () => [{ name: "report.pdf", format: "text", data: "Some report text with no results in it at all." }];
+    env.AI.run = async () => ({ response: { parameters: [] } });
+    const { adminCookie } = await getAuthCookies(worker, env);
+    const res = await withLabTraceStub(env, () =>
+      fetchRoute(worker, env, "POST", "/api/v1/reports/41/extract", { cookie: adminCookie })
+    );
+    const body = await res.json();
+    assert.equal(body.parameters.length, 0);
+    assert.equal(body.report.extract_status, "NO_VALUES");
+    assert.equal(body.report.extract_version, 3);
+  });
+
+  it("keeps the report retryable (FAILED) when the AI reader errors", async () => {
+    const env = createMockEnv();
+    delete env.GOOGLE_API_KEY;
+    env.AI.toMarkdown = async () => [{ name: "report.pdf", format: "text", data: ODD_LAYOUT }];
+    env.AI.run = async () => { throw new Error("daily limit"); };
+    const { adminCookie } = await getAuthCookies(worker, env);
+    const res = await withLabTraceStub(env, () =>
+      fetchRoute(worker, env, "POST", "/api/v1/reports/41/extract", { cookie: adminCookie })
+    );
+    const body = await res.json();
+    assert.equal(body.parameters.length, 0);
+    assert.equal(body.report.extract_status, "FAILED");
+    assert.match(body.report.extract_error, /retry/);
   });
 });

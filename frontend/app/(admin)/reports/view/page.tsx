@@ -30,7 +30,10 @@ function ReportViewInner({ id }: { id: string }) {
     setExtracting(true);
     setMsg("");
     try {
-      await api(`/reports/${id}/extract`, { method: "POST" });
+      const res = await api<any>(`/reports/${id}/extract`, { method: "POST" });
+      if (!res?.parameters?.length) {
+        setMsg(res?.report?.extract_error || "No test values could be read from this PDF.");
+      }
       reload();
     } catch (err: any) {
       setMsg(err.message || "Failed to read values from PDF.");
@@ -203,13 +206,15 @@ function ReportViewInner({ id }: { id: string }) {
               {parameters.length === 0 ? (
                 <span className="font-semibold text-amber-700">
                   {r.extract_status === "PENDING"
-                    ? "Reading the PDF…"
+                    ? "Waiting to be read — click 'Read values from PDF' to read it now."
                     : r.extract_status === "NO_TEXT"
                     ? "PDF has no readable text (scanned). Open the PDF and enter values."
+                    : r.extract_status === "NO_VALUES"
+                    ? "No test values could be found in the PDF text. Open the PDF and enter values."
                     : r.extract_status === "NO_PDF"
                     ? "PDF not in LabTrace yet — will retry automatically."
                     : r.extract_status === "FAILED"
-                    ? "Could not read the PDF — retry."
+                    ? `Could not read the PDF${r.extract_error ? ` (${r.extract_error})` : ""} — retry.`
                     : "No test results read from the PDF yet."}
                 </span>
               ) : invalidParams.length > 0 ? (

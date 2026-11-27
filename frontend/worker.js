@@ -800,7 +800,8 @@ const EXTRACT_SYSTEM_PROMPT = `You copy lab test results out of the text of a pa
 Return JSON: {"collected_on": ISO date or null, "reported_on": ISO date or null, "parameters": [{"name", "value", "unit", "ref_range"}]}.
 - One entry per measured test, exactly as printed: do not convert units, round, guess, or add tests that are not in the text.
 - value is the printed result (a number, or text such as "Negative"); ref_range is the printed reference range, or "".
-- Skip headings, method/technology names, comments and interpretation notes.`;
+- Skip headings, method/technology names, comments, interpretation notes and reference tables (e.g. pregnancy trimester ranges).
+- The text may be glued together with no spaces, with each row in reverse column order: RANGE UNIT VALUE TECHNOLOGY NAME, e.g. "0.54-5.30μIU/mL4.61E.C.L.I.ATSH - ULTRASENSITIVE" means name "TSH - ULTRASENSITIVE", value "4.61", unit "μIU/mL", ref_range "0.54-5.30".`;
 
 async function extractText(env, pdfBytes) {
   if (!env?.AI || typeof env.AI.toMarkdown !== "function") {
@@ -866,46 +867,40 @@ async function processLabtraceReport(env, store, report, ltSession, suppliedBody
       const pdf = await labtraceReportPdf(env, report.labtrace_work_order_id, report.thyrocare_patient_id, ltSession);
       text = await extractText(env, pdf);
     } catch (err) {
-      if (env?.AI && typeof env.AI.toMarkdown === "function") {
-        try {
-          const mockPdf = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 53]);
-          text = await extractText(env, mockPdf);
-        } catch (_) {}
+      report.classification = null;
+      report.abnormal_count = null;
+      report.confidence = null;
+      report.needs_review = true;
+      if (err instanceof ExtractError) {
+        report.extract_status = "NO_TEXT";
+      } else if (err instanceof LabTraceError && err.status === 404) {
+        report.extract_status = "NO_PDF";
+      } else {
+        report.extract_status = "FAILED";
       }
-      if (!text) {
-        report.classification = null;
-        report.abnormal_count = null;
-        report.confidence = null;
-        report.needs_review = true;
-        if (err instanceof ExtractError) {
-          report.extract_status = "NO_TEXT";
-        } else if (err instanceof LabTraceError && err.status === 404) {
-          report.extract_status = "NO_PDF";
-        } else {
-          report.extract_status = "FAILED";
-        }
-        report.extract_error = "Could not read the PDF.";
-        await kvDelete(env, `report_params:${report.id}`);
-        return;
-      }
+      // LabTraceError / ExtractError messages never carry patient data.
+      report.extract_error = (err instanceof LabTraceError || err instanceof ExtractError) ? err.message : "Could not read the PDF.";
+      await kvDelete(env, `report_params:${report.id}`);
+      return;
     }
   }
 
   let result;
   try {
     result = await extractAndClassifyReport(env, report, text, store, suppliedParams);
-  } catch (_) {
+  } catch (err) {
     report.classification = null;
     report.abnormal_count = null;
     report.confidence = null;
     report.needs_review = true;
     report.extract_status = "FAILED";
-    report.extract_error = "Extraction failed.";
+    report.extract_error = err instanceof AiUnavailableError ? err.message : "Extraction failed.";
     await kvDelete(env, `report_params:${report.id}`);
     return;
   }
 
   const now = new Date().toISOString();
+  report.extract_version = EXTRACTOR_VERSION;
   if (result.parameters && result.parameters.length > 0) {
     await kvPut(env, `report_params:${report.id}`, result.parameters);
     report.extract_status = "DONE";
@@ -940,8 +935,8 @@ async function processLabtraceReport(env, store, report, ltSession, suppliedBody
     report.abnormal_count = null;
     report.confidence = null;
     report.needs_review = true;
-    report.extract_status = text ? "NO_TEXT" : "NO_PDF";
-    report.extract_error = "No parameters found.";
+    report.extract_status = text ? "NO_VALUES" : "NO_PDF";
+    report.extract_error = "No test values found in the PDF text.";
     await kvDelete(env, `report_params:${report.id}`);
     report.status = "NEEDS_REVIEW";
   }
@@ -1044,6 +1039,71 @@ async function geminiExtract(env, report, sourceText) {
   }
 }
 
+// Bump when the readers change so reports that found nothing are read again once.
+const EXTRACTOR_VERSION = 3;
+const WORKERS_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+const AI_TEXT_LIMIT = 24000;
+
+async function workersAiExtract(env, report, sourceText) {
+  if (!env?.AI || typeof env.AI.run !== "function") return null;
+  const safeText = redactPII(sourceText, { name: report?.patient_name, mobile: report?.mobile }).slice(0, AI_TEXT_LIMIT);
+  if (!safeText.trim()) return null;
+  try {
+    const out = await env.AI.run(WORKERS_AI_MODEL, {
+      messages: [
+        { role: "system", content: EXTRACT_SYSTEM_PROMPT },
+        { role: "user", content: safeText }
+      ],
+      temperature: 0,
+      max_tokens: 4096,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          type: "object",
+          properties: {
+            collected_on: { type: ["string", "null"] },
+            reported_on: { type: ["string", "null"] },
+            parameters: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  value: { type: "string" },
+                  unit: { type: "string" },
+                  ref_range: { type: "string" }
+                },
+                required: ["name", "value", "unit", "ref_range"]
+              }
+            }
+          },
+          required: ["parameters"]
+        }
+      }
+    });
+    let parsed = out?.response ?? out;
+    if (typeof parsed === "string") parsed = JSON.parse(parsed);
+    return parsed && Array.isArray(parsed.parameters) ? parsed : { failed: true };
+  } catch (_) {
+    // Busy, over the daily allowance, or unreadable output: worth another try later.
+    return { failed: true };
+  }
+}
+
+class AiUnavailableError extends Error {}
+
+async function aiExtract(env, report, sourceText) {
+  return (await geminiExtract(env, report, sourceText)) || (await workersAiExtract(env, report, sourceText));
+}
+
+// An AI-read value is kept only when that exact value is printed in the PDF text.
+function valueInSource(param, sourceText) {
+  const textVal = normalizedValueText(param);
+  if (!textVal || !sourceText) return false;
+  const compact = sourceText.replace(/\s+/g, "");
+  return compact.includes(textVal) || compact.includes(textVal.replace(/,/g, ""));
+}
+
 function normalizedTestName(name) {
   return String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -1135,12 +1195,34 @@ async function extractAndClassifyReport(env, report, text, store, suppliedParams
 
   let secondaryReview = null;
   if (text) {
-    const gemini = await geminiExtract(env, report, text);
-    if (gemini?.parameters) {
-      const geminiParams = gemini.parameters.map((p, index) =>
-        normalizeExtractedParam(p, index + 1, rules.aliases)
-      );
-      secondaryReview = crossCheckParams(params, geminiParams, text);
+    const ai = await aiExtract(env, report, text);
+    // Counts only (no report text): shows ops why a reading came back empty.
+    const lines = text.split(String.fromCharCode(10));
+    report.extract_stats = {
+      chars: text.length,
+      lines: lines.length,
+      longest_line: lines.reduce((m, l) => Math.max(m, l.length), 0),
+      redacted_chars: redactPII(text, { name: report?.patient_name, mobile: report?.mobile }).length,
+      rule_values: params.length,
+      ai_values: Array.isArray(ai?.parameters) ? ai.parameters.length : null
+    };
+    if (ai?.failed && params.length === 0) {
+      throw new AiUnavailableError("The AI reader is unavailable right now; it will retry automatically.");
+    }
+    if (ai?.parameters) {
+      const aiParams = ai.parameters
+        .map((p, index) => normalizeExtractedParam(p, index + 1, rules.aliases))
+        .filter((p) => p.param_name_raw && valueInSource(p, text));
+      if (params.length === 0 && aiParams.length > 0) {
+        // The rule-based reader did not recognise this layout: use the AI reading, always for review.
+        params = aiParams;
+        secondaryReview = {
+          needs_review: true,
+          review_reasons: ["Test values were read by AI from the PDF text: check them against the PDF before approving."]
+        };
+      } else if (params.length > 0) {
+        secondaryReview = crossCheckParams(params, aiParams, text);
+      }
     }
   }
 
@@ -4760,6 +4842,12 @@ export default {
           if (r.source === "labtrace") {
             const hasParams = Boolean(await kvGet(env, `report_params:${r.id}`));
             const st = (r.extract_status || "PENDING").toUpperCase();
+            if (!hasParams && ["NO_TEXT", "NO_VALUES"].includes(st) && (Number(r.extract_version) || 1) < EXTRACTOR_VERSION) {
+              r.extract_status = "PENDING";
+              r.extract_attempts = 0;
+              pending.push(r);
+              continue;
+            }
             const attempts = Number(r.extract_attempts) || 0;
             if (!hasParams && attempts < 5 && ["PENDING", "NO_PDF", "FAILED", ""].includes(st)) {
               pending.push(r);

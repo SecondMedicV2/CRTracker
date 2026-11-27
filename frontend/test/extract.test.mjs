@@ -757,3 +757,61 @@ Total Cholesterol 240 mg/dL <200
     assert.strictEqual(bodyClean.report.needs_review, false);
   });
 });
+
+describe("extractParameters: table cells split across lines", () => {
+  it("re-joins name / technology / value / unit / range printed on separate lines", () => {
+    const text = [
+      "TOTAL CHOLESTEROL", "PHOTOMETRY", "166", "mg/dL", "< 200",
+      "HDL CHOLESTEROL - DIRECT", "PHOTOMETRY", "42", "mg/dL", "40-60",
+      "HbA1c H.P.L.C 7.2 % <5.7",
+      "Please correlate with clinical history.",
+    ].join("\n");
+    const params = extractParameters(text);
+    assert.deepEqual(
+      params.map((p) => [p.param_name_raw, p.value_num, p.unit, p.ref_low, p.ref_high]),
+      [
+        ["TOTAL CHOLESTEROL", 166, "mg/dL", null, 200],
+        ["HDL CHOLESTEROL - DIRECT", 42, "mg/dL", 40, 60],
+        ["HbA1c", 7.2, "%", null, 5.7],
+      ]
+    );
+  });
+
+  it("does not pull the next single-line result into a split row", () => {
+    const text = ["Lipid Profile", "TRIGLYCERIDES PHOTOMETRY 120 mg/dL < 150"].join("\n");
+    const params = extractParameters(text);
+    assert.equal(params.length, 1);
+    assert.equal(params[0].param_name_raw, "TRIGLYCERIDES");
+  });
+});
+
+describe("Thyrocare glued layout (text converter output)", () => {
+  const GLUED = [
+    "Patient Name : TESTPERSON (40Y/F)",
+    "Mobile : 9000000001",
+    "TEST NAME TECHNOLOGY VALUE UNITS Bio. Ref. Interval.0.54-5.30μIU/mL4.61E.C.L.I.ATSH - ULTRASENSITIVEComments :",
+    "The Biological Reference Ranges is specific to the age group.",
+    "TEST NAME TECHNOLOGY VALUE UNITS Bio. Ref. Interval.<5.7%6.1H.P.L.CHbA1c70-100mg/dL115PHOTOMETRYFASTING BLOOD SUGAR(GLUCOSE)Comments :",
+    "Trimester || T3 (ng/dl) || T4 (μg/dl) || TSH/USTSH (μIU/ml)",
+    "1st || 81.2-244.2 || 6.6-12.4 || 0.1-2.5",
+  ].join("\n");
+
+  it("reads rows printed as RANGE UNIT VALUE TECHNOLOGY NAME with no spaces", () => {
+    const params = extractParameters(GLUED);
+    assert.deepEqual(
+      params.map((p) => [p.param_name_raw, p.param_code, p.value_num, p.unit, p.ref_low, p.ref_high]),
+      [
+        ["TSH - ULTRASENSITIVE", "TSH", 4.61, "μIU/mL", 0.54, 5.3],
+        ["HbA1c", "HBA1C", 6.1, "%", null, 5.7],
+        ["FASTING BLOOD SUGAR(GLUCOSE)", canonicalCode("FASTING BLOOD SUGAR(GLUCOSE)"), 115, "mg/dL", 70, 100],
+      ]
+    );
+  });
+
+  it("redaction keeps the result line but drops name and mobile lines", () => {
+    const out = redactPII(GLUED, { name: "TESTPERSON", mobile: "9000000001" });
+    assert.ok(out.includes("4.61E.C.L.I.ATSH"));
+    assert.ok(!out.includes("TESTPERSON"));
+    assert.ok(!out.includes("9000000001"));
+  });
+});

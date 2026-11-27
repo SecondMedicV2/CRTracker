@@ -25,6 +25,10 @@ export const NAV: { label: string; items: NavItem[] }[] = [
     { href: "/dialer", label: "Manual dialer", roles: ["ADMIN", "CALLER", "DOCTOR"], description: "Manual outbound dialing via MyOperator." },
   ] },
   { label: "Administration", items: [
+    { href: "/relationship", label: "Relationship scorecard", roles: ["ADMIN"], description: "Patient relationship lifecycle scorecard." },
+    { href: "/relationship/loop", label: "Health loop", roles: ["ADMIN"], description: "Care touchpoint loop & retention analysis." },
+    { href: "/care-plans", label: "Care plans", roles: ["ADMIN", "DOCTOR"], description: "Manage clinical care plans and patient enrollments." },
+    { href: "/memberships", label: "Memberships", roles: ["ADMIN"], description: "Health360 memberships & corporate billing." },
     { href: "/users", label: "Users", roles: ["ADMIN"] },
     { href: "/doctors", label: "Doctors", roles: ["ADMIN"] },
     { href: "/retesting-protocol", label: "Retesting protocol", roles: ["ADMIN"], description: "5-tier urgency windows, SLAs, and open counts." },

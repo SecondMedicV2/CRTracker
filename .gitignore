@@ -8,3 +8,13 @@ storage/
 out/
 .wrangler/
 .dev.vars
+.vscode/settings.json
+scripts/log_err.txt
+scripts/log_out.txt
+scripts/activity.json
+scripts/build_activity_workbook.py
+scripts/build_task_log.py
+scripts/collect_activity.py
+reports/daily-qa-audit-*.md
+frontend/tsconfig.tsbuildinfo
+

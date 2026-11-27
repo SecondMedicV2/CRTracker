@@ -202,6 +202,9 @@ def signoff(key: str, request: Request, db: Session = Depends(get_db), me: User 
     if not r:
         raise HTTPException(404, "No such rule set")
     r.signed_off_by, r.signed_off_at = me.id, datetime.now(timezone.utc)
+    if key == "retest_protocols":
+        from .. import retest_model
+        retest_model.sync_signed_off_protocol_plans(db, r.version)
     db.commit()
     audit(db, request, me.id, "signoff", "rule_set", f"{key}:v{r.version}")
     return rule_out(r, with_data=False)

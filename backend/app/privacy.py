@@ -70,6 +70,12 @@ def export_patient(db: Session, pid: int) -> dict:
         md.pop("prescribed_by_enc", None)
         meds.append(md)
     flinks = list(db.scalars(select(FamilyLink).where(or_(FamilyLink.patient_id.in_(x["patients"]), FamilyLink.related_patient_id.in_(x["patients"])))))
+    retest_recs = []
+    for r in rows(RetestRecommendation, RetestRecommendation.followup_id, x["followups"]):
+        rd = plain(r)
+        rd["address"] = storage.decrypt_str(r.address_enc) if getattr(r, "address_enc", "") else ""
+        rd.pop("address_enc", None)
+        retest_recs.append(rd)
     return {"patients": people, "orders": [plain(o) for o in x["orders"]], "reports": reports,
             "followups": [plain(f) for f in rows(Followup, Followup.id, x["followups"])],
             "buckets": [plain(b) for b in rows(PatientBucket, PatientBucket.patient_id, x["patients"])],
@@ -78,7 +84,7 @@ def export_patient(db: Session, pid: int) -> dict:
             "calls": [plain(c) for c in rows(CallLog, CallLog.followup_id, x["followups"])],
             "comments": [plain(c) for c in rows(Comment, Comment.followup_id, x["followups"])],
             "appointments": [plain(a) for a in rows(Appointment, Appointment.followup_id, x["followups"])],
-            "retest_recommendations": [plain(r) for r in rows(RetestRecommendation, RetestRecommendation.followup_id, x["followups"])],
+            "retest_recommendations": retest_recs,
             "care_touchpoints": [plain(t) for t in rows(CareTouchpoint, CareTouchpoint.patient_id, x["patients"])],
             "health_profiles": profiles,
             "program_recommendations": [plain(r) for r in rows(ProgramRecommendation, ProgramRecommendation.patient_id, x["patients"])],

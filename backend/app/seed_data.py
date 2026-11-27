@@ -18,25 +18,25 @@ REFERENCE_RANGES = {
 
 # Test catalogue: our own codes. Thyrocare product codes and prices are TBD (Q13).
 TEST_CATALOGUE = [
-    {"code": "HBA1C", "name": "HbA1c"},
-    {"code": "FBS", "name": "Fasting Blood Sugar"},
-    {"code": "PPBS", "name": "Post-Prandial Blood Sugar"},
-    {"code": "LIPID", "name": "Lipid Profile"},
-    {"code": "THYROID", "name": "Thyroid Profile"},
-    {"code": "TSH", "name": "TSH"},
-    {"code": "FT4", "name": "Free T4"},
-    {"code": "CBC", "name": "Complete Blood Count"},
-    {"code": "RETIC", "name": "Reticulocytes"},
-    {"code": "IRON", "name": "Iron Studies"},
-    {"code": "VITD", "name": "Vitamin D"},
-    {"code": "CALCIUM", "name": "Calcium"},
-    {"code": "B12", "name": "Vitamin B12"},
-    {"code": "KFT", "name": "Kidney Function Test"},
-    {"code": "EGFR", "name": "eGFR"},
-    {"code": "ELECTROLYTES", "name": "Electrolytes"},
-    {"code": "URINE_ROUTINE", "name": "Urine Routine"},
-    {"code": "UACR", "name": "Urine Albumin-to-Creatinine Ratio"},
-    {"code": "LFT", "name": "Liver Function Test"},
+    {"code": "HBA1C", "name": "HbA1c", "price_inr": 400},
+    {"code": "FBS", "name": "Fasting Blood Sugar", "price_inr": 120},
+    {"code": "PPBS", "name": "Post-Prandial Blood Sugar", "price_inr": 120},
+    {"code": "LIPID", "name": "Lipid Profile", "price_inr": 600},
+    {"code": "THYROID", "name": "Thyroid Profile", "price_inr": 500},
+    {"code": "TSH", "name": "TSH", "price_inr": 300},
+    {"code": "FT4", "name": "Free T4", "price_inr": 350},
+    {"code": "CBC", "name": "Complete Blood Count", "price_inr": 300},
+    {"code": "RETIC", "name": "Reticulocytes", "price_inr": 350},
+    {"code": "IRON", "name": "Iron Studies", "price_inr": 650},
+    {"code": "VITD", "name": "Vitamin D", "price_inr": 900},
+    {"code": "CALCIUM", "name": "Calcium", "price_inr": 250},
+    {"code": "B12", "name": "Vitamin B12", "price_inr": 750},
+    {"code": "KFT", "name": "Kidney Function Test", "price_inr": 550},
+    {"code": "EGFR", "name": "eGFR", "price_inr": 350},
+    {"code": "ELECTROLYTES", "name": "Electrolytes", "price_inr": 400},
+    {"code": "URINE_ROUTINE", "name": "Urine Routine", "price_inr": 200},
+    {"code": "UACR", "name": "Urine Albumin-to-Creatinine Ratio", "price_inr": 600},
+    {"code": "LFT", "name": "Liver Function Test", "price_inr": 550},
 ]
 
 # Triggers name canonical params; trigger rules are evaluated in Phase 5.
@@ -707,6 +707,100 @@ CONDITION_PROTOCOLS = [
 RETEST_PROTOCOLS = RETEST_PROTOCOLS + CONDITION_PROTOCOLS
 
 
+PROTOCOL_BUNDLES = [
+    {
+        "code": "DIABETES",
+        "name": "Diabetes",
+        "caller_label": "Follow-up care package",
+        "window_text": "90 days",
+        "retest_protocol_code": "HIGH_HBA1C",
+        "window_min_days": 90,
+        "window_max_days": 90,
+        "tests": ["HBA1C", "FBS"],
+        "note": "starter value, clinician and business to confirm",
+        "services": [
+            {"type": "DIAGNOSTICS", "label": "Diagnostics", "loop_stage": "DIAGNOSTICS", "service_code": "HOME_COLLECTION", "tests": ["HBA1C", "FBS"], "price_inr": 520},
+            {"type": "PHYSICIAN_CONSULT", "label": "Physician Consult", "loop_stage": "CONSULTATIONS", "service_code": "TELECONSULT", "price_inr": 499},
+            {"type": "PHARMACY", "label": "Pharmacy", "loop_stage": "MEDICATIONS", "service_code": "PHARMACY_REFILL", "only_if_active_medicine": True, "price_inr": 500},
+            {"type": "NUTRITION", "label": "Nutrition", "loop_stage": "EATING_WELL", "service_code": "DIETITIAN_PLAN", "price_inr": 999},
+        ],
+    },
+    {
+        "code": "THYROID",
+        "name": "Thyroid",
+        "caller_label": "Follow-up care package",
+        "window_text": "6\u20138 weeks after treatment changes",
+        "retest_protocol_code": "HIGH_TSH",
+        "window_min_days": 42,
+        "window_max_days": 56,
+        "tests": ["TSH", "FT4"],
+        "note": "starter value, clinician and business to confirm",
+        "services": [
+            {"type": "DIAGNOSTICS", "label": "Diagnostics", "loop_stage": "DIAGNOSTICS", "service_code": "HOME_COLLECTION", "tests": ["TSH", "FT4"], "price_inr": 650},
+            {"type": "PHYSICIAN_CONSULT", "label": "Physician Consult", "loop_stage": "CONSULTATIONS", "service_code": "TELECONSULT", "price_inr": 499},
+            {"type": "PHARMACY", "label": "Pharmacy", "loop_stage": "MEDICATIONS", "service_code": "PHARMACY_REFILL", "only_if_active_medicine": True, "price_inr": 500},
+            {"type": "NUTRITION", "label": "Nutrition", "loop_stage": "EATING_WELL", "service_code": "DIETITIAN_PLAN", "price_inr": 999},
+        ],
+    },
+    {
+        "code": "LIPIDS",
+        "name": "Lipids",
+        "caller_label": "Follow-up care package",
+        "window_text": "4\u201312 weeks after treatment changes",
+        "retest_protocol_code": "HIGH_CHOLESTEROL",
+        "window_min_days": 28,
+        "window_max_days": 84,
+        "tests": ["LIPID"],
+        "note": "starter value, clinician and business to confirm",
+        "services": [
+            {"type": "DIAGNOSTICS", "label": "Diagnostics", "loop_stage": "DIAGNOSTICS", "service_code": "HOME_COLLECTION", "tests": ["LIPID"], "price_inr": 600},
+            {"type": "PHYSICIAN_CONSULT", "label": "Physician Consult", "loop_stage": "CONSULTATIONS", "service_code": "TELECONSULT", "price_inr": 499},
+            {"type": "PHARMACY", "label": "Pharmacy", "loop_stage": "MEDICATIONS", "service_code": "PHARMACY_REFILL", "only_if_active_medicine": True, "price_inr": 500},
+            {"type": "NUTRITION", "label": "Nutrition", "loop_stage": "EATING_WELL", "service_code": "DIETITIAN_PLAN", "price_inr": 999},
+        ],
+    },
+    {
+        "code": "IRON_DEFICIENCY_ANEMIA",
+        "name": "Iron-deficiency anemia",
+        "caller_label": "Follow-up care package",
+        "window_text": "2\u20134 weeks",
+        "retest_protocol_code": "LOW_HB",
+        "window_min_days": 14,
+        "window_max_days": 28,
+        "tests": ["CBC", "IRON"],
+        "note": "starter value, clinician and business to confirm",
+        "services": [
+            {"type": "DIAGNOSTICS", "label": "Diagnostics", "loop_stage": "DIAGNOSTICS", "service_code": "HOME_COLLECTION", "tests": ["CBC", "IRON"], "price_inr": 950},
+            {"type": "PHYSICIAN_CONSULT", "label": "Physician Consult", "loop_stage": "CONSULTATIONS", "service_code": "TELECONSULT", "price_inr": 499},
+            {"type": "PHARMACY", "label": "Pharmacy", "loop_stage": "MEDICATIONS", "service_code": "PHARMACY_REFILL", "only_if_active_medicine": True, "price_inr": 500},
+            {"type": "NUTRITION", "label": "Nutrition", "loop_stage": "EATING_WELL", "service_code": "DIETITIAN_PLAN", "price_inr": 999},
+        ],
+    },
+    {
+        "code": "VITAMIN_D",
+        "name": "Vitamin D",
+        "caller_label": "Follow-up care package",
+        "window_text": "8\u201312 weeks when indicated",
+        "retest_protocol_code": "LOW_VITD",
+        "window_min_days": 56,
+        "window_max_days": 84,
+        "tests": ["VITD", "CALCIUM"],
+        "note": "starter value, clinician and business to confirm",
+        "services": [
+            {"type": "DIAGNOSTICS", "label": "Diagnostics", "loop_stage": "DIAGNOSTICS", "service_code": "HOME_COLLECTION", "tests": ["VITD", "CALCIUM"], "price_inr": 1150},
+            {"type": "PHYSICIAN_CONSULT", "label": "Physician Consult", "loop_stage": "CONSULTATIONS", "service_code": "TELECONSULT", "price_inr": 499},
+            {"type": "PHARMACY", "label": "Pharmacy", "loop_stage": "MEDICATIONS", "service_code": "PHARMACY_REFILL", "only_if_active_medicine": True, "price_inr": 500},
+            {"type": "NUTRITION", "label": "Nutrition", "loop_stage": "EATING_WELL", "service_code": "DIETITIAN_PLAN", "price_inr": 999},
+        ],
+    },
+]
+
+HEALTH_HUBS_STARTER = [
+    {"name": "SecondMedic Health Hub — Andheri West", "city": "Mumbai", "address": "Link Road, Andheri West, Mumbai", "active": True, "opening_hours": "07:00-19:00"},
+    {"name": "SecondMedic Health Hub — Koramangala", "city": "Bengaluru", "address": "80 Feet Road, Koramangala, Bengaluru", "active": True, "opening_hours": "07:00-19:00"},
+]
+
+
 RULE_SETS = {
     "script_templates": SCRIPT_TEMPLATES,
     "caller_script_forbidden": CALLER_FORBIDDEN,
@@ -730,4 +824,5 @@ RULE_SETS = {
     "journey_templates": JOURNEY_TEMPLATES,
     "retest_protocols": RETEST_PROTOCOLS,
     "retest_tiers": RETEST_TIERS,
+    "protocol_bundles": PROTOCOL_BUNDLES,
 }

@@ -106,7 +106,12 @@ def build(db: Session, order: Order) -> Followup | None:
     if order.status != status.READY or not order.patient_id:
         return None
     report = db.scalar(select(Report).where(Report.order_id == order.id))
-    if not report or report.classification != "ABNORMAL":
+    if not report:
+        return None
+    from . import retest_model
+    retest_model.match_completed_plans(db, order.patient_id, report)
+    if report.classification != "ABNORMAL":
+        db.commit()
         return None  # normal patients get no call by default (Part 7.4)
     fu = db.scalar(select(Followup).where(Followup.report_id == report.id))
     if fu and fu.stage != "NOT_CALLED":

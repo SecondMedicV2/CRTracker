@@ -24,6 +24,7 @@ import {
   suggestConditionsInStore,
   toIstDateStr,
 } from "../lib/retest.js";
+import { matchCompletedPlansInStore } from "../lib/retestModel.js";
 
 function createTestEnv() {
   const kv = new Map();
@@ -648,5 +649,127 @@ describe("Smart Diagnostics Pages 1-4 Worker Parity", () => {
     assert.ok(calCard.comparison_date);
     const calBlob = JSON.stringify(calCard).toLowerCase();
     assert.ok(!calBlob.includes("8.2") && !calBlob.includes("7.1") && !calBlob.includes("hba1c") && !calBlob.includes("metformin"));
+  });
+
+  it("enforces Page 12 7-step approved model, encrypted booking, bundles, auto-close, explain & KPIs in Edge Worker", async () => {
+    const env = createTestEnv();
+    const adminCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD })).headers.get("set-cookie").split(";")[0];
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Dr", email: "doc@sm.com", password: "DoctorPassword123!", role: "DOCTOR" });
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Cal", email: "cal@sm.com", password: "CallerPassword123!", role: "CALLER" });
+    const docCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "doc@sm.com", password: "DoctorPassword123!" })).headers.get("set-cookie").split(";")[0];
+    const calCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "cal@sm.com", password: "CallerPassword123!" })).headers.get("set-cookie").split(";")[0];
+    const today = todayIstStr();
+    const d90 = addDaysIso(today, -90);
+    const d105 = addDaysIso(today, -105);
+
+    const st0 = await env.CRTRACKER_DATA.get("app_state_v5", "json");
+    st0.patients = [
+      { id: 1, name: "Asha R", gender: "F", age: 42, mobile: "9810000001", language: "en" },
+      { id: 2, name: "Rohan V", gender: "M", age: 48, mobile: "9810000002", language: "en" },
+      { id: 3, name: "Tariq A", gender: "M", age: 51, mobile: "9810000003", language: "en" },
+    ];
+    st0.reports = [
+      { id: 1, order_id: "ORD-1", patient_id: 1, patient_name: "Asha R", gender: "F", status: "READY", collected_on: `${d90}T08:00:00Z`, classification: "ABNORMAL" },
+      { id: 2, order_id: "ORD-2", patient_id: 2, patient_name: "Rohan V", gender: "M", status: "READY", collected_on: `${d105}T08:00:00Z`, classification: "ABNORMAL" },
+      { id: 3, order_id: "ORD-3", patient_id: 3, patient_name: "Tariq A", gender: "M", status: "READY", collected_on: `${d90}T08:00:00Z`, classification: "ABNORMAL" },
+    ];
+    st0.followups = [
+      { id: 1, report_id: 1, patient_id: 1, patient_name: "Asha R", priority: "ROUTINE", stage: "QUEUED", buckets: ["DIABETES"], due_on: today, retest_window_start: today, retest_window_end: today, retest_plan: { primary_finding: { finding_code: "HIGH_HBA1C" }, default_tests: ["HBA1C", "FBS"] } },
+      { id: 2, report_id: 2, patient_id: 2, patient_name: "Rohan V", priority: "ROUTINE", stage: "QUEUED", buckets: ["DIABETES"], due_on: addDaysIso(today, -15), retest_window_start: addDaysIso(today, -15), retest_window_end: addDaysIso(today, -15), retest_plan: { primary_finding: { finding_code: "HIGH_HBA1C" }, default_tests: ["HBA1C"] } },
+      { id: 3, report_id: 3, patient_id: 3, patient_name: "Tariq A", priority: "ROUTINE", stage: "QUEUED", buckets: ["LIPID"], due_on: addDaysIso(today, 30), retest_window_start: addDaysIso(today, 30), retest_window_end: addDaysIso(today, 30), retest_plan: { primary_finding: { finding_code: "HIGH_CHOLESTEROL" }, default_tests: ["LIPID"] } },
+    ];
+    st0.patient_medications = [{ id: 1, patient_id: 1, medicine_code: "METFORMIN", stopped_on: null }];
+    await env.CRTRACKER_DATA.put("app_state_v5", JSON.stringify(st0));
+    await env.CRTRACKER_DATA.put("report_params:1", JSON.stringify([{ id: 1, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 8.2, unit: "%", system_flag: "HIGH" }]));
+    await env.CRTRACKER_DATA.put("report_params:2", JSON.stringify([{ id: 2, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 8.6, unit: "%", system_flag: "HIGH" }]));
+    await env.CRTRACKER_DATA.put("report_params:3", JSON.stringify([{ id: 3, param_code: "LDL", param_name_raw: "LDL", value_num: 190, unit: "mg/dL", system_flag: "HIGH" }]));
+
+    // 1. Unapproved plan cannot be booked (409); only DOCTOR can approve
+    const p1Res = await (await req(env, "GET", "/api/v1/followups/1/retest-plan", docCookie)).json();
+    assert.strictEqual(p1Res.approved, false);
+    assert.strictEqual(p1Res.steps.length, 7);
+    assert.ok(p1Res.tests.every((t) => !("price_inr" in t)));
+
+    const hubs = await (await req(env, "GET", "/api/v1/health-hubs", calCookie)).json();
+    assert.ok(hubs.length >= 2);
+    assert.strictEqual((await req(env, "POST", `/api/v1/retest-recommendations/${p1Res.id}/book`, calCookie, { collection_mode: "HEALTH_HUB", health_hub_id: hubs[0].id })).status, 409);
+    assert.strictEqual((await req(env, "POST", `/api/v1/retest-recommendations/${p1Res.id}/approve`, adminCookie)).status, 403);
+    assert.strictEqual((await req(env, "POST", `/api/v1/retest-recommendations/${p1Res.id}/approve`, calCookie)).status, 403);
+
+    const app1 = await (await req(env, "POST", `/api/v1/retest-recommendations/${p1Res.id}/approve`, docCookie)).json();
+    assert.strictEqual(app1.approved, true);
+
+    // 2. Caller view + encrypted HOME booking
+    const calPlan = await (await req(env, "GET", "/api/v1/followups/1/retest-plan", calCookie)).json();
+    assert.strictEqual(calPlan.label, "Follow-up test");
+    assert.ok(!JSON.stringify(calPlan).toLowerCase().includes("hba1c"));
+    assert.ok(!JSON.stringify(calPlan).toLowerCase().includes("8.2"));
+
+    const homeBook = await req(env, "POST", `/api/v1/retest-recommendations/${p1Res.id}/book`, calCookie, {
+      collection_mode: "HOME",
+      address: "742 Evergreen Terrace, Mumbai",
+    });
+    assert.strictEqual(homeBook.status, 200);
+    const hbData = await homeBook.json();
+    assert.strictEqual(hbData.booking_status, "BOOKED");
+    assert.strictEqual(hbData.has_address, true);
+    const stMid = await env.CRTRACKER_DATA.get("app_state_v5", "json");
+    assert.ok(!JSON.stringify(stMid.recommendations).includes("742 Evergreen"));
+
+    // 3. Bundle accept: Patient 1 has active Metformin -> includes PHARMACY; Patient 2 has no meds -> excludes PHARMACY
+    assert.strictEqual((await req(env, "POST", "/api/v1/followups/1/bundles/DIABETES/accept", adminCookie)).status, 403);
+    const b1 = await (await req(env, "POST", "/api/v1/followups/1/bundles/DIABETES/accept", docCookie)).json();
+    assert.ok(b1.services.includes("PHARMACY"));
+    const b2 = await (await req(env, "POST", "/api/v1/followups/2/bundles/DIABETES/accept", docCookie)).json();
+    assert.ok(!b2.services.includes("PHARMACY"));
+    await req(env, "POST", `/api/v1/retest-recommendations/${b2.plan_id}/book`, adminCookie, { collection_mode: "HEALTH_HUB", health_hub_id: hubs[0].id });
+
+    // 4. Explain EN & HI + Caller blocked
+    assert.strictEqual((await req(env, "GET", `/api/v1/retest-recommendations/${p1Res.id}/explain?lang=en`, calCookie)).status, 403);
+    const expHi = await (await req(env, "GET", `/api/v1/retest-recommendations/${p1Res.id}/explain?lang=hi`, docCookie)).json();
+    assert.strictEqual(expHi.language, "hi");
+    assert.ok(expHi.patient_message);
+
+    // 5. Auto-close READY reports -> Patient 1 IN_WINDOW, Patient 2 LATE (<=30d)
+    const st2 = await env.CRTRACKER_DATA.get("app_state_v5", "json");
+    const r4 = { id: 4, order_id: "ORD-4", patient_id: 1, patient_name: "Asha R", gender: "F", status: "READY", collected_on: `${today}T08:00:00Z`, classification: "ABNORMAL" };
+    const r5 = { id: 5, order_id: "ORD-5", patient_id: 2, patient_name: "Rohan V", gender: "M", status: "READY", collected_on: `${today}T08:00:00Z`, classification: "ABNORMAL" };
+    st2.reports.push(r4, r5);
+    const p4 = [{ id: 10, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 7.1, unit: "%", system_flag: "HIGH" }];
+    const p5 = [{ id: 11, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 7.5, unit: "%", system_flag: "HIGH" }];
+    const pMap = {
+      1: [{ id: 1, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 8.2, unit: "%", system_flag: "HIGH" }],
+      2: [{ id: 2, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 8.6, unit: "%", system_flag: "HIGH" }],
+      4: p4,
+      5: p5,
+    };
+    matchCompletedPlansInStore(st2, 1, r4, p4, pMap);
+    matchCompletedPlansInStore(st2, 2, r5, p5, pMap);
+    await env.CRTRACKER_DATA.put("app_state_v5", JSON.stringify(st2));
+    await env.CRTRACKER_DATA.put("report_params:4", JSON.stringify(p4));
+    await env.CRTRACKER_DATA.put("report_params:5", JSON.stringify(p5));
+
+    const p1After = await (await req(env, "GET", "/api/v1/followups/1/retest-plan", adminCookie)).json();
+    const p2After = await (await req(env, "GET", "/api/v1/followups/2/retest-plan", docCookie)).json();
+    assert.strictEqual(p1After.plan_status, "COMPLETED_IN_WINDOW");
+    assert.strictEqual(p1After.tests_total_inr, 520);
+    assert.strictEqual(p2After.plan_status, "COMPLETED_LATE");
+
+    // 6. KPI RBAC & numbers (Patient 3 unapproved excluded)
+    assert.strictEqual((await req(env, "GET", "/api/v1/kpis/retesting", docCookie)).status, 403);
+    assert.strictEqual((await req(env, "GET", "/api/v1/kpis/retesting", calCookie)).status, 403);
+    const kpiJson = await (await req(env, "GET", `/api/v1/kpis/retesting?from=${addDaysIso(today, -120)}&to=${today}`, adminCookie)).json();
+    const elig = kpiJson.kpis.find((k) => k.key === "eligibility_rate");
+    const comp = kpiJson.kpis.find((k) => k.key === "completion_rate");
+    const rev = kpiJson.kpis.find((k) => k.key === "repeat_revenue");
+    assert.strictEqual(elig.numerator, 2);
+    assert.strictEqual(elig.denominator, 3);
+    assert.strictEqual(comp.numerator, 1);
+    assert.strictEqual(comp.denominator, 2);
+    assert.strictEqual(rev.value, 1040); // 520 (Asha HBA1C+FBS) + 520 (Rohan HBA1C+FBS)
+
+    const csvRes = await req(env, "GET", `/api/v1/kpis/retesting.csv?from=${addDaysIso(today, -120)}&to=${today}`, adminCookie);
+    assert.strictEqual(csvRes.status, 200);
+    assert.ok((await csvRes.text()).includes("Retesting eligibility rate"));
   });
 });

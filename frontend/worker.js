@@ -86,6 +86,20 @@ import {
   confirmDay90InStore,
   hasComparisonInStore,
 } from "./lib/compare.js";
+import {
+  DEFAULT_PROTOCOL_BUNDLES,
+  HEALTH_HUBS_STARTER,
+  acceptBundleInStore,
+  approvePlanInStore,
+  bookPlanInStore,
+  computeKpisInStore,
+  ensureHubs,
+  ensurePlanForFollowupInStore,
+  explainPlanInStore,
+  matchCompletedPlansInStore,
+  planOutInStore,
+  syncSignedOffProtocolPlansInStore,
+} from "./lib/retestModel.js";
 
 function consentingFamilySummaries(store, patientId) {
   const links = (store.family_links || []).filter((l) => l.patient_id === patientId);
@@ -232,6 +246,7 @@ async function syncProgramsInStore(env, store, patientId, reportId, params, nowI
       } else if (exRec.source === "PROTOCOL" && !exRec.ordered) {
         exRec.test_codes = rPlan.default_tests;
       }
+      ensurePlanForFollowupInStore(store, fu, { report: args.report, params: args.params });
     }
   }
   if (newConsider) {
@@ -591,6 +606,8 @@ function forbidden(path, method, role) {
     if ((method === "POST" || method === "DELETE") && /^\/patients\/\d+\/conditions(\/|$)/.test(path)) return true;
     if (method === "POST" && /^\/clinical-tasks\/\d+\/complete$/.test(path)) return true;
     if (method === "POST" && /^\/followups\/\d+\/journey\/day90-confirm$/.test(path)) return true;
+    if (method === "POST" && /^\/retest-recommendations\/\d+\/approve$/.test(path)) return true;
+    if (method === "POST" && /^\/followups\/\d+\/bundles\/[^/]+\/accept$/.test(path)) return true;
     return false;
   }
   if (/^\/(imports|users|admin|audit|integrations|orders)(\/|$)/.test(path)) {
@@ -598,13 +615,16 @@ function forbidden(path, method, role) {
     return true;
   }
   if (path === "/relationship/summary") return true;
+  if (/^\/kpis\/retesting(\.csv)?$/.test(path)) return true;
+  if (method !== "GET" && /^\/health-hubs(\/|$)/.test(path)) return true;
   if (role === "DOCTOR" && method === "POST" && /^\/rules\/[a-zA-Z0-9_]+\/signoff$/.test(path)) return false;
   if (method !== "GET" && /^\/(settings|rules|doctors)(\/|$)/.test(path)) return true;
   if (role === "CALLER") {
     if (method === "GET" && /^\/patients\/\d+\/(relationship|programs|referrals)$/.test(path)) return false;
     if (/^\/reports\/\d+\/insight(?:\/|$)/.test(path) && method === "GET") return false;
     if (/^\/(settings|rules)(\/|$)/.test(path)) return true;
-    if (/^\/followups\/\d+\/(recommendations|compare|journey\/day90-confirm)$/.test(path)) return true;
+    if (/^\/followups\/\d+\/(recommendations|compare|journey\/day90-confirm|bundles)/.test(path)) return true;
+    if (/^\/retest-recommendations\/\d+\/(approve|explain|ordered)$/.test(path)) return true;
     if (/^\/(reports|patients|trends|exports\/trends|touchpoints|program-recommendations|medicines|home-visits|family-links|clinical-tasks|monitoring-schedules)(\/|$)/.test(path)) return true;
   }
   return false;
@@ -1295,7 +1315,9 @@ function getDefaultStore() {
     monitoring_schedules: [],
     clinical_tasks: [],
     family_links: [],
-    family_consents: []
+    family_consents: [],
+    recommendations: {},
+    health_hubs: HEALTH_HUBS_STARTER.map((h) => ({ ...h }))
   };
 }
 
@@ -1360,6 +1382,8 @@ async function getStore(env) {
         if (!data.clinical_tasks) data.clinical_tasks = [];
         if (!data.family_links) data.family_links = [];
         if (!data.family_consents) data.family_consents = [];
+        if (!data.recommendations) data.recommendations = {};
+        ensureHubs(data);
         if (!data.followups) data.followups = [];
         for (const r of data.reports || []) {
           if (r.status === "READY" && !data.followups.some((f) => f.report_id === r.id)) {
@@ -1839,6 +1863,8 @@ async function handleApiRequest(request, url, env) {
     store.clinical_tasks = [];
     store.family_links = [];
     store.family_consents = [];
+    store.recommendations = {};
+    ensureHubs(store);
     store.dashboard = {
       from: "",
       to: "",
@@ -2179,6 +2205,7 @@ async function handleApiRequest(request, url, env) {
     if (rep.patient_id) {
       syncTouchpointsInStore(store, rep.patient_id);
       await syncProgramsInStore(env, store, rep.patient_id, rid, sampleParams);
+      matchCompletedPlansInStore(store, rep.patient_id, rep, sampleParams, await loadParamsByReport(rep.patient_id));
     }
     await saveStore(env, store);
     return reply(200, { ok: true, parameters: sampleParams, confidence: 90 });
@@ -2242,6 +2269,7 @@ async function handleApiRequest(request, url, env) {
       const pList = (await kvGet(env, `report_params:${rid}`)) || [];
       syncTouchpointsInStore(store, rep.patient_id);
       await syncProgramsInStore(env, store, rep.patient_id, rid, pList);
+      matchCompletedPlansInStore(store, rep.patient_id, rep, pList, await loadParamsByReport(rep.patient_id));
     }
     await saveStore(env, store);
     return reply(200, { ok: true, status: "READY" });
@@ -2483,12 +2511,153 @@ async function handleApiRequest(request, url, env) {
       if (rec.id === rid) {
         rec.ordered = true;
         rec.ordered_ref = b.ordered_ref || "";
+        if (!rec.booking_status || rec.booking_status === "NOT_BOOKED") rec.booking_status = "BOOKED";
         const fu = store.followups.find((f) => f.id === Number(fid));
         if (fu) fu.stage = "RETEST_ORDERED";
       }
     }
     await saveStore(env, store);
     return reply(200, { ordered: true });
+  }
+
+  // --- HEALTH HUBS, PLAN APPROVAL, BOOKING, EXPLAIN & KPIs (Page 12) ---
+  if (path === "/health-hubs" && method === "GET") {
+    const hubs = ensureHubs(store);
+    const inc = url.searchParams.get("include_inactive") === "true" && me.role === "ADMIN";
+    return reply(200, hubs.filter((h) => inc || h.active !== false));
+  }
+  if (path === "/health-hubs" && method === "POST") {
+    const hubs = ensureHubs(store);
+    const b = await request.json().catch(() => ({}));
+    const name = String(b.name || "").trim().slice(0, 120);
+    if (!name) return reply(422, { detail: "Hub name is required" });
+    const hub = {
+      id: nextId(hubs),
+      name,
+      city: String(b.city || "").trim().slice(0, 80),
+      address: String(b.address || "").trim().slice(0, 240),
+      active: b.active !== false,
+      opening_hours: String(b.opening_hours || "07:00-19:00").trim().slice(0, 80),
+    };
+    hubs.push(hub);
+    recordAudit(store, me, "create", "health_hub", hub.id);
+    await saveStore(env, store);
+    return reply(201, hub);
+  }
+  const hubPatchMatch = path.match(/^\/health-hubs\/(\d+)$/);
+  if (hubPatchMatch && method === "PATCH") {
+    const hid = parseInt(hubPatchMatch[1], 10);
+    const hubs = ensureHubs(store);
+    const hub = hubs.find((h) => h.id === hid);
+    if (!hub) return reply(404, { detail: "No such health hub" });
+    const b = await request.json().catch(() => ({}));
+    if (b.name !== undefined && String(b.name).trim()) hub.name = String(b.name).trim().slice(0, 120);
+    if (b.city !== undefined) hub.city = String(b.city || "").trim().slice(0, 80);
+    if (b.address !== undefined) hub.address = String(b.address || "").trim().slice(0, 240);
+    if (b.active !== undefined) hub.active = Boolean(b.active);
+    if (b.opening_hours !== undefined) hub.opening_hours = String(b.opening_hours || "").trim().slice(0, 80);
+    recordAudit(store, me, "update", "health_hub", hub.id);
+    await saveStore(env, store);
+    return reply(200, hub);
+  }
+
+  const planByRecId = (rid) => {
+    for (const rec of Object.values(store.recommendations || {})) {
+      if (rec && rec.id === rid) return rec;
+    }
+    return null;
+  };
+
+  const recApproveMatch = path.match(/^\/retest-recommendations\/(\d+)\/approve$/);
+  if (recApproveMatch && method === "POST") {
+    const rid = parseInt(recApproveMatch[1], 10);
+    const plan = planByRecId(rid);
+    if (!plan) return reply(404, { detail: "No such retest plan" });
+    const fu = store.followups.find((f) => f.id === plan.followup_id);
+    if (!fu) return reply(404, { detail: "No follow-up" });
+    const pList = fu.report_id ? ((await kvGet(env, `report_params:${fu.report_id}`)) || []) : [];
+    approvePlanInStore(store, plan, me.id, { params: pList });
+    const paramsMap = fu.patient_id ? await loadParamsByReport(fu.patient_id) : {};
+    recordAudit(store, me, "approve", "retest_plan", plan.id);
+    await saveStore(env, store);
+    return reply(200, planOutInStore(store, plan, fu, { role: me.role, params: pList, paramsByReport: paramsMap, secret: env.SESSION_SECRET || "crtracker-edge-key" }));
+  }
+
+  const recBookMatch = path.match(/^\/retest-recommendations\/(\d+)\/book$/);
+  if (recBookMatch && method === "POST") {
+    const rid = parseInt(recBookMatch[1], 10);
+    const plan = planByRecId(rid);
+    if (!plan) return reply(404, { detail: "No such retest plan" });
+    const fu = store.followups.find((f) => f.id === plan.followup_id);
+    if (!fu) return reply(404, { detail: "No follow-up" });
+    const b = await request.json().catch(() => ({}));
+    try {
+      bookPlanInStore(store, plan, b, { secret: env.SESSION_SECRET || "crtracker-edge-key" });
+    } catch (err) {
+      return reply(err.status || 422, { detail: err.message });
+    }
+    const pList = fu.report_id ? ((await kvGet(env, `report_params:${fu.report_id}`)) || []) : [];
+    const paramsMap = fu.patient_id ? await loadParamsByReport(fu.patient_id) : {};
+    recordAudit(store, me, "book", "retest_plan", `${plan.id}:${plan.collection_mode}`);
+    await saveStore(env, store);
+    return reply(200, planOutInStore(store, plan, fu, { role: me.role, params: pList, paramsByReport: paramsMap, secret: env.SESSION_SECRET || "crtracker-edge-key" }));
+  }
+
+  const recExplainMatch = path.match(/^\/retest-recommendations\/(\d+)\/explain$/);
+  if (recExplainMatch && method === "GET") {
+    const rid = parseInt(recExplainMatch[1], 10);
+    const plan = planByRecId(rid);
+    if (!plan) return reply(404, { detail: "No such retest plan" });
+    const fu = store.followups.find((f) => f.id === plan.followup_id);
+    if (!fu) return reply(404, { detail: "No follow-up" });
+    const lang = url.searchParams.get("lang") || "en";
+    const pList = fu.report_id ? ((await kvGet(env, `report_params:${fu.report_id}`)) || []) : [];
+    const paramsMap = fu.patient_id ? await loadParamsByReport(fu.patient_id) : {};
+    recordAudit(store, me, "explain", "retest_plan", `${plan.id}:${String(lang).slice(0, 5)}`);
+    await saveStore(env, store);
+    return reply(200, explainPlanInStore(store, plan, fu, { lang, params: pList, paramsByReport: paramsMap }));
+  }
+
+  if (path === "/kpis/retesting" && method === "GET") {
+    const from = url.searchParams.get("from") || "";
+    const to = url.searchParams.get("to") || "";
+    const hub = url.searchParams.get("hub");
+    const protocol = url.searchParams.get("protocol") || "";
+    const data = computeKpisInStore(store, { from, to, hubId: hub ? parseInt(hub, 10) : null, protocol });
+    recordAudit(store, me, "view", "retest_kpis", `${data.from}:${data.to}`);
+    await saveStore(env, store);
+    return reply(200, data);
+  }
+
+  if (path === "/kpis/retesting.csv" && method === "GET") {
+    const from = url.searchParams.get("from") || "";
+    const to = url.searchParams.get("to") || "";
+    const hub = url.searchParams.get("hub");
+    const protocol = url.searchParams.get("protocol") || "";
+    const data = computeKpisInStore(store, { from, to, hubId: hub ? parseInt(hub, 10) : null, protocol });
+    let csvText = "KPI,Numerator,Denominator,Value,Unit,Trend,Definition,Business significance\n";
+    for (const k of data.kpis) {
+      csvText += [
+        `"${sanitizeCsvCell(k.name)}"`,
+        k.numerator,
+        k.denominator,
+        k.value !== null && k.value !== undefined ? `"${sanitizeCsvCell(String(k.value))}"` : '""',
+        `"${sanitizeCsvCell(k.unit)}"`,
+        `"${sanitizeCsvCell(k.trend)}"`,
+        `"${sanitizeCsvCell(k.definition)}"`,
+        `"${sanitizeCsvCell(k.business_significance)}"`,
+      ].join(",") + "\n";
+    }
+    recordAudit(store, me, "export_csv", "retest_kpis", `${data.from}:${data.to}`);
+    await saveStore(env, store);
+    return new Response(csvText, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": 'attachment; filename="retesting-kpis.csv"',
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
   if (path === "/rules/test_catalogue" || path === "/rules/test-catalogue") {
@@ -2637,6 +2806,42 @@ async function handleApiRequest(request, url, env) {
       recordAudit(store, me, "day90_confirm", "followup", `${fid}:${b.clinically_appropriate ? 1 : 0}`);
       await saveStore(env, store);
       return reply(200, { followup_id: fid, journey: j });
+    }
+    if (sub === "/retest-plan" && method === "GET") {
+      const fu = store.followups.find((f) => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      const rep = fu.report_id ? (store.reports || []).find((r) => r.id === fu.report_id) : null;
+      const pList = rep ? ((await kvGet(env, `report_params:${rep.id}`)) || []) : [];
+      if (!fu.retest_plan && fu.retest_status !== "OVERRIDDEN") {
+        planRetestInStore(store, fu, { report: rep, params: pList });
+      }
+      const plan = ensurePlanForFollowupInStore(store, fu, { report: rep, params: pList });
+      const paramsMap = fu.patient_id ? await loadParamsByReport(fu.patient_id) : {};
+      recordAudit(store, me, "view", "retest_plan", plan.id);
+      await saveStore(env, store);
+      return reply(200, planOutInStore(store, plan, fu, { role: me.role, params: pList, paramsByReport: paramsMap, secret: env.SESSION_SECRET || "crtracker-edge-key" }));
+    }
+    const bundleMatch = sub.match(/^\/bundles\/([^/]+)\/accept$/);
+    if (bundleMatch && method === "POST") {
+      const fu = store.followups.find((f) => f.id === fid);
+      if (!fu) return reply(404, { detail: "Follow-up not found." });
+      const rep = fu.report_id ? (store.reports || []).find((r) => r.id === fu.report_id) : null;
+      const pList = rep ? ((await kvGet(env, `report_params:${rep.id}`)) || []) : [];
+      let res;
+      try {
+        res = acceptBundleInStore(store, fu, decodeURIComponent(bundleMatch[1]), me.id, { params: pList });
+      } catch (err) {
+        return reply(err.status || 422, { detail: err.message });
+      }
+      const paramsMap = fu.patient_id ? await loadParamsByReport(fu.patient_id) : {};
+      recordAudit(store, me, "accept_bundle", "protocol_bundle", `${res.plan_id}:${res.bundle_code}`);
+      await saveStore(env, store);
+      return reply(200, {
+        plan_id: res.plan_id,
+        bundle_code: res.bundle_code,
+        services: res.services,
+        plan: planOutInStore(store, res.plan, fu, { role: me.role, params: pList, paramsByReport: paramsMap, secret: env.SESSION_SECRET || "crtracker-edge-key" }),
+      });
     }
     if (!sub && method === "GET") {
       if (me.role === "CALLER" && !store.settings?.caller_can_view_results) {
@@ -2986,9 +3191,12 @@ async function handleApiRequest(request, url, env) {
           if (exRec && exRec.source === "PROTOCOL") {
             exRec.test_codes = b.retest_codes;
             exRec.source = "DOCTOR";
+            exRec.doctor_id = me.id;
+            exRec.approved_by_doctor_id = me.id;
           } else {
-            store.recommendations[fid] = { id: nextId(Object.values(store.recommendations || {})), followup_id: fid, test_codes: b.retest_codes, ordered: false, ordered_ref: "", source: "DOCTOR" };
+            store.recommendations[fid] = { id: nextId(Object.values(store.recommendations || {})), followup_id: fid, doctor_id: me.id, approved_by_doctor_id: me.id, test_codes: b.retest_codes, ordered: false, ordered_ref: "", source: "DOCTOR" };
           }
+          ensurePlanForFollowupInStore(store, fu);
         }
         if (b.next_followup_on) {
           const nf = String(b.next_followup_on).slice(0, 10);
@@ -4157,7 +4365,8 @@ async function handleApiRequest(request, url, env) {
     next_action_rules: DEFAULT_NEXT_ACTION_RULES,
     journey_templates: DEFAULT_JOURNEY_TEMPLATES,
     retest_protocols: DEFAULT_RETEST_PROTOCOLS,
-    retest_tiers: DEFAULT_RETEST_TIERS
+    retest_tiers: DEFAULT_RETEST_TIERS,
+    protocol_bundles: DEFAULT_PROTOCOL_BUNDLES
   };
 
   if (path === "/rules" && method === "GET") {
@@ -4209,6 +4418,7 @@ async function handleApiRequest(request, url, env) {
       signed_off_by: me.id,
       signed_off_at: new Date().toISOString()
     };
+    if (key === "retest_protocols") syncSignedOffProtocolPlansInStore(store, store.rules[key].version);
     await saveStore(env, store);
     return reply(200, store.rules[key]);
   }

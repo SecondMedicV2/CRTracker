@@ -304,8 +304,13 @@ def doctor_outcome(fid: int, body: DoctorOutcome, request: Request, db: Session 
                 RetestRecommendation.followup_id == fid, RetestRecommendation.source == "PROTOCOL"))
             if proto_rec:
                 proto_rec.test_codes, proto_rec.doctor_id, proto_rec.source = codes, (mine.id if mine else None), "DOCTOR"
+                target_rec = proto_rec
             else:
-                db.add(RetestRecommendation(followup_id=fid, doctor_id=mine.id if mine else None, test_codes=codes))
+                target_rec = RetestRecommendation(followup_id=fid, doctor_id=mine.id if mine else None, test_codes=codes)
+                db.add(target_rec)
+                db.flush()
+            from .. import retest_model
+            retest_model.sync_plan_fields(db, target_rec, f, doctor_id=me.id)
             f.stage = "RETEST_RECOMMENDED"
         f.next_followup_on = body.next_followup_on
         if body.next_followup_on and f.retest_status == "DOCTOR_TO_SET":

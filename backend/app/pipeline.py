@@ -18,6 +18,8 @@ def conclude(db: Session, order: Order, report: Report) -> None:
     held = identity.resolve(db, order, report) == "pending"
     status.move(order, status.PENDING_IDENTITY if held else status.READY)
     if not held:
+        from . import retest_model
+        retest_model.match_completed_plans(db, order.patient_id, report)
         fu = followup.build(db, order)
         try:
             from . import ai_insights, findings, programs, relationship

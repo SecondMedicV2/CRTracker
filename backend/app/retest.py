@@ -316,7 +316,15 @@ def _sync_default_recommendation(db: Session, followup: Followup, test_codes: li
         if not existing.ordered:
             existing.test_codes = clean_codes
     elif not db.scalar(select(RetestRecommendation.id).where(RetestRecommendation.followup_id == followup.id).limit(1)):
-        db.add(RetestRecommendation(followup_id=followup.id, doctor_id=None, test_codes=clean_codes, source="PROTOCOL"))
+        existing = RetestRecommendation(followup_id=followup.id, doctor_id=None, test_codes=clean_codes, source="PROTOCOL")
+        db.add(existing)
+        db.flush()
+
+
+def _sync_retest_model_plans(db: Session, followup: Followup, rules: dict) -> None:
+    from . import retest_model as rm
+    for rec in db.scalars(select(RetestRecommendation).where(RetestRecommendation.followup_id == followup.id)):
+        rm.sync_plan_fields(db, rec, followup, rules=rules)
 
 
 def notify_urgent(db: Session, followup: Followup) -> None:
@@ -493,6 +501,7 @@ def plan_retest(db: Session, followup: Followup, *, state: dict[str, Any] | None
     plan.update(prev_day90)
     followup.retest_plan = plan
     db.flush()
+    _sync_retest_model_plans(db, followup, rules)
     if notify_urgent and protocol_tier == "URGENT":
         globals()["notify_urgent"](db, followup)
     return plan
@@ -524,6 +533,7 @@ def override_retest(db: Session, followup: Followup, *, window_start: date, wind
     followup.retest_status = "OVERRIDDEN"
     followup.retest_plan = plan
     db.flush()
+    _sync_retest_model_plans(db, followup, rules)
     return plan
 
 

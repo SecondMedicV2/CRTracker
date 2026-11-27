@@ -39,6 +39,85 @@ type CallerCardData = {
   do_not_say: string[];
 };
 
+function FollowupBookingCard({ fid }: { fid: string }) {
+  const [plan, setPlan] = useState<any>(null);
+  const [hubs, setHubs] = useState<any[]>([]);
+  const [mode, setMode] = useState<"HOME" | "HEALTH_HUB">("HOME");
+  const [address, setAddress] = useState("");
+  const [hubId, setHubId] = useState("");
+  const [slot, setSlot] = useState("");
+  const [msg, setMsg] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api<any>(`/followups/${fid}/retest-plan`).then((d) => {
+      setPlan(d);
+      if (d.collection_mode) setMode(d.collection_mode);
+      if (d.health_hub_id) setHubId(String(d.health_hub_id));
+    }).catch(() => {});
+    api<any[]>("/health-hubs").then(setHubs).catch(() => {});
+  }, [fid]);
+
+  if (!plan) return null;
+
+  async function submitBook(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setMsg("");
+    try {
+      const updated = await api<any>(`/retest-recommendations/${plan.id}/book`, {
+        method: "POST",
+        body: {
+          collection_mode: mode,
+          ...(mode === "HEALTH_HUB" ? { health_hub_id: Number(hubId) } : { address }),
+          ...(slot ? { slot_start: new Date(slot).toISOString() } : {}),
+        },
+      });
+      setPlan(updated);
+      setMsg("Follow-up test booking saved.");
+    } catch (err: any) {
+      setMsg(err.message || "Could not save booking");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section aria-labelledby="caller-booking-heading" className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <h3 id="caller-booking-heading" className="text-sm font-semibold text-slate-900">{plan.label || "Follow-up test"}</h3>
+        <span className="rounded bg-slate-100 px-2 py-0.5 font-semibold text-slate-700">{plan.booking_status || "NOT_BOOKED"}</span>
+      </div>
+      {plan.window_start && (
+        <p className="text-slate-600">Window: {plan.window_start}{plan.window_end && plan.window_end !== plan.window_start ? ` to ${plan.window_end}` : ""}</p>
+      )}
+      {!plan.approved && <p className="font-medium text-amber-800">Waiting for clinician approval before booking.</p>}
+      <form onSubmit={submitBook} className="space-y-2">
+        <div className="flex gap-3">
+          <label className="flex items-center gap-1"><input type="radio" name={`caller-mode-${fid}`} checked={mode === "HOME"} onChange={() => setMode("HOME")} /> Home pickup</label>
+          <label className="flex items-center gap-1"><input type="radio" name={`caller-mode-${fid}`} checked={mode === "HEALTH_HUB"} onChange={() => setMode("HEALTH_HUB")} /> Health Hub</label>
+        </div>
+        {mode === "HOME" ? (
+          <input type="text" placeholder="Patient address for home visit" className="w-full rounded border border-slate-300 px-2 py-1" value={address} onChange={(e) => setAddress(e.target.value)} />
+        ) : (
+          <select className="w-full rounded border border-slate-300 px-2 py-1" value={hubId} onChange={(e) => setHubId(e.target.value)}>
+            <option value="">Select Health Hub…</option>
+            {hubs.map((h) => <option key={h.id} value={h.id}>{h.name} ({h.city})</option>)}
+          </select>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <input type="datetime-local" className="rounded border border-slate-300 px-2 py-1" value={slot} onChange={(e) => setSlot(e.target.value)} />
+          <button type="submit" disabled={saving || !plan.approved || (mode === "HOME" ? !address.trim() : !hubId)} className="rounded bg-teal-800 px-3 py-1 font-semibold text-white disabled:opacity-40">
+            Book follow-up test
+          </button>
+        </div>
+      </form>
+      {msg && <p role="status" className="font-medium text-teal-900">{msg}</p>}
+    </section>
+  );
+}
+
+
 function CallerCardInner({ id }: { id: string }) {
   const { data: c, error, reload } = useApi<CallerCardData>(`/followups/${id}/caller-card`);
   const [rel, setRel] = useState<{ status: string; next_step?: { caller_label: string } | null } | null>(null);
@@ -151,7 +230,10 @@ function CallerCardInner({ id }: { id: string }) {
             <ul className="mt-2 list-disc space-y-1 pl-5">{c.do_not_say.map((text, i) => <li key={i}>{text}</li>)}</ul>
           </details>
         </section>
-        <Actions fid={id} />
+        <div className="space-y-4">
+          <Actions fid={id} />
+          <FollowupBookingCard fid={id} />
+        </div>
       </div>
     </div>
   );

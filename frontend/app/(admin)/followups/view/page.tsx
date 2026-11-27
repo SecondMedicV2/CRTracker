@@ -51,7 +51,7 @@ function FollowupViewInner({ id }: { id: string }) {
         </label>
       </div>
       {me.data && <CallCard fid={id} role={me.data.role} />}
-      <RetestPlan followup={f} onUpdated={reload} />
+      <RetestPlan followup={f} role={me.data?.role} onUpdated={reload} />
       <ComparisonPanel endpoint={`/followups/${id}/compare`} refreshKey={refreshKey} onUpdated={reload} />
       {f.patient_id && <Trends patientId={f.patient_id} />}
       <DoctorActions fid={id} />

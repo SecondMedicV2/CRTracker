@@ -92,6 +92,10 @@ const RULE_METADATA: Record<string, { title: string; desc: string }> = {
   retest_tiers: {
     title: "Retesting Protocol Urgency Tiers (5 Tiers)",
     desc: "Urgent, Early follow-up, Treatment response, Metabolic follow-up, and Long-term monitoring windows, SLAs, colours, and neutral caller labels."
+  },
+  protocol_bundles: {
+    title: "Integrated Protocol Bundles & Service Pricing (Page 12)",
+    desc: "Clinically approved 5 condition bundles linking Diagnostics, Physician Consult, conditional Pharmacy (active meds), and Nutrition."
   }
 };
 

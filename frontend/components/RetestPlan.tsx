@@ -1,7 +1,15 @@
 "use client";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import TierBadge from "@/components/TierBadge";
+
+const BUNDLE_OPTIONS = [
+  ["DIABETES", "Diabetes"],
+  ["THYROID", "Thyroid"],
+  ["LIPIDS", "Lipids"],
+  ["IRON_DEFICIENCY_ANEMIA", "Iron-deficiency anemia"],
+  ["VITAMIN_D", "Vitamin D"],
+] as const;
 
 const REASON_CODES = [
   ["CLINICAL_JUDGMENT", "Clinical judgment"],
@@ -63,7 +71,7 @@ function WindowBar({ start, end, status }: { start?: string | null; end?: string
   );
 }
 
-export default function RetestPlan({ followup, onUpdated }: { followup: any; onUpdated: () => void }) {
+export default function RetestPlan({ followup, role, onUpdated }: { followup: any; role?: string; onUpdated: () => void }) {
   const plan = followup.retest_plan || {};
   const primary = plan.primary_finding;
   const findings: any[] = Array.isArray(plan.findings) ? plan.findings : [];
@@ -78,6 +86,97 @@ export default function RetestPlan({ followup, onUpdated }: { followup: any; onU
   const [overrideNotes, setOverrideNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+
+  const [modelPlan, setModelPlan] = useState<any>(null);
+  const [hubs, setHubs] = useState<any[]>([]);
+  const [bookMode, setBookMode] = useState<"HOME" | "HEALTH_HUB">("HOME");
+  const [bookHubId, setBookHubId] = useState("");
+  const [bookAddress, setBookAddress] = useState("");
+  const [bookSlot, setBookSlot] = useState("");
+  const [bundleCode, setBundleCode] = useState("");
+  const [explainLang, setExplainLang] = useState<"en" | "hi">("en");
+  const [explainData, setExplainData] = useState<any>(null);
+
+  const loadModelPlan = useCallback(() => {
+    api<any>(`/followups/${followup.id}/retest-plan`)
+      .then((d) => {
+        setModelPlan(d);
+        if (d.collection_mode) setBookMode(d.collection_mode);
+        if (d.health_hub_id) setBookHubId(String(d.health_hub_id));
+        if (d.address) setBookAddress(d.address);
+        if (d.bundle_code) setBundleCode(d.bundle_code);
+      })
+      .catch(() => {});
+  }, [followup.id]);
+
+  useEffect(() => {
+    loadModelPlan();
+    api<any[]>("/health-hubs").then(setHubs).catch(() => {});
+  }, [loadModelPlan, followup.retest_status, followup.stage, followup.retest_window_start]);
+
+  async function approvePlan() {
+    if (!modelPlan?.id) return;
+    setSaving(true);
+    setMsg("");
+    try {
+      const updated = await api<any>(`/retest-recommendations/${modelPlan.id}/approve`, { method: "POST" });
+      setModelPlan(updated);
+      onUpdated();
+    } catch (e: any) {
+      setMsg(e.message || "Could not approve plan");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submitBooking(e: React.FormEvent) {
+    e.preventDefault();
+    if (!modelPlan?.id) return;
+    setSaving(true);
+    setMsg("");
+    try {
+      const updated = await api<any>(`/retest-recommendations/${modelPlan.id}/book`, {
+        method: "POST",
+        body: {
+          collection_mode: bookMode,
+          ...(bookMode === "HEALTH_HUB" ? { health_hub_id: Number(bookHubId) } : { address: bookAddress }),
+          ...(bookSlot ? { slot_start: new Date(bookSlot).toISOString() } : {}),
+        },
+      });
+      setModelPlan(updated);
+      onUpdated();
+    } catch (err: any) {
+      setMsg(err.message || "Could not book collection");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function acceptBundle() {
+    if (!bundleCode) return;
+    setSaving(true);
+    setMsg("");
+    try {
+      const res = await api<any>(`/followups/${followup.id}/bundles/${bundleCode}/accept`, { method: "POST" });
+      if (res.plan) setModelPlan(res.plan);
+      onUpdated();
+    } catch (err: any) {
+      setMsg(err.message || "Could not accept bundle");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loadExplain(lang: "en" | "hi") {
+    if (!modelPlan?.id) return;
+    setExplainLang(lang);
+    try {
+      const res = await api<any>(`/retest-recommendations/${modelPlan.id}/explain?lang=${lang}`);
+      setExplainData(res);
+    } catch (err: any) {
+      setMsg(err.message || "Could not load explanation sheet");
+    }
+  }
 
   async function saveAnchor() {
     if (!anchorDate) return;
@@ -340,6 +439,135 @@ export default function RetestPlan({ followup, onUpdated }: { followup: any; onU
             </button>
           </div>
         </form>
+      )}
+
+      {modelPlan && (
+        <div className="space-y-3 border-t border-slate-100 pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-semibold text-slate-900">AMI Approved Retest Checklist (7 steps)</span>
+              <span className={`rounded-full border px-2 py-0.5 font-semibold ${modelPlan.approved ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-amber-300 bg-amber-50 text-amber-900"}`}>
+                {modelPlan.approved ? "Approved" : "Pending approval"}
+              </span>
+              {role === "ADMIN" && modelPlan.tests_total_inr != null && (
+                <span className="rounded bg-slate-100 px-2 py-0.5 font-semibold text-slate-800">
+                  Est. diagnostics: ₹{Number(modelPlan.tests_total_inr).toLocaleString("en-IN")}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {!modelPlan.approved && role === "DOCTOR" && (
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={approvePlan}
+                  className="rounded-lg bg-teal-800 px-3 py-1 font-semibold text-white hover:bg-teal-900 disabled:opacity-40"
+                >
+                  Approve plan
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => (explainData ? setExplainData(null) : loadExplain(explainLang))}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1 font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                {explainData ? "Hide patient explanation" : "Explain to patient"}
+              </button>
+            </div>
+          </div>
+
+          <ol className="grid gap-1.5 text-xs sm:grid-cols-2 lg:grid-cols-4">
+            {(modelPlan.steps || []).map((st: any) => (
+              <li key={st.step} className={`rounded-lg border p-2 ${st.done ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200 bg-slate-50"}`}>
+                <div className="font-semibold text-slate-900">{st.step}. {st.title} {st.done ? "✓" : ""}</div>
+                {st.detail && <div className="mt-0.5 text-slate-600">{st.detail}</div>}
+              </li>
+            ))}
+          </ol>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <form onSubmit={submitBooking} className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+              <div className="flex items-center justify-between font-semibold text-slate-900">
+                <span>Collection Booking ({modelPlan.booking_status || "NOT_BOOKED"})</span>
+                {!modelPlan.approved && <span className="text-amber-800">Approve plan before booking</span>}
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <label className="flex items-center gap-1">
+                  <input type="radio" name={`mode-${followup.id}`} checked={bookMode === "HOME"} onChange={() => setBookMode("HOME")} />
+                  Home collection
+                </label>
+                <label className="flex items-center gap-1">
+                  <input type="radio" name={`mode-${followup.id}`} checked={bookMode === "HEALTH_HUB"} onChange={() => setBookMode("HEALTH_HUB")} />
+                  Health Hub visit
+                </label>
+              </div>
+              {bookMode === "HOME" ? (
+                <input
+                  type="text"
+                  placeholder="Patient collection address"
+                  className="w-full rounded border border-slate-300 bg-white px-2 py-1"
+                  value={bookAddress}
+                  onChange={(e) => setBookAddress(e.target.value)}
+                />
+              ) : (
+                <select className="w-full rounded border border-slate-300 bg-white px-2 py-1" value={bookHubId} onChange={(e) => setBookHubId(e.target.value)}>
+                  <option value="">Select Health Hub…</option>
+                  {hubs.map((h) => <option key={h.id} value={h.id}>{h.name} ({h.city})</option>)}
+                </select>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <input type="datetime-local" className="rounded border border-slate-300 bg-white px-2 py-1" value={bookSlot} onChange={(e) => setBookSlot(e.target.value)} />
+                <button
+                  type="submit"
+                  disabled={saving || !modelPlan.approved || (bookMode === "HOME" ? !bookAddress.trim() : !bookHubId)}
+                  className="rounded-lg bg-slate-900 px-3 py-1 font-semibold text-white disabled:opacity-40"
+                >
+                  Save booking
+                </button>
+              </div>
+            </form>
+
+            {role === "DOCTOR" && (
+              <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+                <div className="font-semibold text-slate-900">Integrated Care Bundle (AMI)</div>
+                <p className="text-slate-600">Links Diagnostics + Physician Consult + Pharmacy (when on active medicines) + Nutrition.</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select aria-label="Protocol bundle" className="rounded border border-slate-300 bg-white px-2 py-1" value={bundleCode} onChange={(e) => setBundleCode(e.target.value)}>
+                    <option value="">Select bundle…</option>
+                    {BUNDLE_OPTIONS.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={saving || !bundleCode}
+                    onClick={acceptBundle}
+                    className="rounded-lg border border-teal-800 bg-white px-3 py-1 font-semibold text-teal-800 hover:bg-teal-50 disabled:opacity-40"
+                  >
+                    Accept bundle
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {explainData && (
+            <div className="space-y-2 rounded-lg border border-teal-200 bg-teal-50/40 p-3 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <strong className="text-sm text-teal-950">{explainData.title}</strong>
+                <div className="flex gap-1.5">
+                  <button type="button" onClick={() => loadExplain("en")} className={`rounded px-2 py-0.5 font-semibold ${explainLang === "en" ? "bg-teal-800 text-white" : "border bg-white"}`}>EN</button>
+                  <button type="button" onClick={() => loadExplain("hi")} className={`rounded px-2 py-0.5 font-semibold ${explainLang === "hi" ? "bg-teal-800 text-white" : "border bg-white"}`}>हिंदी</button>
+                  <button type="button" onClick={() => typeof window !== "undefined" && window.print()} className="rounded border bg-white px-2 py-0.5 font-semibold text-slate-700">Print</button>
+                </div>
+              </div>
+              <p><b>Tests:</b> {explainData.tests}</p>
+              <p><b>Why:</b> {explainData.why}</p>
+              <p><b>When:</b> {explainData.when}</p>
+              <div><b>How results compare:</b><ul className="list-disc pl-5">{(explainData.how_lines || []).map((l: string, i: number) => <li key={i}>{l}</li>)}</ul></div>
+              <p className="rounded border border-slate-200 bg-white p-2 font-mono text-[11px]">{explainData.patient_message}</p>
+              <p className="text-slate-600">{explainData.disclaimer}</p>
+            </div>
+          )}
+        </div>
       )}
     </section>
   );

@@ -253,6 +253,18 @@ class Appointment(Base):
     status: Mapped[str] = mapped_column(String(10), default="BOOKED")  # BOOKED | DONE | CANCELLED
 
 
+class HealthHub(Base, Stamped):
+    """Physical diagnostic / consultation hubs (used for hub booking and KPI filtering)."""
+
+    __tablename__ = "health_hubs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    city: Mapped[str] = mapped_column(String(80), default="")
+    address: Mapped[str] = mapped_column(String(300), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    opening_hours: Mapped[str] = mapped_column(String(120), default="07:00-19:00")
+
+
 class RetestRecommendation(Base):
     __tablename__ = "retest_recommendations"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -262,6 +274,26 @@ class RetestRecommendation(Base):
     ordered: Mapped[bool] = mapped_column(Boolean, default=False)
     ordered_ref: Mapped[str] = mapped_column(String(60), default="")
     source: Mapped[str] = mapped_column(String(20), default="DOCTOR")  # DOCTOR | PROTOCOL
+    next_test_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    window_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    window_end: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    reason_code: Mapped[str] = mapped_column(String(60), default="")
+    reason_text_clinical: Mapped[str] = mapped_column(Text, default="")
+    approved_by_doctor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    protocol_code: Mapped[str] = mapped_column(String(60), default="")
+    protocol_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    previous_results_snapshot: Mapped[list] = mapped_column(JSON, default=list)
+    tests: Mapped[list] = mapped_column(JSON, default=list)
+    collection_mode: Mapped[str] = mapped_column(String(20), default="")  # "" | HOME | HEALTH_HUB
+    health_hub_id: Mapped[int | None] = mapped_column(ForeignKey("health_hubs.id"), nullable=True, index=True)
+    slot_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    address_enc: Mapped[str] = mapped_column(Text, default="")
+    booking_status: Mapped[str] = mapped_column(String(20), default="NOT_BOOKED")  # NOT_BOOKED | BOOKED | COLLECTED | CANCELLED | NO_SHOW
+    lab_order_ref: Mapped[str] = mapped_column(String(64), default="")
+    comparison_report_id: Mapped[int | None] = mapped_column(ForeignKey("reports.id"), nullable=True)
+    plan_status: Mapped[str] = mapped_column(String(24), default="PLANNED", index=True)  # PLANNED | COMPLETED_IN_WINDOW | COMPLETED_LATE
+    completed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    bundle_code: Mapped[str] = mapped_column(String(40), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

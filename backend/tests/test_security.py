@@ -25,6 +25,8 @@ CALLER_OK = {
     ("GET", "/api/v1/patients/{pid}/relationship"), ("GET", "/api/v1/patients/{pid}/programs"),
     ("GET", "/api/v1/refill-tasks"), ("POST", "/api/v1/refill-schedules/{sid}/confirm"),
     ("GET", "/api/v1/patients/{pid}/referrals"), ("PATCH", "/api/v1/referrals/{rid}"),
+    ("GET", "/api/v1/health-hubs"), ("GET", "/api/v1/followups/{fid}/retest-plan"),
+    ("POST", "/api/v1/retest-recommendations/{rid}/book"),
 }
 # Routes a DOCTOR must be refused (admin-only or caller-only work).
 DOCTOR_FORBIDDEN = {
@@ -39,14 +41,18 @@ DOCTOR_FORBIDDEN = {
     ("POST", "/api/v1/followups/{fid}/calls"), ("POST", "/api/v1/followups/{fid}/connect-doctor"), ("GET", "/api/v1/dashboard"),
     ("POST", "/api/v1/patients/{pid}/call"), ("GET", "/api/v1/relationship/summary"),
     ("GET", "/api/v1/retesting-protocol/summary"),
+    ("POST", "/api/v1/health-hubs"), ("PATCH", "/api/v1/health-hubs/{hid}"),
+    ("GET", "/api/v1/kpis/retesting"), ("GET", "/api/v1/kpis/retesting.csv"),
 }
-# Only a doctor may approve a call card or manage confirmed patient conditions / clinical tasks / Day 90 journey confirm; admin gets 403.
+# Only a doctor may approve a call card, manage conditions/tasks, confirm Day 90, or approve/accept retest plans/bundles; admin gets 403.
 ADMIN_FORBIDDEN = {
     ("POST", "/api/v1/call-cards/{cid}/approve"),
     ("POST", "/api/v1/patients/{pid}/conditions"),
     ("DELETE", "/api/v1/patients/{pid}/conditions/{code}"),
     ("POST", "/api/v1/clinical-tasks/{tid}/complete"),
     ("POST", "/api/v1/followups/{fid}/journey/day90-confirm"),
+    ("POST", "/api/v1/retest-recommendations/{rid}/approve"),
+    ("POST", "/api/v1/followups/{fid}/bundles/{bundle_code}/accept"),
 }
 
 
@@ -83,13 +89,13 @@ def test_admin_matrix(admin):
 
 def test_new_routes_must_be_classified():
     """Fails when someone adds a route without deciding who may call it (update the sets above)."""
-    assert len(list(routes())) == 109  # 105 + 4 (Page 10 compare endpoints & Day 90 confirmation)
+    assert len(list(routes())) == 119  # 109 + 10 (Page 12 hubs, 7-step plans, bundles, explain, KPIs)
 
 
 # ---- the two leaks the review found ----
 def test_callers_cannot_read_clinical_rule_sets(admin, caller, doctor):
     for key in ("buckets", "reference_ranges", "score_weights", "critical_values", "retest_protocols",
-                "retest_tiers", "clinical_targets", "next_action_rules", "journey_templates"):
+                "retest_tiers", "clinical_targets", "next_action_rules", "journey_templates", "protocol_bundles"):
         assert caller.get(f"{API}/rules/{key}").status_code == 403
         assert doctor.get(f"{API}/rules/{key}").status_code == 200
 

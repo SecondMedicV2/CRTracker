@@ -1,5 +1,5 @@
 """AMI Parameter Display comparison service and clinical target evaluation (Page 10)."""
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -280,6 +280,12 @@ def _patient_summary_line(row: dict) -> str:
     )
 
 
+def _naive_dt(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
+
+
 def _patient_reports_up_to(db: Session, patient_id: int, report: Report) -> list[tuple[Report, Order]]:
     root = rel.canonical_patient_id(db, patient_id)
     pids = [root, *db.scalars(select(Patient.id).where(Patient.merged_into_id == root))]
@@ -289,10 +295,10 @@ def _patient_reports_up_to(db: Session, patient_id: int, report: Report) -> list
         .order_by(Report.collected_on.asc(), Report.id.asc())
     ).all()
     if report.collected_on is not None:
-        cutoff = report.collected_on
+        cutoff = _naive_dt(report.collected_on)
         rows = [
             (r, o) for r, o in rows
-            if r.id == report.id or (r.collected_on is not None and (r.collected_on < cutoff or (r.collected_on == cutoff and r.id <= report.id)))
+            if r.id == report.id or (r.collected_on is not None and (_naive_dt(r.collected_on) < cutoff or (_naive_dt(r.collected_on) == cutoff and r.id <= report.id)))
         ]
     else:
         rows = [(r, o) for r, o in rows if r.id <= report.id]
@@ -300,7 +306,7 @@ def _patient_reports_up_to(db: Session, patient_id: int, report: Report) -> list
         ord_row = db.get(Order, report.order_id)
         if ord_row:
             rows.append((report, ord_row))
-            rows.sort(key=lambda pair: (pair[0].collected_on or datetime.min, pair[0].id))
+            rows.sort(key=lambda pair: (_naive_dt(pair[0].collected_on) or datetime.min, pair[0].id))
     return rows
 
 

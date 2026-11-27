@@ -36,7 +36,6 @@ export default function HealthProfileCard({ patientId, onSaved }: { patientId: s
   const [limitations, setLimitations] = useState<string[]>([]);
   const [imaging, setImaging] = useState<string[]>([]);
   const [conditions, setConditions] = useState<string[]>([]);
-  const [condInput, setCondInput] = useState("");
   const [planningPreg, setPlanningPreg] = useState<string>("");
   const [ttcMonths, setTtcMonths] = useState("");
   const [menstrual, setMenstrual] = useState("");
@@ -118,7 +117,6 @@ export default function HealthProfileCard({ patientId, onSaved }: { patientId: s
           symptoms: symptoms.map((code) => ({ code, date: new Date().toISOString().slice(0, 10) })),
           physical_limitations: limitations,
           imaging_findings: imaging.map((code) => ({ code, done_on: "" })),
-          conditions: conditions.map((code) => ({ code, status: "CONFIRMED" })),
           reproductive: {
             planning_pregnancy: planningPreg === "yes" ? true : planningPreg === "no" ? false : null,
             trying_to_conceive_months: ttcMonths !== "" ? Number(ttcMonths) : null,
@@ -233,17 +231,12 @@ export default function HealthProfileCard({ patientId, onSaved }: { patientId: s
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-xs">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
           <span className="font-semibold text-slate-700">Confirmed conditions:</span>
-          {conditions.map((c) => (
-            <span key={c} className="rounded bg-slate-100 px-2 py-0.5 font-mono">{c} <button type="button" onClick={() => setConditions(conditions.filter((x) => x !== c))}>×</button></span>
-          ))}
-          <input className="rounded border p-1" placeholder="e.g. HYPERTENSION" value={condInput} onChange={(e) => setCondInput(e.target.value)} />
-          <button type="button" className="rounded border px-2 py-1" onClick={() => {
-            const v = condInput.trim().toUpperCase();
-            if (v && !conditions.includes(v)) setConditions([...conditions, v]);
-            setCondInput("");
-          }}>Add condition</button>
+          {conditions.length > 0
+            ? conditions.map((c) => <span key={c} className="rounded bg-slate-100 px-2 py-0.5 font-mono text-slate-800">{c}</span>)
+            : <span>None</span>}
+          <span className="text-[11px] text-slate-500">(Managed by a doctor in Conditions &amp; monitoring above)</span>
         </div>
 
         <details className="rounded-lg border border-slate-200 p-3">

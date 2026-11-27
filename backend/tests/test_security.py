@@ -40,8 +40,13 @@ DOCTOR_FORBIDDEN = {
     ("POST", "/api/v1/patients/{pid}/call"), ("GET", "/api/v1/relationship/summary"),
     ("GET", "/api/v1/retesting-protocol/summary"),
 }
-# Only a doctor may approve a call card; an admin must be refused that one route.
-ADMIN_FORBIDDEN = {("POST", "/api/v1/call-cards/{cid}/approve")}
+# Only a doctor may approve a call card or manage confirmed patient conditions / clinical tasks; admin gets 403.
+ADMIN_FORBIDDEN = {
+    ("POST", "/api/v1/call-cards/{cid}/approve"),
+    ("POST", "/api/v1/patients/{pid}/conditions"),
+    ("DELETE", "/api/v1/patients/{pid}/conditions/{code}"),
+    ("POST", "/api/v1/clinical-tasks/{tid}/complete"),
+}
 
 
 def routes():
@@ -77,12 +82,12 @@ def test_admin_matrix(admin):
 
 def test_new_routes_must_be_classified():
     """Fails when someone adds a route without deciding who may call it (update the sets above)."""
-    assert len(list(routes())) == 101  # 100 + 1 (GET /retesting-protocol/summary, admin only)
+    assert len(list(routes())) == 105  # 101 + 4 (Page 11 conditions & clinical tasks)
 
 
 # ---- the two leaks the review found ----
 def test_callers_cannot_read_clinical_rule_sets(admin, caller, doctor):
-    for key in ("buckets", "reference_ranges", "score_weights", "critical_values", "retest_protocols", "retest_tiers"):
+    for key in ("buckets", "reference_ranges", "score_weights", "critical_values", "retest_protocols", "retest_tiers", "clinical_targets"):
         assert caller.get(f"{API}/rules/{key}").status_code == 403
         assert doctor.get(f"{API}/rules/{key}").status_code == 200
 

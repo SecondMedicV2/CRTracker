@@ -8,7 +8,7 @@ from .. import callcard as cc, relationship as rel, retest as retest_svc
 from ..analysis import load_rules
 from ..db import get_db
 from ..llm import LLMError
-from ..models import CallCard, Followup, Patient, ProgramRecommendation, Referral, RefillSchedule, User
+from ..models import CallCard, Followup, MonitoringSchedule, Patient, ProgramRecommendation, Referral, RefillSchedule, User
 from ..security import audit, current_user, require
 from ..settings_store import get_setting
 from .patients import mobile_out
@@ -132,10 +132,18 @@ def caller_card(fid: int, request: Request, db: Session = Depends(get_db), me: U
     ))
     audit(db, request, me.id, "view", "caller_card", fid)
     tmeta = retest_svc.tier_meta(db, f.protocol_tier)
+    has_mon = db.scalar(select(MonitoringSchedule.id).where(
+        MonitoringSchedule.patient_id == root_pid, MonitoringSchedule.status == "ACTIVE"
+    ).limit(1)) is not None
+    monitoring_due = None
+    if (f.retest_plan or {}).get("source") == "CONDITION" or has_mon:
+        due_d = f.retest_window_start or f.due_on
+        monitoring_due = f"Monitoring due on {due_d.isoformat()}" if due_d else "Monitoring due"
     return {"followup_id": fid, "patient_id": root_pid, "patient_name": p.name, "mobile": mobile_out(p, me), "language": c.language,
             "notice": c.notice, "report_age_days": c.content["summary"]["report_age_days"], "reason_for_call": cc.reason_for_call(c),
             "script": {k: v for k, v in script.items() if k != "do_not_say"}, "do_not_say": script["do_not_say"],
             "priority": f.priority, "protocol_tier_colour": tmeta["colour_token"], "protocol_tier_label": tmeta["caller_label"],
+            "monitoring_due": monitoring_due,
             "program_followups": program_followups, "next_steps": next_steps,
             "refill_reminder": "Pharmacy refill reminder call" if refill_due else None,
             "specialist_bookings": specialist_bookings}

@@ -46,6 +46,18 @@ export const DEFAULT_PROFILE_CODES = {
   menstrual_patterns: ["REGULAR", "IRREGULAR", "ABSENT"],
   decline_reasons: ["CLINICALLY_NOT_INDICATED", "PATIENT_DECLINED", "ALREADY_MANAGED", "CONTRAINDICATED", "OTHER"],
   specialties: ["Gynecology", "Endocrinology", "Andrology/Urology", "Fertility specialist", "Geriatrics", "Obesity medicine"],
+  conditions: [
+    "B12_DEFICIENCY",
+    "IRON_DEFICIENCY",
+    "PREDIABETES",
+    "DIABETES_STABLE",
+    "DIABETES_UNCONTROLLED",
+    "HYPOTHYROID_STABLE_TREATED",
+    "HYPERTENSION",
+    "CKD",
+    "DYSLIPIDEMIA_NEW_MED",
+    "DYSLIPIDEMIA_STABLE",
+  ],
 };
 
 export const DEFAULT_CARE_PROGRAMS = [
@@ -499,6 +511,7 @@ export function defaultProfile() {
     functional_status: "",
     screening_history: [],
     conditions: [],
+    targets: {},
     imaging_findings: [],
     reproductive: { planning_pregnancy: null, trying_to_conceive_months: null, menstrual_pattern: "", pregnancies: null },
     caregiver: { name: "", relationship: "", phone: "", phone_consent: false },
@@ -558,7 +571,26 @@ export function cleanProfile(raw) {
         status: String(x.status || "CONFIRMED").trim().toUpperCase(),
         stage: String(x.stage || "").slice(0, 30),
         since: String(x.since || "").slice(0, 20),
+        confirmed_by: x.confirmed_by !== null && x.confirmed_by !== undefined && x.confirmed_by !== "" ? Number(x.confirmed_by) : null,
       }));
+  }
+  if (raw.targets && typeof raw.targets === "object" && !Array.isArray(raw.targets)) {
+    const cleanT = {};
+    for (const [k, v] of Object.entries(raw.targets)) {
+      const code = String(k || "").trim().toUpperCase();
+      if (!code) continue;
+      if (typeof v === "number") {
+        cleanT[code] = { target_op: "<", target_value: Number(v), unit: code === "HBA1C" ? "%" : "" };
+      } else if (v && typeof v === "object" && v.target_value !== null && v.target_value !== undefined && v.target_value !== "") {
+        const op = String(v.target_op || "<").trim();
+        cleanT[code] = {
+          target_op: ["<", "<=", ">", ">=", "=="].includes(op) ? op : "<",
+          target_value: Number(v.target_value),
+          unit: String(v.unit || (code === "HBA1C" ? "%" : "")).slice(0, 20),
+        };
+      }
+    }
+    base.targets = cleanT;
   }
   if (Array.isArray(raw.imaging_findings)) {
     base.imaging_findings = raw.imaging_findings

@@ -9,7 +9,7 @@ from .. import assign, followup as fu_svc, retest as retest_svc
 from .. import status
 from ..analysis import load_rules
 from ..db import get_db
-from ..models import Doctor, Followup, Order, Patient, PatientBucket, Report, User
+from ..models import Doctor, Followup, MonitoringSchedule, Order, Patient, PatientBucket, Report, User
 from ..security import audit, current_user, require
 from ..settings_store import get_setting
 from ..timeutil import to_ist_date, today_ist
@@ -43,8 +43,16 @@ def can_see_results(user: User, db: Session) -> bool:
     return user.role in ("ADMIN", "DOCTOR") or get_setting(db, "caller_can_view_results")
 
 
-def row(f: Followup, p: Patient, r: Report, user: User, full: bool, tmap: dict | None = None) -> dict:
-    label = "Retest due" if not full else ((f.retest_plan or {}).get("label") or ("Doctor to set retest date" if f.retest_status == "DOCTOR_TO_SET" else "Retest due"))
+def row(f: Followup, p: Patient, r: Report, user: User, full: bool, tmap: dict | None = None, has_monitoring: bool = False) -> dict:
+    plan = f.retest_plan or {}
+    if not full:
+        if plan.get("source") == "CONDITION" or has_monitoring:
+            d = f.retest_window_start or f.due_on
+            label = f"Monitoring due on {d.isoformat()}" if d else "Monitoring due"
+        else:
+            label = "Retest due"
+    else:
+        label = plan.get("label") or ("Doctor to set retest date" if f.retest_status == "DOCTOR_TO_SET" else "Retest due")
     tier_code = f.protocol_tier or "LONG_TERM"
     meta = (tmap or retest_svc.tier_map()).get(tier_code) or retest_svc.tier_meta(None, tier_code)
     out = {"id": f.id, "patient_id": p.id, "patient_name": p.name, "mobile": mobile_out(p, user), "language": p.language,
@@ -89,7 +97,8 @@ def list_followups(view: str = "queue", bucket: str | None = None, priority: str
                    case((Followup.retest_tier == "HIGH", 0), (Followup.retest_tier == "MEDIUM", 1), else_=2),
                    Followup.due_on, Followup.id).limit(min(limit, 2000))
     tmap = retest_svc.tier_map(load_rules(db))
-    rows = [row(f, p, r, me, full, tmap) for f, p, r in db.execute(q)]
+    mon_pids = set(db.scalars(select(MonitoringSchedule.patient_id).where(MonitoringSchedule.status == "ACTIVE")))
+    rows = [row(f, p, r, me, full, tmap, p.id in mon_pids) for f, p, r in db.execute(q)]
     if bucket:
         if not full:
             raise HTTPException(403, "Not allowed")

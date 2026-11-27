@@ -103,7 +103,7 @@ export default function Followups() {
                   {!full ? (
                     <div className="space-y-0.5 text-xs">
                       <span className="inline-block rounded bg-teal-50 px-2 py-0.5 font-medium text-teal-900 border border-teal-200">
-                        Retest due
+                        {f.retest_label || "Retest due"}
                       </span>
                       {winLabel && <div className="text-slate-600">{winLabel}</div>}
                     </div>

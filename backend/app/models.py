@@ -498,3 +498,42 @@ class FamilyLink(Base):
     relationship: Mapped[str] = mapped_column(String(40))
     consent_id: Mapped[int | None] = mapped_column(ForeignKey("consents.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class MonitoringSchedule(Base):
+    """Non-lab home monitoring schedules (e.g. Hypertension home BP reminders)."""
+
+    __tablename__ = "monitoring_schedules"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    condition_code: Mapped[str] = mapped_column(String(40), index=True)
+    kind: Mapped[str] = mapped_column(String(24), default="BP")
+    frequency_per_day: Mapped[int] = mapped_column(Integer, default=2)
+    duration_days: Mapped[int] = mapped_column(Integer, default=7)
+    start_on: Mapped[date] = mapped_column(Date, index=True)
+    end_on: Mapped[date] = mapped_column(Date, index=True)
+    slots: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)  # ACTIVE | COMPLETED | CANCELLED
+    last_reminded_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ClinicalTask(Base):
+    """Doctor tasks spawned by protocols (e.g. choosing lab tests for Hypertension)."""
+
+    __tablename__ = "clinical_tasks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    followup_id: Mapped[int | None] = mapped_column(ForeignKey("followups.id"), nullable=True, index=True)
+    condition_code: Mapped[str] = mapped_column(String(40), index=True)
+    task_type: Mapped[str] = mapped_column(String(40), default="CHOOSE_LAB_TESTS")
+    title: Mapped[str] = mapped_column(String(160))
+    details: Mapped[str] = mapped_column(String(300), default="")
+    selected_tests: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="OPEN", index=True)  # OPEN | DONE | DISMISSED
+    assigned_doctor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

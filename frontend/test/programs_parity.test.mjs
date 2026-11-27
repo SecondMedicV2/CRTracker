@@ -14,11 +14,14 @@ import {
   todayIstStr,
 } from "../lib/programs.js";
 import {
+  DEFAULT_CLINICAL_TARGETS,
+  DEFAULT_CONDITION_PROTOCOLS,
   DEFAULT_RETEST_PROTOCOLS,
   DEFAULT_RETEST_TIERS,
   planRetestInStore,
   retestReminderTickInStore,
   slaTickInStore,
+  suggestConditionsInStore,
   toIstDateStr,
 } from "../lib/retest.js";
 
@@ -320,7 +323,9 @@ describe("Smart Diagnostics Pages 1-4 Worker Parity", () => {
   });
 
   it("evaluates Page 7 retest protocols, IST dates, anchors, caller isolation, overrides, and reminder cron in Worker", async () => {
-    assert.strictEqual(DEFAULT_RETEST_PROTOCOLS.length, 10);
+    assert.strictEqual(DEFAULT_RETEST_PROTOCOLS.filter((p) => p.finding_code).length, 10);
+    assert.strictEqual(DEFAULT_CONDITION_PROTOCOLS.length, 10);
+    assert.strictEqual(DEFAULT_RETEST_PROTOCOLS.length, 20);
     assert.strictEqual(toIstDateStr("2026-01-10T20:00:00Z"), "2026-01-11");
 
     const env = createTestEnv();
@@ -378,9 +383,9 @@ describe("Smart Diagnostics Pages 1-4 Worker Parity", () => {
 
     // Rules endpoint includes retest_protocols and test_catalogue expansion
     const rulesRes = await (await req(env, "GET", "/api/v1/rules/retest_protocols", docCookie)).json();
-    assert.strictEqual(rulesRes.data.length, 10);
+    assert.strictEqual(rulesRes.data.length, 20);
     const catRes = await (await req(env, "GET", "/api/v1/rules/test_catalogue", docCookie)).json();
-    assert.ok(catRes.data.some((t) => t.code === "ELECTROLYTES") && catRes.data.some((t) => t.code === "UACR"));
+    assert.ok(catRes.data.some((t) => t.code === "ELECTROLYTES") && catRes.data.some((t) => t.code === "UACR") && catRes.data.some((t) => t.code === "EGFR"));
   });
 
   it("evaluates Page 9 5 urgency tiers, URGENT sorting, notifications, window validation, summary, and SLA cron in Worker", async () => {
@@ -458,5 +463,95 @@ describe("Smart Diagnostics Pages 1-4 Worker Parity", () => {
     assert.strictEqual(slaTickInStore(slaStore, Date.now()), 0);
     assert.ok(slaStore.notifications.items[0].text.includes("SLA overdue"));
     assert.strictEqual(slaStore.audit[0].action, "sla_escalate");
+  });
+
+  it("evaluates Page 11 condition register, suggestions, precedence, targets, HTN monitoring, and caller labels in Worker", async () => {
+    assert.strictEqual(DEFAULT_CLINICAL_TARGETS.HBA1C.target_value, 7.0);
+    const env = createTestEnv();
+    const aLogin = await req(env, "POST", "/api/v1/auth/login", null, { email: env.ADMIN_EMAIL, password: env.ADMIN_PASSWORD });
+    const adminCookie = aLogin.headers.get("set-cookie").split(";")[0];
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Dr", email: "doc@sm.com", password: "DoctorPassword123!", role: "DOCTOR" });
+    await req(env, "POST", "/api/v1/users", adminCookie, { name: "Cal", email: "cal@sm.com", password: "CallerPassword123!", role: "CALLER" });
+    const docCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "doc@sm.com", password: "DoctorPassword123!" })).headers.get("set-cookie").split(";")[0];
+    const calCookie = (await req(env, "POST", "/api/v1/auth/login", null, { email: "cal@sm.com", password: "CallerPassword123!" })).headers.get("set-cookie").split(";")[0];
+
+    // Add report_params:11 with HbA1c 6.8 + EGFR 50 for patient 2 (Rohan Nair, followup 2, report 11)
+    const storeRaw = await env.CRTRACKER_DATA.get("app_state_v5", "json");
+    storeRaw.reports.push({
+      id: 11, order_id: "ORD-11", patient_id: 2, patient_name: "Rohan Nair", mobile: "9876500010",
+      age: 58, gender: "M", collected_on: "2026-11-01T08:00:00Z", status: "READY", classification: "ABNORMAL",
+    });
+    storeRaw.reports.push({
+      id: 12, order_id: "ORD-12", patient_id: 2, patient_name: "Rohan Nair", mobile: "9876500010",
+      age: 58, gender: "M", collected_on: "2026-07-01T08:00:00Z", status: "READY", classification: "ABNORMAL",
+    });
+    await env.CRTRACKER_DATA.put("app_state_v5", JSON.stringify(storeRaw));
+    await env.CRTRACKER_DATA.put("report_params:12", JSON.stringify([
+      { id: 10, param_code: "HBA1C", value_num: 6.6, system_flag: "HIGH" },
+      { id: 11, param_code: "EGFR", value_num: 52, system_flag: "LOW" },
+    ]));
+    await env.CRTRACKER_DATA.put("report_params:11", JSON.stringify([
+      { id: 12, param_code: "HBA1C", value_num: 6.8, system_flag: "HIGH" },
+      { id: 13, param_code: "EGFR", value_num: 49, system_flag: "LOW" },
+      { id: 14, param_code: "B12", value_num: 130, system_flag: "LOW" },
+    ]));
+
+    // Doctor-only enforcement: caller 403 on GET/POST/DELETE; admin 200 GET, 403 POST/DELETE/mutate health-profile
+    assert.strictEqual((await req(env, "GET", "/api/v1/patients/2/conditions", calCookie)).status, 403);
+    assert.strictEqual((await req(env, "POST", "/api/v1/patients/2/conditions", calCookie, { code: "CKD" })).status, 403);
+    assert.strictEqual((await req(env, "POST", "/api/v1/patients/2/conditions", adminCookie, { code: "CKD" })).status, 403);
+    assert.strictEqual((await req(env, "DELETE", "/api/v1/patients/2/conditions/CKD", adminCookie)).status, 403);
+    assert.strictEqual((await req(env, "PUT", "/api/v1/patients/2/health-profile", adminCookie, { conditions: [{ code: "CKD", status: "CONFIRMED" }] })).status, 403);
+
+    const sum1 = await (await req(env, "GET", "/api/v1/patients/2/conditions", docCookie)).json();
+    const sugCodes = sum1.suggested.map((s) => s.code);
+    assert.ok(sugCodes.includes("DIABETES_STABLE"));
+    assert.ok(sugCodes.includes("CKD"));
+    assert.ok(sugCodes.includes("B12_DEFICIENCY"));
+
+    // Confirm DIABETES_STABLE + CKD -> overrides HIGH_HBA1C & HIGH_CREATININE to 180d & caller sees "Monitoring due on <date>"
+    const confRes = await req(env, "POST", "/api/v1/patients/2/conditions", docCookie, { code: "DIABETES_STABLE" });
+    assert.strictEqual(confRes.status, 200);
+    await req(env, "POST", "/api/v1/patients/2/conditions", docCookie, { code: "CKD" });
+    const fu2 = await (await req(env, "GET", "/api/v1/followups/2", docCookie)).json();
+    assert.strictEqual(fu2.retest_plan.primary_finding.condition_code, "DIABETES_STABLE");
+    assert.ok(fu2.retest_plan.overridden_findings.includes("HIGH_HBA1C"));
+    assert.ok(fu2.retest_plan.overridden_findings.includes("HIGH_CREATININE"));
+    assert.strictEqual(fu2.retest_window_start, addDaysIso("2026-11-01", 180));
+
+    const calFu2 = (await (await req(env, "GET", "/api/v1/followups", calCookie)).json()).find((x) => x.id === 2);
+    assert.strictEqual(calFu2.retest_label, `Monitoring due on ${fu2.retest_window_start}`);
+    assert.ok(!JSON.stringify(calFu2).includes("DIABETES"));
+
+    // Per-patient Page 10 target override (< 6.5%) flips 6.6 & 6.8 to DIABETES_UNCONTROLLED
+    await req(env, "PUT", "/api/v1/patients/2/health-profile", docCookie, { targets: { HBA1C: { target_op: "<", target_value: 6.5 } } });
+    const sum2 = await (await req(env, "GET", "/api/v1/patients/2/conditions", docCookie)).json();
+    assert.ok(sum2.suggested.some((s) => s.code === "DIABETES_UNCONTROLLED" && s.replaces_code === "DIABETES_STABLE"));
+
+    // Confirm HYPERTENSION -> creates 7-day 2x/day BP schedule + doctor lab-selection task
+    const htnRes = await (await req(env, "POST", "/api/v1/patients/2/conditions", docCookie, { code: "HYPERTENSION" })).json();
+    assert.strictEqual(htnRes.monitoring_schedules.length, 1);
+    assert.strictEqual(htnRes.monitoring_schedules[0].frequency_per_day, 2);
+    assert.strictEqual(htnRes.monitoring_schedules[0].duration_days, 7);
+    assert.strictEqual(htnRes.clinical_tasks.length, 1);
+    const taskId = htnRes.clinical_tasks[0].id;
+    assert.strictEqual((await req(env, "POST", `/api/v1/clinical-tasks/${taskId}/complete`, adminCookie, { test_codes: ["KFT"] })).status, 403);
+    const doneTask = await req(env, "POST", `/api/v1/clinical-tasks/${taskId}/complete`, docCookie, { test_codes: ["KFT", "UACR"] });
+    assert.strictEqual(doneTask.status, 200);
+    assert.deepStrictEqual((await doneTask.json()).selected_tests, ["KFT", "UACR"]);
+
+    // Negative check for suggestConditionsInStore (normal B12, no iron deficiency)
+    const cleanSug = suggestConditionsInStore({
+      reports: [{ id: 99, patient_id: 9, collected_on: "2026-11-20T08:00:00Z", status: "READY" }],
+      health_profiles: {},
+      patient_medications: [],
+    }, 9, { 99: [{ param_code: "HBA1C", value_num: 5.2, system_flag: "NORMAL" }, { param_code: "B12", value_num: 450, system_flag: "NORMAL" }] });
+    assert.strictEqual(cleanSug.length, 0);
+
+    // No PII/values in condition audit entries
+    const audits = await (await req(env, "GET", "/api/v1/audit", adminCookie)).json();
+    const condAudits = audits.filter((a) => a.entity === "patient_condition");
+    assert.ok(condAudits.length >= 2);
+    assert.ok(!JSON.stringify(condAudits).includes("Rohan") && !JSON.stringify(condAudits).includes("9876500010") && !JSON.stringify(condAudits).includes("6.8"));
   });
 });

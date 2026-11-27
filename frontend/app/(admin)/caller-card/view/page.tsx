@@ -22,6 +22,7 @@ type CallerCardData = {
   priority: string;
   protocol_tier_colour?: string;
   protocol_tier_label?: string;
+  monitoring_due?: string | null;
   notice?: string;
   report_age_days: number | null;
   reason_for_call: string;
@@ -79,6 +80,9 @@ function CallerCardInner({ id }: { id: string }) {
             Relationship status: <span className="rounded bg-white px-2 py-0.5 font-semibold">{rel.status}</span>
             {rel.next_step?.caller_label && <> · Next step: {rel.next_step.caller_label}</>}
           </p>
+        )}
+        {c.monitoring_due && (
+          <p className="mt-2 text-xs font-semibold text-teal-900">{c.monitoring_due}</p>
         )}
         {c.program_followups && c.program_followups.length > 0 && (
           <p className="mt-1 text-xs font-medium text-teal-900">Care follow-up: {c.program_followups.join(", ")}</p>

@@ -5,9 +5,12 @@
 import {
   DEFAULT_DIAGNOSTIC_FINDINGS,
   DEFAULT_MEDICINE_CATALOGUE,
+  DEFAULT_PROFILE_CODES,
   DONE_STAGES,
   addDaysIso,
+  bpIsHigh,
   buildProgramContext,
+  cleanProfile,
   detectFindingsInCtx,
   todayIstStr,
 } from "./programs.js";
@@ -127,13 +130,14 @@ export const DEFAULT_TEST_CATALOGUE_P7 = [
   { code: "CALCIUM", name: "Calcium" },
   { code: "B12", name: "Vitamin B12" },
   { code: "KFT", name: "Kidney Function Test" },
+  { code: "EGFR", name: "eGFR" },
   { code: "ELECTROLYTES", name: "Electrolytes" },
   { code: "URINE_ROUTINE", name: "Urine Routine" },
   { code: "UACR", name: "Urine Albumin-to-Creatinine Ratio" },
   { code: "LFT", name: "Liver Function Test" },
 ];
 
-export const DEFAULT_RETEST_PROTOCOLS = [
+export const DEFAULT_RETEST_PROTOCOLS_BASE = [
   {
     finding_code: "LOW_VITD",
     finding_name: "Low Vitamin D",
@@ -275,6 +279,519 @@ export const DEFAULT_RETEST_PROTOCOLS = [
     reminder: { mode: "RISK_BASED" },
   },
 ];
+
+export const DEFAULT_CLINICAL_TARGETS = {
+  HBA1C: {
+    target_op: "<",
+    target_value: 7.0,
+    unit: "%",
+    direction: "LOWER_IS_BETTER",
+    min_meaningful_change: 0.5,
+    note: "starter value, clinician to confirm",
+  },
+};
+
+export const DEFAULT_CONDITION_PROTOCOLS = [
+  {
+    entry_type: "condition",
+    condition_code: "B12_DEFICIENCY",
+    condition_name: "Vitamin B12 deficiency",
+    timeframe_text: "CBC response may be checked within 1\u20132 weeks when indicated; repeat B12 is not routinely necessary after treatment",
+    icon: "red_cell_tick",
+    icon_label: "red cell + tick",
+    note: "",
+    overrides_findings: [],
+    is_lab_protocol: true,
+    requires_indication: true,
+    repeat_b12_routine: false,
+    variants: [
+      { when: "indicated", window_min_days: 7, window_max_days: 14, anchor: "TREATMENT_START", tier: "EARLY" },
+      { when: "default", window_min_days: null, window_max_days: null, anchor: "TREATMENT_START", mode: "REQUIRES_INDICATION", tier: "EARLY" },
+    ],
+    tests: [{ code: "CBC", optional: true }, { code: "B12", optional: true, routine: false }],
+    tier: "EARLY",
+    reminder: { mode: "IF_APPROPRIATE", day_min: 7, day_max: 14 },
+  },
+  {
+    entry_type: "condition",
+    condition_code: "IRON_DEFICIENCY",
+    condition_name: "Iron deficiency",
+    timeframe_text: "Hb/CBC in 2\u20134 weeks; iron stores assessed later when appropriate",
+    icon: "blood_tube_fe",
+    icon_label: "blood tube \"Fe\"",
+    note: "",
+    overrides_findings: ["LOW_HB"],
+    is_lab_protocol: true,
+    iron_stores_doctor_decides: true,
+    variants: [{ when: "default", window_min_days: 14, window_max_days: 28, anchor: "TREATMENT_START", tier: "EARLY" }],
+    tests: [{ code: "CBC", optional: false }, { code: "IRON", optional: true, doctor_decides: true }],
+    tier: "EARLY",
+    reminder: { mode: "FIXED", day_min: 14, day_max: 28 },
+  },
+  {
+    entry_type: "condition",
+    condition_code: "PREDIABETES",
+    condition_name: "Prediabetes",
+    timeframe_text: "Usually annual glycemic testing; earlier based on risk",
+    icon: "calendar",
+    icon_label: "calendar",
+    note: "",
+    overrides_findings: ["HIGH_HBA1C"],
+    is_lab_protocol: true,
+    earlier_by_risk: true,
+    variants: [
+      { when: "higher_risk", window_min_days: 180, window_max_days: 180, anchor: "REPORT_DATE", tier: "LONG_TERM" },
+      { when: "default", window_min_days: 365, window_max_days: 365, anchor: "REPORT_DATE", tier: "LONG_TERM" },
+    ],
+    tests: [{ code: "HBA1C", optional: false }, { code: "FBS", optional: true }],
+    tier: "LONG_TERM",
+    reminder: { mode: "FIXED", day_min: 365, day_max: 365 },
+  },
+  {
+    entry_type: "condition",
+    condition_code: "DIABETES_STABLE",
+    condition_name: "Stable diabetes",
+    timeframe_text: "HbA1c approximately every 6 months when at goal",
+    icon: "clock_6_hba1c",
+    icon_label: "\"6\" clock HbA1c",
+    note: "",
+    overrides_findings: ["HIGH_HBA1C"],
+    is_lab_protocol: true,
+    variants: [{ when: "default", window_min_days: 180, window_max_days: 180, anchor: "REPORT_DATE", tier: "LONG_TERM" }],
+    tests: [{ code: "HBA1C", optional: false }],
+    tier: "LONG_TERM",
+    reminder: { mode: "FIXED", day_min: 180, day_max: 180 },
+  },
+  {
+    entry_type: "condition",
+    condition_code: "DIABETES_UNCONTROLLED",
+    condition_name: "Uncontrolled diabetes",
+    timeframe_text: "HbA1c approximately every 3 months",
+    icon: "clock_3_hba1c_alert",
+    icon_label: "\"3\" clock HbA1c with alert",
+    note: "",
+    overrides_findings: ["HIGH_HBA1C"],
+    is_lab_protocol: true,
+    variants: [{ when: "default", window_min_days: 90, window_max_days: 90, anchor: "REPORT_DATE", tier: "METABOLIC" }],
+    tests: [{ code: "HBA1C", optional: false }],
+    tier: "METABOLIC",
+    reminder: { mode: "FIXED", day_min: 90, day_max: 90 },
+  },
+  {
+    entry_type: "condition",
+    condition_code: "HYPOTHYROID_STABLE_TREATED",
+    condition_name: "Stable hypothyroidism on treatment",
+    timeframe_text: "TSH generally every 6\u201312 months",
+    icon: "thyroid",
+    icon_label: "thyroid",
+    note: "",
+    overrides_findings: ["HIGH_TSH"],
+    is_lab_protocol: true,
+    variants: [{ when: "default", window_min_days: 180, window_max_days: 365, anchor: "REPORT_DATE", tier: "LONG_TERM" }],
+    tests: [{ code: "TSH", optional: false }],
+    tier: "LONG_TERM",
+    reminder: { mode: "FIXED", day_min: 180, day_max: 365 },
+  },
+  {
+    entry_type: "condition",
+    condition_code: "HYPERTENSION",
+    condition_name: "Hypertension",
+    timeframe_text: "Home BP monitoring over days to weeks; laboratory testing depends on medications and comorbidities",
+    icon: "bp_monitor",
+    icon_label: "BP monitor",
+    note: "",
+    overrides_findings: [],
+    is_lab_protocol: false,
+    home_bp_schedule: { kind: "BP", frequency_per_day: 2, duration_days: 7, slots: ["MORNING", "EVENING"], note: "starter value, clinician to confirm" },
+    creates_doctor_task: true,
+    variants: [{ when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "DOCTOR_DECIDES", tier: "LONG_TERM" }],
+    tests: [],
+    tier: "LONG_TERM",
+    reminder: { mode: "RISK_BASED" },
+  },
+  {
+    entry_type: "condition",
+    condition_code: "CKD",
+    condition_name: "Chronic kidney disease",
+    timeframe_text: "eGFR and urine albumin monitoring at least annually, more frequently with higher risk",
+    icon: "kidney",
+    icon_label: "kidney",
+    note: "",
+    overrides_findings: ["HIGH_CREATININE"],
+    is_lab_protocol: true,
+    risk_adjusted: true,
+    variants: [
+      { when: "higher_risk", window_min_days: 90, window_max_days: 180, anchor: "REPORT_DATE", risk_adjusted: true, tier: "LONG_TERM" },
+      { when: "default", window_min_days: 180, window_max_days: 365, anchor: "REPORT_DATE", risk_adjusted: true, tier: "LONG_TERM" },
+    ],
+    tests: [{ code: "EGFR", optional: false }, { code: "UACR", optional: false }],
+    tier: "LONG_TERM",
+    reminder: { mode: "FIXED", day_min: 180, day_max: 365 },
+  },
+  {
+    entry_type: "condition",
+    condition_code: "DYSLIPIDEMIA_NEW_MED",
+    condition_name: "Dyslipidemia after medication initiation",
+    timeframe_text: "Lipid profile in 4\u201312 weeks",
+    icon: "three_tubes",
+    icon_label: "3 tubes",
+    note: "",
+    overrides_findings: ["HIGH_CHOLESTEROL"],
+    is_lab_protocol: true,
+    variants: [{ when: "default", window_min_days: 28, window_max_days: 84, anchor: "TREATMENT_START", tier: "TREATMENT_RESPONSE" }],
+    tests: [{ code: "LIPID", optional: false }],
+    tier: "TREATMENT_RESPONSE",
+    reminder: { mode: "FIXED", day_min: 28, day_max: 84 },
+  },
+  {
+    entry_type: "condition",
+    condition_code: "DYSLIPIDEMIA_STABLE",
+    condition_name: "Stable dyslipidemia",
+    timeframe_text: "Lipid monitoring approximately every 3\u201312 months when indicated",
+    icon: "lipid_cycle_clock",
+    icon_label: "lipid cycle + clock",
+    note: "",
+    overrides_findings: ["HIGH_CHOLESTEROL"],
+    is_lab_protocol: true,
+    requires_indication: true,
+    variants: [
+      { when: "indicated", window_min_days: 90, window_max_days: 365, anchor: "REPORT_DATE", tier: "LONG_TERM" },
+      { when: "default", window_min_days: null, window_max_days: null, anchor: "REPORT_DATE", mode: "REQUIRES_INDICATION", tier: "LONG_TERM" },
+    ],
+    tests: [{ code: "LIPID", optional: true }],
+    tier: "LONG_TERM",
+    reminder: { mode: "IF_APPROPRIATE", day_min: 90, day_max: 365 },
+  },
+];
+
+export const DEFAULT_RETEST_PROTOCOLS = [...DEFAULT_RETEST_PROTOCOLS_BASE, ...DEFAULT_CONDITION_PROTOCOLS];
+
+export const CONDITION_FAMILIES = {
+  PREDIABETES: ["PREDIABETES", "DIABETES_STABLE", "DIABETES_UNCONTROLLED"],
+  DIABETES_STABLE: ["PREDIABETES", "DIABETES_STABLE", "DIABETES_UNCONTROLLED"],
+  DIABETES_UNCONTROLLED: ["PREDIABETES", "DIABETES_STABLE", "DIABETES_UNCONTROLLED"],
+  DYSLIPIDEMIA_NEW_MED: ["DYSLIPIDEMIA_NEW_MED", "DYSLIPIDEMIA_STABLE"],
+  DYSLIPIDEMIA_STABLE: ["DYSLIPIDEMIA_NEW_MED", "DYSLIPIDEMIA_STABLE"],
+};
+
+export const CONDITION_STAGE_OPTIONS = {
+  PREDIABETES: [
+    { value: "STANDARD", label: "Standard (annual)" },
+    { value: "HIGHER_RISK", label: "Higher risk (earlier)" },
+  ],
+  DIABETES_STABLE: [{ value: "AT_GOAL", label: "Stable at goal" }],
+  DIABETES_UNCONTROLLED: [{ value: "UNCONTROLLED", label: "Uncontrolled" }],
+  HYPOTHYROID_STABLE_TREATED: [
+    { value: "STABLE", label: "Stable on treatment" },
+    { value: "ABNORMAL_ON_TREATMENT", label: "Needs adjustment (TSH abnormal)" },
+  ],
+  B12_DEFICIENCY: [
+    { value: "ACTIVE", label: "Active / On replacement" },
+    { value: "INDICATED", label: "CBC response indicated" },
+  ],
+  IRON_DEFICIENCY: [
+    { value: "ON_TREATMENT", label: "On iron therapy (Hb/CBC 2–4w)" },
+    { value: "IRON_STORES_FOLLOWUP", label: "Iron stores follow-up" },
+  ],
+  HYPERTENSION: [
+    { value: "MONITORING", label: "Home BP monitoring" },
+    { value: "ON_TREATMENT", label: "On treatment" },
+  ],
+  CKD: [
+    { value: "STANDARD", label: "Standard risk (annual)" },
+    { value: "HIGHER_RISK", label: "Higher risk (more frequent)" },
+  ],
+  DYSLIPIDEMIA_NEW_MED: [{ value: "NEW_MED", label: "Medication initiated (4–12w)" }],
+  DYSLIPIDEMIA_STABLE: [
+    { value: "STABLE", label: "Stable (when indicated)" },
+    { value: "INDICATED", label: "Monitoring indicated" },
+  ],
+};
+
+const COND_DRUG_CLASSES = {
+  PREDIABETES: new Set(["BIGUANIDE", "SULFONYLUREA", "INSULIN"]),
+  DIABETES_STABLE: new Set(["BIGUANIDE", "SULFONYLUREA", "INSULIN"]),
+  DIABETES_UNCONTROLLED: new Set(["BIGUANIDE", "SULFONYLUREA", "INSULIN"]),
+  DYSLIPIDEMIA_NEW_MED: new Set(["STATIN", "FIBRATE", "EZETIMIBE", "LIPID_LOWERING"]),
+  DYSLIPIDEMIA_STABLE: new Set(["STATIN", "FIBRATE", "EZETIMIBE", "LIPID_LOWERING"]),
+  HYPOTHYROID_STABLE_TREATED: new Set(["THYROID_HORMONE"]),
+  IRON_DEFICIENCY: new Set(["IRON_SUPPLEMENT"]),
+  B12_DEFICIENCY: new Set(["B12_SUPPLEMENT"]),
+};
+
+const COND_MED_KEYWORDS = {
+  DYSLIPIDEMIA_NEW_MED: MED_KEYWORDS.HIGH_CHOLESTEROL,
+  DYSLIPIDEMIA_STABLE: MED_KEYWORDS.HIGH_CHOLESTEROL,
+  HYPOTHYROID_STABLE_TREATED: MED_KEYWORDS.HIGH_TSH,
+  IRON_DEFICIENCY: MED_KEYWORDS.LOW_HB,
+  B12_DEFICIENCY: ["b12", "methylcobalamin", "cyanocobalamin"],
+};
+
+export function conditionProtoMap(rules) {
+  const map = Object.fromEntries(DEFAULT_CONDITION_PROTOCOLS.map((p) => [p.condition_code, p]));
+  for (const p of rules?.retest_protocols?.data || rules?.retest_protocols || []) {
+    if (p?.condition_code) map[p.condition_code] = p;
+  }
+  return map;
+}
+
+export function validConditionCodes(rules) {
+  const codes = new Set(rules?.profile_codes?.data?.conditions || rules?.profile_codes?.conditions || DEFAULT_PROFILE_CODES.conditions || []);
+  for (const k of Object.keys(conditionProtoMap(rules))) codes.add(k);
+  return codes;
+}
+
+export function hba1cTarget(rules, profile) {
+  const pt = profile?.targets?.HBA1C;
+  if (pt && pt.target_value !== undefined && pt.target_value !== null) {
+    return [String(pt.target_op || "<"), Number(pt.target_value)];
+  }
+  const rt = (rules?.clinical_targets?.data || rules?.clinical_targets || DEFAULT_CLINICAL_TARGETS)?.HBA1C || {};
+  return [String(rt.target_op || "<"), Number(rt.target_value ?? 7.0)];
+}
+
+function cmpVal(val, op, target) {
+  if (op === "<") return val < target;
+  if (op === "<=") return val <= target;
+  if (op === ">") return val > target;
+  if (op === ">=") return val >= target;
+  if (op === "==") return val === target;
+  return false;
+}
+
+function diffDaysIso(aIso, bIso) {
+  const a = Date.parse(`${String(aIso).slice(0, 10)}T00:00:00Z`);
+  const b = Date.parse(`${String(bIso).slice(0, 10)}T00:00:00Z`);
+  return Math.round((a - b) / 86400000);
+}
+
+export function suggestConditionsInStore(store, patientId, paramsByReport = {}, today = todayIstStr()) {
+  const rules = store.rules || {};
+  const profile = cleanProfile((store.health_profiles || {})[patientId]);
+  const medList = rules.medicine_catalogue?.data || rules.medicine_catalogue || DEFAULT_MEDICINE_CATALOGUE;
+  const medCat = Object.fromEntries(medList.map((m) => [m.code, m]));
+  const activeMeds = (store.patient_medications || []).filter((m) => m.patient_id === patientId && !m.stopped_on);
+  const cProtos = conditionProtoMap(rules);
+
+  const reps = (store.reports || [])
+    .filter((r) => r.patient_id === patientId && r.status === "READY")
+    .sort((a, b) => String(a.collected_on || "").localeCompare(String(b.collected_on || "")) || a.id - b.id);
+  const latestRep = reps[reps.length - 1];
+  const latestParams = latestRep ? (paramsByReport[latestRep.id] || []) : [];
+
+  const confirmed = Object.fromEntries((profile.conditions || []).filter((c) => c.status === "CONFIRMED").map((c) => [c.code, c]));
+  const suggestions = [];
+  const addSug = (code, stage, reasons, replaces = null) => {
+    if (confirmed[code] && !replaces) {
+      const curStage = confirmed[code].stage || "";
+      if (!(code === "HYPOTHYROID_STABLE_TREATED" && curStage && curStage !== stage)) return;
+    }
+    const meta = cProtos[code] || {};
+    suggestions.push({
+      code,
+      condition_name: meta.condition_name || code,
+      icon: meta.icon || "",
+      status: "SUSPECTED",
+      stage,
+      reason_codes: reasons,
+      replaces_code: replaces,
+    });
+  };
+
+  const matchMeds = (classes, kws) => activeMeds.filter((m) => {
+    const meta = medCat[m.medicine_code] || {};
+    const dc = meta.drug_class || "";
+    const hay = `${m.medicine_code || ""} ${meta.generic_name || ""} ${dc}`.toLowerCase();
+    return (dc && classes.has(dc)) || kws.some((kw) => hay.includes(kw));
+  });
+
+  // 1 & 2. Glycemic
+  const a1cVals = [];
+  for (const r of reps) {
+    for (const p of (paramsByReport[r.id] || [])) {
+      if (p.param_code === "HBA1C" && p.value_num !== null && p.value_num !== undefined) {
+        a1cVals.push([toIstDateStr(r.collected_on || r.reported_on), Number(p.value_num)]);
+      }
+    }
+  }
+  const diabMeds = matchMeds(new Set(["BIGUANIDE", "SULFONYLUREA", "INSULIN"]), ["metformin", "glimepiride", "insulin"]);
+  const confDiab = ["DIABETES_STABLE", "DIABETES_UNCONTROLLED", "DIABETES"].find((c) => Boolean(confirmed[c]));
+  const knownDiab = Boolean(confDiab || diabMeds.length || a1cVals.some(([, v]) => v >= 6.5));
+  const [tgtOp, tgtVal] = hba1cTarget(rules, profile);
+
+  if (knownDiab) {
+    const replacesPre = confirmed.PREDIABETES ? "PREDIABETES" : null;
+    if (a1cVals.length) {
+      const latestV = a1cVals[a1cVals.length - 1][1];
+      const atGoal = cmpVal(latestV, tgtOp, tgtVal);
+      const twoAbove = a1cVals.length >= 2 && !cmpVal(a1cVals[a1cVals.length - 1][1], tgtOp, tgtVal) && !cmpVal(a1cVals[a1cVals.length - 2][1], tgtOp, tgtVal);
+      if (atGoal) {
+        addSug("DIABETES_STABLE", "AT_GOAL", ["hba1c_at_target"], confirmed.DIABETES_UNCONTROLLED ? "DIABETES_UNCONTROLLED" : replacesPre);
+      } else if (twoAbove) {
+        addSug("DIABETES_UNCONTROLLED", "UNCONTROLLED", ["hba1c_above_target_2_consecutive"], confirmed.DIABETES_STABLE ? "DIABETES_STABLE" : replacesPre);
+      } else if (a1cVals.length === 1 && !confirmed.DIABETES_STABLE) {
+        addSug("DIABETES_UNCONTROLLED", "UNCONTROLLED", ["hba1c_above_target"], replacesPre);
+      }
+    } else if (!confDiab) {
+      addSug("DIABETES_STABLE", "AT_GOAL", ["known_diabetic_on_therapy"]);
+    }
+  } else if (a1cVals.length) {
+    const latestV = a1cVals[a1cVals.length - 1][1];
+    if (latestV >= 5.7 && latestV < 6.5) addSug("PREDIABETES", "STANDARD", ["hba1c_prediabetes_range"]);
+  }
+
+  // 3. Hypothyroid on levothyroxine
+  const thyMeds = matchMeds(new Set(["THYROID_HORMONE"]), ["levothyroxine", "thyroxine", "eltroxin", "thyronorm"]);
+  const tshLabs = latestParams.filter((p) => p.param_code === "TSH");
+  if (thyMeds.length && tshLabs.length) {
+    if (tshLabs.some((p) => p.system_flag === "LOW" || p.system_flag === "HIGH")) {
+      addSug("HYPOTHYROID_STABLE_TREATED", "ABNORMAL_ON_TREATMENT", ["tsh_abnormal_on_levothyroxine"],
+        confirmed.HYPOTHYROID_STABLE_TREATED?.stage === "STABLE" ? "HYPOTHYROID_STABLE_TREATED" : null);
+    } else if (tshLabs.some((p) => p.system_flag === "NORMAL")) {
+      addSug("HYPOTHYROID_STABLE_TREATED", "STABLE", ["tsh_in_range_on_levothyroxine"],
+        confirmed.HYPOTHYROID_STABLE_TREATED?.stage === "ABNORMAL_ON_TREATMENT" ? "HYPOTHYROID_STABLE_TREATED" : null);
+    }
+  }
+
+  // 4. CKD
+  const ckdDates = [];
+  for (const r of reps) {
+    const pList = paramsByReport[r.id] || [];
+    const egfrLow = pList.some((p) => p.param_code === "EGFR" && p.value_num !== null && p.value_num !== undefined && Number(p.value_num) < 60);
+    const uacrHigh = pList.some((p) => p.param_code === "UACR" && p.system_flag === "HIGH");
+    if (egfrLow || uacrHigh) ckdDates.push(toIstDateStr(r.collected_on || r.reported_on));
+  }
+  if (ckdDates.length >= 2 && diffDaysIso(ckdDates[ckdDates.length - 1], ckdDates[0]) >= 90) {
+    addSug("CKD", "STANDARD", ["ckd_persistent_90d"]);
+  }
+
+  // 5. Dyslipidemia
+  const lipidMeds = matchMeds(COND_DRUG_CLASSES.DYSLIPIDEMIA_NEW_MED, COND_MED_KEYWORDS.DYSLIPIDEMIA_NEW_MED);
+  if (lipidMeds.length) {
+    const starts = lipidMeds.map((m) => (m.started_on ? String(m.started_on).slice(0, 10) : null)).filter(Boolean);
+    const isNew = starts.some((sd) => {
+      const d = diffDaysIso(today, sd);
+      return d >= 0 && d <= 84;
+    });
+    if (isNew) {
+      addSug("DYSLIPIDEMIA_NEW_MED", "NEW_MED", ["lipid_med_within_12_weeks"], confirmed.DYSLIPIDEMIA_STABLE ? "DYSLIPIDEMIA_STABLE" : null);
+    } else if (starts.length || confirmed.DYSLIPIDEMIA_NEW_MED) {
+      addSug("DYSLIPIDEMIA_STABLE", "STABLE", ["lipid_med_maintenance"], confirmed.DYSLIPIDEMIA_NEW_MED ? "DYSLIPIDEMIA_NEW_MED" : null);
+    }
+  }
+
+  // 6. B12
+  if (latestParams.some((p) => p.param_code === "B12" && p.system_flag === "LOW")) {
+    addSug("B12_DEFICIENCY", "ACTIVE", ["b12_low"]);
+  }
+
+  // 7. Iron deficiency
+  const ferrLow = latestParams.some((p) => p.param_code === "FERRITIN" && p.system_flag === "LOW");
+  const ironLow = latestParams.some((p) => p.param_code === "IRON" && p.system_flag === "LOW");
+  const hbLow = latestParams.some((p) => (p.param_code === "HB" || p.param_code === "HEMOGLOBIN") && p.system_flag === "LOW");
+  if (ferrLow || (ironLow && hbLow)) {
+    addSug("IRON_DEFICIENCY", "ON_TREATMENT", ["iron_stores_or_iron_with_hb_low"]);
+  }
+
+  // 8. Hypertension
+  if (bpIsHigh(profile)[0]) {
+    addSug("HYPERTENSION", "MONITORING", ["bp_elevated"]);
+  }
+
+  return suggestions;
+}
+
+export function evaluateConditionProtocol({ proto, reportDateIst, followup, ctx, medCat, params = [], catNames = {}, state = {}, cStage = "" }) {
+  const cc = proto.condition_code;
+  const activeMeds = [...(ctx.activeMeds || []), ...(state.medicines || [])];
+  const reqClasses = COND_DRUG_CLASSES[cc] || new Set();
+  const kws = COND_MED_KEYWORDS[cc] || [];
+  const startDates = [];
+  for (const m of activeMeds) {
+    if (!m || m.stopped_on || m.active === false) continue;
+    const meta = medCat[m.medicine_code] || {};
+    const dc = meta.drug_class || "";
+    const hay = `${m.medicine_code || ""} ${meta.generic_name || ""} ${dc} ${m.name || ""}`.toLowerCase();
+    if ((dc && reqClasses.has(dc)) || kws.some((kw) => hay.includes(kw))) {
+      const raw = m.started_on || m.last_changed_on;
+      if (raw) startDates.push(String(raw).slice(0, 10));
+    }
+  }
+  const medStartDate = startDates.length ? startDates.sort().slice(-1)[0] : null;
+  const manualAnchor = state.treatment_anchor_on || followup?.treatment_anchor_on || null;
+  const stageU = String(cStage || "").trim().toUpperCase();
+  const indicated = Boolean(
+    state.indicated ||
+    stageU === "INDICATED" ||
+    (cc === "B12_DEFICIENCY" && ctx.profile?.b12_cbc_indicated) ||
+    (cc === "DYSLIPIDEMIA_STABLE" && ctx.profile?.lipid_retest_indicated)
+  );
+  const egfrVeryLow = params.some((p) => p.param_code === "EGFR" && p.value_num !== null && p.value_num !== undefined && Number(p.value_num) < 45);
+  const uacrVeryHigh = params.some((p) => p.param_code === "UACR" && p.value_num !== null && p.value_num !== undefined && Number(p.value_num) >= 300);
+  const higherRisk = Boolean(state.higher_risk || stageU === "HIGHER_RISK" || (cc === "CKD" && (egfrVeryLow || uacrVeryHigh)));
+
+  const condFlags = { indicated, higher_risk: higherRisk };
+  const variants = proto.variants || [];
+  let variant = variants.find((v) => v.when && v.when !== "default" && condFlags[v.when]);
+  if (!variant) variant = variants.find((v) => v.when === "default") || variants[0] || { when: "default", anchor: "REPORT_DATE" };
+
+  let mode = variant.mode || (variant.window_min_days != null ? "AUTO" : "DOCTOR_DECIDES");
+  if (proto.requires_indication && variant.when === "default") mode = "REQUIRES_INDICATION";
+
+  const isLab = proto.is_lab_protocol !== false;
+  const autoScheduled = Boolean(isLab && !NON_AUTO_MODES.has(mode) && variant.window_min_days != null);
+  const anchorKind = variant.anchor || "REPORT_DATE";
+  let anchorDate = state.anchor_date || reportDateIst;
+  if (!state.anchor_date && (anchorKind === "TREATMENT_START" || anchorKind === "TREATMENT_CHANGE")) {
+    anchorDate = medStartDate || manualAnchor || reportDateIst;
+  }
+  const winStart = autoScheduled ? addDaysIso(anchorDate, Number(variant.window_min_days)) : null;
+  const winEnd = autoScheduled ? addDaysIso(anchorDate, Number(variant.window_max_days ?? variant.window_min_days)) : null;
+  const remCfg = proto.reminder || {};
+  const remMode = remCfg.mode || "FIXED";
+  const reminderOn = autoScheduled && (remMode === "FIXED" || remMode === "IF_APPROPRIATE") && remCfg.day_min != null
+    ? addDaysIso(anchorDate, Number(remCfg.day_min))
+    : null;
+  const tests = (proto.tests || []).filter((t) => t?.code).map((t) => ({
+    code: t.code,
+    name: catNames[t.code] || t.code,
+    optional: Boolean(t.optional),
+    ...(t.routine !== undefined ? { routine: t.routine } : {}),
+    ...(t.doctor_decides !== undefined ? { doctor_decides: t.doctor_decides } : {}),
+  }));
+  const tierCode = variant.tier || proto.tier || "LONG_TERM";
+
+  return {
+    source: "CONDITION",
+    condition_code: cc,
+    condition_name: proto.condition_name || cc,
+    finding_code: cc,
+    finding_name: proto.condition_name || cc,
+    stage: cStage,
+    icon: proto.icon || "",
+    icon_label: proto.icon_label || "",
+    note: proto.note || "",
+    is_lab_protocol: isLab,
+    overrides_findings: [...(proto.overrides_findings || [])],
+    variant_when: variant.when || "default",
+    tier: tierCode,
+    mode,
+    auto_scheduled: autoScheduled,
+    anchor: anchorKind,
+    anchor_date: anchorDate,
+    window_min_days: variant.window_min_days ?? null,
+    window_max_days: variant.window_max_days ?? null,
+    window_start: winStart,
+    window_end: winEnd,
+    reminder_mode: remMode,
+    reminder_on: reminderOn,
+    timeframe_text: proto.timeframe_text || "",
+    tests_text: tests.length ? tests.map((t) => t.name).join(", ") : "Clinician-selected based on medicines & comorbidities",
+    considerations_text: proto.note || proto.timeframe_text || "",
+    ami_reminder_text: remCfg.day_min != null ? `Day ${remCfg.day_min}` : "Doctor-directed",
+    tests,
+  };
+}
 
 export function tierMapFromRules(rules) {
   const list = rules?.retest_tiers?.data || rules?.retest_tiers || DEFAULT_RETEST_TIERS;
@@ -444,7 +961,9 @@ export function notifyUrgentInStore(store, fu) {
 export function planRetestInStore(store, followup, { report = null, params = [], evalArgs = null, state = {}, fallbackDays = 90, force = false } = {}) {
   if (followup.retest_status === "OVERRIDDEN" && !force) return followup.retest_plan || {};
   const rules = store.rules || {};
-  const protos = Object.fromEntries((rules.retest_protocols?.data || rules.retest_protocols || DEFAULT_RETEST_PROTOCOLS).map((p) => [p.finding_code, p]));
+  const rawProtos = rules.retest_protocols?.data || rules.retest_protocols || DEFAULT_RETEST_PROTOCOLS;
+  const protos = Object.fromEntries(rawProtos.filter((p) => p?.finding_code).map((p) => [p.finding_code, p]));
+  const condProtos = conditionProtoMap(rules);
   const catNames = Object.fromEntries((rules.test_catalogue?.data || rules.test_catalogue || DEFAULT_TEST_CATALOGUE_P7).map((t) => [t.code, t.name]));
   const medList = rules.medicine_catalogue?.data || rules.medicine_catalogue || DEFAULT_MEDICINE_CATALOGUE;
   const medCat = Object.fromEntries(medList.map((m) => [m.code, m]));
@@ -466,34 +985,65 @@ export function planRetestInStore(store, followup, { report = null, params = [],
   const collected = toIstDateStr(report?.collected_on || report?.reported_on);
   const today = todayIstStr();
   const trends = state.trends || {};
-  const schedules = detected.filter((fc) => protos[fc]).map((fc) =>
+
+  const confirmedConds = (ctx.profile?.conditions || []).filter((c) => c && c.status === "CONFIRMED");
+  const condAll = [];
+  for (const c of confirmedConds) {
+    const cc = c.code;
+    if (!condProtos[cc]) continue;
+    if (cc === "HYPOTHYROID_STABLE_TREATED" && String(c.stage || "").toUpperCase() === "ABNORMAL_ON_TREATMENT") continue;
+    condAll.push(evaluateConditionProtocol({ proto: condProtos[cc], reportDateIst: collected, followup, ctx, medCat, params, catNames, state, cStage: c.stage || "" }));
+  }
+  const condLabSchedules = condAll.filter((s) => s.is_lab_protocol);
+  const nonLabProtocols = condAll.filter((s) => !s.is_lab_protocol);
+  const overriddenFindings = new Set(condLabSchedules.flatMap((s) => s.overrides_findings || []));
+
+  const findingSchedules = detected.filter((fc) => protos[fc] && !overriddenFindings.has(fc)).map((fc) =>
     evaluateRetestFinding({ proto: protos[fc], reportDateIst: collected, followup, ctx, medCat, params, trends, catNames, detectedCodes: detected, state })
   );
+  const schedules = [...condLabSchedules, ...findingSchedules];
+  const activeDetected = detected.filter((fc) => !overriddenFindings.has(fc));
 
-  const protocolTier = resolveProtocolTierInStore(followup, params, rules, schedules, detected, fallbackDays);
+  const protocolTier = resolveProtocolTierInStore(followup, params, rules, schedules, activeDetected, fallbackDays);
   const tmeta = getTierMeta(rules, protocolTier);
   followup.protocol_tier = protocolTier;
   const prevManual = followup.retest_plan?.manual_tier;
   const prevNotified = Boolean(followup.retest_plan?.urgent_notified);
 
   if (!schedules.length) {
-    const due = fallbackDays <= 0 ? today : addDaysIso(collected, fallbackDays);
-    followup.retest_window_start = due;
-    followup.retest_window_end = due;
-    followup.reminder_on = null;
-    followup.due_on = due;
-    followup.retest_status = "FALLBACK";
-    followup.retest_plan = {
-      status: "FALLBACK", label: "Retest due", primary_finding: null, findings: [], default_tests: [],
-      protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
-    };
+    if (nonLabProtocols.length) {
+      followup.retest_window_start = null;
+      followup.retest_window_end = null;
+      followup.reminder_on = null;
+      followup.due_on = today;
+      followup.retest_status = "DOCTOR_TO_SET";
+      followup.retest_plan = {
+        status: "DOCTOR_TO_SET", label: "Doctor to set retest date", source: "CONDITION",
+        primary_finding: nonLabProtocols[0], findings: [], non_lab_protocols: nonLabProtocols,
+        overridden_findings: [...overriddenFindings].sort(), default_tests: [],
+        protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
+      };
+    } else {
+      const due = fallbackDays <= 0 ? today : addDaysIso(collected, fallbackDays);
+      followup.retest_window_start = due;
+      followup.retest_window_end = due;
+      followup.reminder_on = null;
+      followup.due_on = due;
+      followup.retest_status = "FALLBACK";
+      followup.retest_plan = {
+        status: "FALLBACK", label: "Retest due", source: "FALLBACK", primary_finding: null, findings: [],
+        non_lab_protocols: [], overridden_findings: [], default_tests: [],
+        protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
+      };
+    }
     notifyUrgentInStore(store, followup);
     return followup.retest_plan;
   }
 
   const autoItems = schedules.filter((s) => s.auto_scheduled && s.window_start);
-  const top = schedules[0];
-  if (top.finding_code === "HIGH_CREATININE" || !autoItems.length) {
+  const akiSched = schedules.find((s) => s.finding_code === "HIGH_CREATININE");
+  const top = akiSched || schedules[0];
+  if (akiSched || !autoItems.length) {
     const defaultCodes = [...new Set(top.tests.filter((t) => !t.optional && catNames[t.code]).map((t) => t.code))].sort();
     followup.retest_window_start = null;
     followup.retest_window_end = null;
@@ -501,7 +1051,9 @@ export function planRetestInStore(store, followup, { report = null, params = [],
     followup.due_on = today;
     followup.retest_status = "DOCTOR_TO_SET";
     followup.retest_plan = {
-      status: "DOCTOR_TO_SET", label: "Doctor to set retest date", primary_finding: top, findings: schedules, default_tests: defaultCodes,
+      status: "DOCTOR_TO_SET", label: "Doctor to set retest date", source: top.source || "FINDING",
+      primary_finding: top, findings: schedules, non_lab_protocols: nonLabProtocols,
+      overridden_findings: [...overriddenFindings].sort(), default_tests: defaultCodes,
       protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
     };
     notifyUrgentInStore(store, followup);
@@ -516,7 +1068,9 @@ export function planRetestInStore(store, followup, { report = null, params = [],
   followup.due_on = chosen.window_start;
   followup.retest_status = "AUTO_SCHEDULED";
   followup.retest_plan = {
-    status: "AUTO_SCHEDULED", label: "Retest due", primary_finding: chosen, findings: schedules, default_tests: defaultCodes,
+    status: "AUTO_SCHEDULED", label: "Retest due", source: chosen.source || "FINDING",
+    primary_finding: chosen, findings: schedules, non_lab_protocols: nonLabProtocols,
+    overridden_findings: [...overriddenFindings].sort(), default_tests: defaultCodes,
     protocol_tier: protocolTier, tier_meta: tmeta, ...(prevManual ? { manual_tier: prevManual } : {}), ...(prevNotified ? { urgent_notified: true } : {}),
   };
   notifyUrgentInStore(store, followup);
@@ -557,6 +1111,22 @@ export function retestReminderTickInStore(store, nowMs = Date.now()) {
       id: store.notifications.items.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
       text: "Retest reminder due",
       link: `/caller-card/view?id=${fu.id}`,
+      urgent: false,
+      read: false,
+      at: new Date(nowMs).toISOString(),
+    });
+    sent += 1;
+  }
+  for (const ms of store.monitoring_schedules || []) {
+    if (ms.status !== "ACTIVE" || !ms.start_on || !ms.end_on) continue;
+    if (ms.start_on > today || ms.end_on < today || ms.last_reminded_on === today) continue;
+    ms.last_reminded_on = today;
+    if (!store.notifications) store.notifications = { unread: 0, items: [] };
+    store.notifications.unread = (store.notifications.unread || 0) + 1;
+    store.notifications.items.unshift({
+      id: store.notifications.items.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1,
+      text: "Home check-in reminder due",
+      link: `/patients/view?id=${ms.patient_id}`,
       urgent: false,
       read: false,
       at: new Date(nowMs).toISOString(),

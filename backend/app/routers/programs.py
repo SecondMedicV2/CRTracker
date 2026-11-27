@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import extended as ext, findings, followup as fu_svc, programs as prog_svc, relationship as rel
+from .. import conditions as cond_svc, extended as ext, findings, followup as fu_svc, programs as prog_svc, relationship as rel, retest as retest_svc
 from ..analysis import load_rules
 from ..db import get_db
 from ..models import (CareTouchpoint, Followup, Order, Patient, PatientBucket, ProgramRecommendation, Report,
@@ -16,6 +16,7 @@ from ..timeutil import today_ist
 
 router = APIRouter(tags=["programs"])
 clinical = require("ADMIN", "DOCTOR")
+doctor_only = require("DOCTOR")
 
 
 def _patient(db: Session, pid: int) -> Patient:
@@ -37,6 +38,13 @@ def get_health_profile(pid: int, request: Request, db: Session = Depends(get_db)
 @router.put("/patients/{pid}/health-profile")
 def put_health_profile(pid: int, body: dict, request: Request, db: Session = Depends(get_db), me: User = Depends(clinical)):
     p = _patient(db, pid)
+    if "conditions" in body and me.role != "DOCTOR":
+        cur_prof, _, _ = prog_svc.get_profile(db, p.id)
+        incoming_conds = prog_svc._clean_profile({"conditions": body.get("conditions")})["conditions"]
+        cur_norm = [(c.get("code"), c.get("status"), c.get("stage", ""), c.get("since", "")) for c in cur_prof.get("conditions", [])]
+        inc_norm = [(c.get("code"), c.get("status"), c.get("stage", ""), c.get("since", "")) for c in incoming_conds]
+        if cur_norm != inc_norm:
+            raise HTTPException(403, "Only a doctor can confirm, change, or remove conditions")
     try:
         profile, row = prog_svc.save_profile(db, p.id, body, me.id)
     except ValueError as err:
@@ -45,9 +53,63 @@ def put_health_profile(pid: int, body: dict, request: Request, db: Session = Dep
     rel.sync_touchpoints(db, p.id, commit=False)
     prog_svc.evaluate(db, p.id, commit=False)
     findings.sync_combinations(db, p.id, commit=False)
+    for fu in db.scalars(select(Followup).where(
+        Followup.patient_id == p.id, Followup.suppressed_reason == "", Followup.stage.notin_(fu_svc.DONE_STAGES)
+    )):
+        if fu.retest_status != "OVERRIDDEN":
+            retest_svc.plan_retest(db, fu, notify_urgent=False)
     db.commit()
     audit(db, request, me.id, "update", "health_profile", p.id)
     return {"patient_id": p.id, "exists": True, "updated_at": row.updated_at, **profile}
+
+
+class ConditionConfirmIn(BaseModel):
+    code: str = Field(max_length=50)
+    stage: str = Field("", max_length=30)
+    since: str = Field("", max_length=20)
+
+
+class TaskCompleteIn(BaseModel):
+    test_codes: list[str]
+
+
+@router.get("/patients/{pid}/conditions")
+def get_patient_conditions(pid: int, request: Request, db: Session = Depends(get_db), me: User = Depends(clinical)):
+    p = _patient(db, pid)
+    audit(db, request, me.id, "view", "patient_conditions", p.id)
+    return cond_svc.conditions_summary(db, p.id)
+
+
+@router.post("/patients/{pid}/conditions")
+def confirm_patient_condition(pid: int, body: ConditionConfirmIn, request: Request, db: Session = Depends(get_db),
+                              me: User = Depends(doctor_only)):
+    p = _patient(db, pid)
+    try:
+        cond_svc.confirm_condition(db, p.id, body.code, doctor_id=me.id, stage=body.stage, since=body.since, request=request)
+    except ValueError as err:
+        raise HTTPException(422, str(err))
+    return cond_svc.conditions_summary(db, p.id)
+
+
+@router.delete("/patients/{pid}/conditions/{code}")
+def delete_patient_condition(pid: int, code: str, request: Request, db: Session = Depends(get_db),
+                             me: User = Depends(doctor_only)):
+    p = _patient(db, pid)
+    if not cond_svc.remove_condition(db, p.id, code, doctor_id=me.id, request=request):
+        raise HTTPException(404, "Condition is not confirmed on this patient")
+    return cond_svc.conditions_summary(db, p.id)
+
+
+@router.post("/clinical-tasks/{tid}/complete")
+def complete_clinical_task(tid: int, body: TaskCompleteIn, request: Request, db: Session = Depends(get_db),
+                           me: User = Depends(doctor_only)):
+    try:
+        task = cond_svc.complete_clinical_task(db, tid, body.test_codes, doctor_id=me.id, request=request)
+    except LookupError as err:
+        raise HTTPException(404, str(err))
+    except ValueError as err:
+        raise HTTPException(422, str(err))
+    return {"id": task.id, "status": task.status, "selected_tests": task.selected_tests, "completed_at": task.completed_at}
 
 
 @router.get("/patients/{pid}/programs")

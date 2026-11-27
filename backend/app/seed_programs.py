@@ -52,6 +52,18 @@ PROFILE_CODES = {
     "menstrual_patterns": ["REGULAR", "IRREGULAR", "ABSENT"],
     "decline_reasons": ["CLINICALLY_NOT_INDICATED", "PATIENT_DECLINED", "ALREADY_MANAGED", "CONTRAINDICATED", "OTHER"],
     "specialties": ["Gynecology", "Endocrinology", "Andrology/Urology", "Fertility specialist", "Geriatrics", "Obesity medicine"],
+    "conditions": [
+        "B12_DEFICIENCY",
+        "IRON_DEFICIENCY",
+        "PREDIABETES",
+        "DIABETES_STABLE",
+        "DIABETES_UNCONTROLLED",
+        "HYPOTHYROID_STABLE_TREATED",
+        "HYPERTENSION",
+        "CKD",
+        "DYSLIPIDEMIA_NEW_MED",
+        "DYSLIPIDEMIA_STABLE",
+    ],
 }
 
 # Programmes 1-22 across Pages 2, 3, and 4 (keyed by code, not doc number).

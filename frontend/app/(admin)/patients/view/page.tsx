@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { api } from "@/lib/api";
 import CareLoopCard from "@/components/CareLoopCard";
+import ConditionsMonitoringCard from "@/components/ConditionsMonitoringCard";
 import ExtendedCareTabs from "@/components/ExtendedCareTabs";
 import HealthProfileCard from "@/components/HealthProfileCard";
 import ProgramsPanel from "@/components/ProgramsPanel";
@@ -81,6 +82,7 @@ function PatientInner({ id }: { id: string }) {
       </TableFrame>
       <Trends patientId={id} />
       <CareLoopCard patientId={id} role={role} refreshKey={refreshKey} />
+      <ConditionsMonitoringCard patientId={id} role={role} refreshKey={refreshKey} onChanged={() => setRefreshKey((n) => n + 1)} />
       <HealthProfileCard patientId={id} onSaved={() => setRefreshKey((n) => n + 1)} />
       <ExtendedCareTabs patientId={id} role={role} onChanged={() => setRefreshKey((n) => n + 1)} />
       <ProgramsPanel patientId={id} mode="patient" refreshKey={refreshKey} onChanged={() => setRefreshKey((n) => n + 1)} />

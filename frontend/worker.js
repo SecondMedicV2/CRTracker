@@ -54,19 +54,28 @@ import {
   nextBestStep,
 } from "./lib/programs.js";
 import {
+  CONDITION_FAMILIES,
+  CONDITION_STAGE_OPTIONS,
+  DEFAULT_CLINICAL_TARGETS,
+  DEFAULT_CONDITION_PROTOCOLS,
   DEFAULT_RETEST_PROTOCOLS,
   DEFAULT_RETEST_TIERS,
   DEFAULT_TEST_CATALOGUE_P7,
   OVERRIDE_REASONS,
   TIER_ORDER,
+  conditionProtoMap,
   dateInTierWindow,
+  evaluateConditionProtocol,
   getTierMeta,
+  hba1cTarget,
   notifyUrgentInStore,
   overrideRetestInStore,
   planRetestInStore,
   retestReminderTickInStore,
   slaTickInStore,
+  suggestConditionsInStore,
   toIstDateStr,
+  validConditionCodes,
 } from "./lib/retest.js";
 
 function consentingFamilySummaries(store, patientId) {
@@ -569,7 +578,11 @@ async function signIn(request, env, store) {
 
 // Admin-only areas, plus areas a role may read but not change. Callers never see lab findings.
 function forbidden(path, method, role) {
-  if (role === "ADMIN") return false;
+  if (role === "ADMIN") {
+    if ((method === "POST" || method === "DELETE") && /^\/patients\/\d+\/conditions(\/|$)/.test(path)) return true;
+    if (method === "POST" && /^\/clinical-tasks\/\d+\/complete$/.test(path)) return true;
+    return false;
+  }
   if (/^\/(imports|users|admin|audit|integrations|orders)(\/|$)/.test(path)) {
     if (path === "/audit" && role === "DOCTOR") return false;
     return true;
@@ -581,7 +594,7 @@ function forbidden(path, method, role) {
     if (method === "GET" && /^\/patients\/\d+\/(relationship|programs|referrals)$/.test(path)) return false;
     if (/^\/reports\/\d+\/insight(?:\/|$)/.test(path) && method === "GET") return false;
     if (/^\/followups\/\d+\/recommendations$/.test(path)) return true;
-    if (/^\/(reports|patients|trends|exports\/trends|touchpoints|program-recommendations|medicines|home-visits|family-links)(\/|$)/.test(path)) return true;
+    if (/^\/(reports|patients|trends|exports\/trends|touchpoints|program-recommendations|medicines|home-visits|family-links|clinical-tasks|monitoring-schedules)(\/|$)/.test(path)) return true;
   }
   return false;
 }
@@ -1268,6 +1281,8 @@ function getDefaultStore() {
     referrals: [],
     home_readings: [],
     home_visits: [],
+    monitoring_schedules: [],
+    clinical_tasks: [],
     family_links: [],
     family_consents: []
   };
@@ -1330,6 +1345,8 @@ async function getStore(env) {
         if (!data.referrals) data.referrals = [];
         if (!data.home_readings) data.home_readings = [];
         if (!data.home_visits) data.home_visits = [];
+        if (!data.monitoring_schedules) data.monitoring_schedules = [];
+        if (!data.clinical_tasks) data.clinical_tasks = [];
         if (!data.family_links) data.family_links = [];
         if (!data.family_consents) data.family_consents = [];
         if (!data.followups) data.followups = [];
@@ -1807,6 +1824,8 @@ async function handleApiRequest(request, url, env) {
     store.referrals = [];
     store.home_readings = [];
     store.home_visits = [];
+    store.monitoring_schedules = [];
+    store.clinical_tasks = [];
     store.family_links = [];
     store.family_consents = [];
     store.dashboard = {
@@ -1827,8 +1846,18 @@ async function handleApiRequest(request, url, env) {
   }
 
   // --- FOLLOWUPS ---
-  const fuRowOut = (f, full) => {
-    const label = !full ? "Retest due" : (f.retest_plan?.label || (f.retest_status === "DOCTOR_TO_SET" ? "Doctor to set retest date" : "Retest due"));
+  const fuRowOut = (f, full, hasMonitoring = false) => {
+    let label;
+    if (!full) {
+      if (f.retest_plan?.source === "CONDITION" || hasMonitoring) {
+        const d = f.retest_window_start || f.due_on;
+        label = d ? `Monitoring due on ${String(d).slice(0, 10)}` : "Monitoring due";
+      } else {
+        label = "Retest due";
+      }
+    } else {
+      label = f.retest_plan?.label || (f.retest_status === "DOCTOR_TO_SET" ? "Doctor to set retest date" : "Retest due");
+    }
     const out = {
       id: f.id,
       patient_id: f.patient_id || 1,
@@ -1925,7 +1954,10 @@ async function handleApiRequest(request, url, env) {
       .filter((f) => (!protocolTierFilter || (f.protocol_tier || "LONG_TERM") === protocolTierFilter))
       .filter((f) => (!bucketFilter || (f.buckets || []).includes(bucketFilter)))
       .sort(sortFollowupsUrgentFirst)
-      .map((f) => fuRowOut(f, isFull));
+      .map((f) => {
+        const hasMon = (store.monitoring_schedules || []).some((s) => s.patient_id === f.patient_id && s.status === "ACTIVE");
+        return fuRowOut(f, isFull, hasMon);
+      });
     return reply(200, list);
   }
   if (path === "/followups/summary" && method === "GET") {
@@ -2770,6 +2802,12 @@ async function handleApiRequest(request, url, env) {
         .filter(r => r.patient_id === fu?.patient_id && (r.status === "SUGGESTED" || r.status === "BOOKED"))
         .map(r => ({ id: r.id, label: "Specialist appointment to book", scheduled_for: r.scheduled_for || null, status: r.status }));
       const tmeta = getTierMeta(store.rules, fu?.protocol_tier || "LONG_TERM");
+      const hasMon = (store.monitoring_schedules || []).some((s) => s.patient_id === fu?.patient_id && s.status === "ACTIVE");
+      let monitoringDue = null;
+      if (fu?.retest_plan?.source === "CONDITION" || hasMon) {
+        const d = fu?.retest_window_start || fu?.due_on;
+        monitoringDue = d ? `Monitoring due on ${String(d).slice(0, 10)}` : "Monitoring due";
+      }
       return reply(200, {
         followup_id: fid,
         patient_id: fu?.patient_id ?? null,
@@ -2784,6 +2822,7 @@ async function handleApiRequest(request, url, env) {
         priority: fu?.priority || "ROUTINE",
         protocol_tier_colour: tmeta.colour_token,
         protocol_tier_label: tmeta.caller_label,
+        monitoring_due: monitoringDue,
         program_followups: programFollowups,
         next_steps: nextSteps,
         refill_reminder: hasDueRefill ? "Pharmacy refill reminder call" : null,
@@ -3018,9 +3057,21 @@ async function handleApiRequest(request, url, env) {
     }
     if (method === "PUT") {
       const b = await request.json().catch(() => ({}));
+      const cur = store.health_profiles[pid];
+      const curClean = cleanProfile(cur);
+      if (b.conditions !== undefined && me.role !== "DOCTOR") {
+        const inc = cleanProfile({ conditions: b.conditions }).conditions;
+        const norm = (arr) => JSON.stringify((arr || []).map((c) => [c.code, c.status, c.stage || "", c.since || ""]));
+        if (norm(curClean.conditions) !== norm(inc)) {
+          return reply(403, { detail: "Only a doctor can confirm, change, or remove conditions" });
+        }
+      }
+      const mergedBody = { ...(b || {}) };
+      if (mergedBody.conditions === undefined && cur) mergedBody.conditions = curClean.conditions;
+      if (mergedBody.targets === undefined && cur) mergedBody.targets = curClean.targets;
       let cleaned;
       try {
-        cleaned = cleanProfile(b);
+        cleaned = cleanProfile(mergedBody);
       } catch (err) {
         return reply(422, { detail: err.message });
       }
@@ -3034,6 +3085,233 @@ async function handleApiRequest(request, url, env) {
       await saveStore(env, store);
       return reply(200, { patient_id: pid, exists: true, updated_at: cleaned.updated_at, ...cleaned });
     }
+  }
+
+  async function buildConditionsSummary(pid) {
+    if (!store.health_profiles) store.health_profiles = {};
+    if (!store.monitoring_schedules) store.monitoring_schedules = [];
+    if (!store.clinical_tasks) store.clinical_tasks = [];
+    const profile = cleanProfile(store.health_profiles[pid]);
+    const rules = store.rules || {};
+    const cProtos = conditionProtoMap(rules);
+    const paramsByReport = {};
+    for (const r of (store.reports || []).filter((x) => x.patient_id === pid && x.status === "READY")) {
+      paramsByReport[r.id] = (await kvGet(env, `report_params:${r.id}`)) || [];
+    }
+    const openFu = (store.followups || [])
+      .filter((f) => f.patient_id === pid && !f.suppressed_reason && !DONE_STAGES.has(f.stage))
+      .sort((a, b) => b.id - a.id)[0] || null;
+    const plan = openFu?.retest_plan || {};
+    const schedByCond = {};
+    for (const s of [...(plan.findings || []), ...(plan.non_lab_protocols || [])]) {
+      if (s?.condition_code) schedByCond[s.condition_code] = s;
+    }
+    const medList = rules.medicine_catalogue?.data || rules.medicine_catalogue || DEFAULT_MEDICINE_CATALOGUE;
+    const medCat = Object.fromEntries(medList.map((m) => [m.code, m]));
+    const catNames = Object.fromEntries((rules.test_catalogue?.data || rules.test_catalogue || DEFAULT_TEST_CATALOGUE_P7).map((t) => [t.code, t.name]));
+    const activeMeds = (store.patient_medications || []).filter((m) => m.patient_id === pid && !m.stopped_on);
+
+    const confirmed = (profile.conditions || []).filter((c) => c.status === "CONFIRMED").map((c) => {
+      const meta = cProtos[c.code] || {};
+      let activeSched = schedByCond[c.code];
+      if (!activeSched && cProtos[c.code]) {
+        activeSched = evaluateConditionProtocol({
+          proto: cProtos[c.code], reportDateIst: todayIstStr(), followup: openFu,
+          ctx: { profile, activeMeds }, medCat, params: [], catNames, cStage: c.stage || "",
+        });
+      }
+      const nextDate = activeSched?.window_start || openFu?.next_followup_on || null;
+      return {
+        code: c.code,
+        condition_name: meta.condition_name || c.code,
+        status: c.status,
+        stage: c.stage || "",
+        since: c.since || "",
+        confirmed_by: c.confirmed_by ?? null,
+        icon: meta.icon || "",
+        icon_label: meta.icon_label || "",
+        timeframe_text: meta.timeframe_text || "",
+        note: meta.note || "",
+        tier: activeSched?.tier || meta.tier || "LONG_TERM",
+        active_protocol: activeSched || null,
+        next_test_date: nextDate,
+        stage_options: CONDITION_STAGE_OPTIONS[c.code] || [],
+      };
+    });
+
+    const suggested = suggestConditionsInStore(store, pid, paramsByReport);
+    const monitoringSchedules = store.monitoring_schedules.filter((s) => s.patient_id === pid).sort((a, b) => b.id - a.id);
+    const clinicalTasks = store.clinical_tasks.filter((t) => t.patient_id === pid).sort((a, b) => b.id - a.id);
+    const [tgtOp, tgtVal] = hba1cTarget(rules, profile);
+    const catalogue = DEFAULT_CONDITION_PROTOCOLS.filter((p) => cProtos[p.condition_code]).map((p) => ({
+      code: p.condition_code,
+      condition_name: cProtos[p.condition_code].condition_name || p.condition_code,
+      icon: cProtos[p.condition_code].icon || "",
+      timeframe_text: cProtos[p.condition_code].timeframe_text || "",
+      stage_options: CONDITION_STAGE_OPTIONS[p.condition_code] || [],
+    }));
+    return {
+      patient_id: pid,
+      confirmed,
+      suggested,
+      monitoring_schedules: monitoringSchedules,
+      clinical_tasks: clinicalTasks,
+      hba1c_target: { target_op: tgtOp, target_value: tgtVal, unit: "%" },
+      catalogue,
+    };
+  }
+
+  const patCondMatch = path.match(/^\/patients\/(\d+)\/conditions(?:\/([A-Za-z0-9_]+))?$/);
+  if (patCondMatch) {
+    const pid = parseInt(patCondMatch[1], 10);
+    const condCodeParam = patCondMatch[2];
+    const p = (store.patients || []).find((x) => x.id === pid);
+    if (!p) return reply(404, { detail: "No such patient" });
+    if (!store.health_profiles) store.health_profiles = {};
+    if (!store.monitoring_schedules) store.monitoring_schedules = [];
+    if (!store.clinical_tasks) store.clinical_tasks = [];
+
+    if (!condCodeParam && method === "GET") {
+      const out = await buildConditionsSummary(pid);
+      recordAudit(store, me, "view", "patient_conditions", pid);
+      await saveStore(env, store);
+      return reply(200, out);
+    }
+    if (!condCodeParam && method === "POST") {
+      if (me.role !== "DOCTOR") return reply(403, { detail: "Only a doctor can confirm or update conditions" });
+      const b = await request.json().catch(() => ({}));
+      const code = String(b.code || "").trim().toUpperCase();
+      if (!validConditionCodes(store.rules).has(code)) return reply(422, { detail: `Unknown condition code: ${code}` });
+      const profile = cleanProfile(store.health_profiles[pid]);
+      const family = new Set(CONDITION_FAMILIES[code] || [code]);
+      const replaced = (profile.conditions || []).filter((c) => family.has(c.code) && c.code !== code).map((c) => c.code);
+      const kept = (profile.conditions || []).filter((c) => !family.has(c.code));
+      const today = todayIstStr();
+      const defStage = (CONDITION_STAGE_OPTIONS[code] || [{ value: "CONFIRMED" }])[0].value;
+      kept.push({
+        code,
+        status: "CONFIRMED",
+        stage: String(b.stage || "").trim().slice(0, 30) || defStage,
+        since: String(b.since || "").trim().slice(0, 20) || today,
+        confirmed_by: me.id,
+      });
+      profile.conditions = kept;
+      profile.updated_at = new Date().toISOString();
+      store.health_profiles[pid] = profile;
+
+      if (code === "HYPERTENSION") {
+        if (!store.monitoring_schedules.some((s) => s.patient_id === pid && s.condition_code === "HYPERTENSION" && s.status === "ACTIVE")) {
+          store.monitoring_schedules.push({
+            id: nextId(store.monitoring_schedules),
+            patient_id: pid,
+            condition_code: "HYPERTENSION",
+            kind: "BP",
+            frequency_per_day: 2,
+            duration_days: 7,
+            start_on: today,
+            end_on: addDaysIso(today, 6),
+            slots: ["MORNING", "EVENING"],
+            status: "ACTIVE",
+            last_reminded_on: null,
+            note: "starter value, clinician to confirm",
+            created_by: me.id,
+            created_at: new Date().toISOString(),
+          });
+        }
+        if (!store.clinical_tasks.some((t) => t.patient_id === pid && t.condition_code === "HYPERTENSION" && t.task_type === "CHOOSE_LAB_TESTS" && t.status === "OPEN")) {
+          const openFu = (store.followups || []).find((f) => f.patient_id === pid && !f.suppressed_reason && !DONE_STAGES.has(f.stage));
+          store.clinical_tasks.push({
+            id: nextId(store.clinical_tasks),
+            patient_id: pid,
+            followup_id: openFu?.id || null,
+            condition_code: "HYPERTENSION",
+            task_type: "CHOOSE_LAB_TESTS",
+            title: "Choose lab tests for hypertension",
+            details: "Select laboratory tests based on current medicines and comorbidities.",
+            selected_tests: [],
+            status: "OPEN",
+            assigned_doctor_id: openFu?.assigned_doctor_id || null,
+            created_at: new Date().toISOString(),
+          });
+          if (!store.notifications) store.notifications = { unread: 0, items: [] };
+          store.notifications.unread = (store.notifications.unread || 0) + 1;
+          store.notifications.items.unshift({
+            id: nextId(store.notifications.items),
+            text: "Choose lab tests for confirmed condition",
+            link: `/patients/view?id=${pid}`,
+            urgent: false,
+            read: false,
+            at: new Date().toISOString(),
+          });
+        }
+      }
+      await reevalPatient(pid);
+      recordAudit(store, me, replaced.length ? "condition_stage_change" : "condition_confirm", "patient_condition", (replaced.length ? `${pid}:${replaced[0]}->${code}` : `${pid}:${code}`).slice(0, 60));
+      const out = await buildConditionsSummary(pid);
+      await saveStore(env, store);
+      return reply(200, out);
+    }
+    if (condCodeParam && method === "DELETE") {
+      if (me.role !== "DOCTOR") return reply(403, { detail: "Only a doctor can confirm, change, or remove conditions" });
+      const code = condCodeParam.trim().toUpperCase();
+      const profile = cleanProfile(store.health_profiles[pid]);
+      const kept = (profile.conditions || []).filter((c) => c.code !== code);
+      if (kept.length === (profile.conditions || []).length) return reply(404, { detail: "Condition is not confirmed on this patient" });
+      profile.conditions = kept;
+      profile.updated_at = new Date().toISOString();
+      store.health_profiles[pid] = profile;
+      if (code === "HYPERTENSION") {
+        for (const s of store.monitoring_schedules) {
+          if (s.patient_id === pid && s.condition_code === "HYPERTENSION" && s.status === "ACTIVE") s.status = "CANCELLED";
+        }
+        for (const t of store.clinical_tasks) {
+          if (t.patient_id === pid && t.condition_code === "HYPERTENSION" && t.status === "OPEN") t.status = "DISMISSED";
+        }
+      }
+      await reevalPatient(pid);
+      recordAudit(store, me, "condition_remove", "patient_condition", `${pid}:${code}`.slice(0, 60));
+      const out = await buildConditionsSummary(pid);
+      await saveStore(env, store);
+      return reply(200, out);
+    }
+  }
+
+  const taskCompMatch = path.match(/^\/clinical-tasks\/(\d+)\/complete$/);
+  if (taskCompMatch && method === "POST") {
+    if (me.role !== "DOCTOR") return reply(403, { detail: "Only a doctor can complete this clinical task" });
+    const tid = parseInt(taskCompMatch[1], 10);
+    const task = (store.clinical_tasks || []).find((t) => t.id === tid);
+    if (!task) return reply(404, { detail: "No such clinical task" });
+    const b = await request.json().catch(() => ({}));
+    const catList = store.rules?.test_catalogue?.data || store.rules?.test_catalogue || DEFAULT_TEST_CATALOGUE_P7;
+    const cat = new Set(catList.map((t) => t.code));
+    const cleanTests = [...new Set((b.test_codes || []).map((x) => String(x || "").trim().toUpperCase()).filter(Boolean))].sort();
+    const unknown = cleanTests.filter((tc) => !cat.has(tc));
+    if (unknown.length) return reply(422, { detail: `Unknown test code(s): ${unknown.join(", ")}` });
+    if (!cleanTests.length) return reply(422, { detail: "Select at least one test" });
+    task.selected_tests = cleanTests;
+    task.status = "DONE";
+    task.completed_by = me.id;
+    task.completed_at = new Date().toISOString();
+    if (task.followup_id) {
+      if (!store.recommendations) store.recommendations = {};
+      const ex = store.recommendations[task.followup_id];
+      if (ex && ex.source === "DOCTOR") {
+        ex.test_codes = [...new Set([...(ex.test_codes || []), ...cleanTests])].sort();
+      } else {
+        store.recommendations[task.followup_id] = {
+          id: nextId(Object.values(store.recommendations)),
+          followup_id: task.followup_id,
+          test_codes: cleanTests,
+          ordered: false,
+          ordered_ref: "",
+          source: "DOCTOR",
+        };
+      }
+    }
+    recordAudit(store, me, "clinical_task_complete", "clinical_task", `${task.id}:${cleanTests.length}`);
+    await saveStore(env, store);
+    return reply(200, { id: task.id, status: task.status, selected_tests: task.selected_tests, completed_at: task.completed_at });
   }
 
   const patProgMatch = path.match(/^\/patients\/(\d+)\/programs$/);
@@ -3755,6 +4033,7 @@ async function handleApiRequest(request, url, env) {
     referral_specialties: DEFAULT_REFERRAL_SPECIALTIES,
     diagnostic_findings: DEFAULT_DIAGNOSTIC_FINDINGS,
     recommendation_combinations: DEFAULT_RECOMMENDATION_COMBINATIONS,
+    clinical_targets: DEFAULT_CLINICAL_TARGETS,
     retest_protocols: DEFAULT_RETEST_PROTOCOLS,
     retest_tiers: DEFAULT_RETEST_TIERS
   };

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from app import db as dbmod
 from app import pipeline, retest, status, storage
 from app.models import AuditLog, Followup, ImportBatch, Notification, Order, Report, ReportParameter
-from app.seed_data import RETEST_PROTOCOLS, TEST_CATALOGUE
+from app.seed_data import CONDITION_PROTOCOLS, RETEST_PROTOCOLS, TEST_CATALOGUE
 from app.timeutil import today_ist
 from tests.test_followups import A1C_SEV, PSA, fu_of, make
 from tests.test_workflow import doctor as make_doctor
@@ -51,7 +51,9 @@ def test_retest_catalogue_and_protocol_seed(admin):
     cat_codes = {t["code"] for t in TEST_CATALOGUE}
     assert {"VITD", "CALCIUM", "HBA1C", "FBS", "LIPID", "TSH", "FT4", "CBC", "RETIC",
             "KFT", "ELECTROLYTES", "URINE_ROUTINE", "UACR", "LFT"} <= cat_codes
-    assert len(RETEST_PROTOCOLS) == 10
+    assert len([p for p in RETEST_PROTOCOLS if p.get("finding_code")]) == 10
+    assert len(CONDITION_PROTOCOLS) == 10
+    assert len(RETEST_PROTOCOLS) == 20
     chol = next(p for p in RETEST_PROTOCOLS if p["finding_code"] == "HIGH_CHOLESTEROL")
     assert "28\u201384 days" in chol["signoff_note"] and "Day 30\u201390" in chol["signoff_note"]
     assert admin.get(f"{API}/rules/retest_protocols").status_code == 200

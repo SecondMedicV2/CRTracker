@@ -60,6 +60,7 @@ def default_profile() -> dict:
         "functional_status": "",
         "screening_history": [],
         "conditions": [],
+        "targets": {},
         "imaging_findings": [],
         "reproductive": {"planning_pregnancy": None, "trying_to_conceive_months": None, "menstrual_pattern": "", "pregnancies": None},
         "caregiver": {"name": "", "relationship": "", "phone": "", "phone_consent": False},
@@ -117,11 +118,31 @@ def _clean_profile(raw: dict | None) -> dict:
         ]
     if isinstance(raw.get("conditions"), list):
         base["conditions"] = [
-            {"code": str(x.get("code") or "").strip().upper(),
-             "status": str(x.get("status") or "CONFIRMED").strip().upper(),
-             "stage": str(x.get("stage") or "")[:30], "since": str(x.get("since") or "")[:20]}
+            {
+                "code": str(x.get("code") or "").strip().upper(),
+                "status": str(x.get("status") or "CONFIRMED").strip().upper(),
+                "stage": str(x.get("stage") or "")[:30],
+                "since": str(x.get("since") or "")[:20],
+                "confirmed_by": int(x["confirmed_by"]) if x.get("confirmed_by") not in (None, "") else None,
+            }
             for x in raw["conditions"] if isinstance(x, dict) and x.get("code")
         ]
+    if isinstance(raw.get("targets"), dict):
+        clean_t = {}
+        for k, v in raw["targets"].items():
+            code = str(k or "").strip().upper()
+            if not code:
+                continue
+            if isinstance(v, (int, float)):
+                clean_t[code] = {"target_op": "<", "target_value": float(v), "unit": "%" if code == "HBA1C" else ""}
+            elif isinstance(v, dict) and v.get("target_value") not in (None, ""):
+                op = str(v.get("target_op") or "<").strip()
+                clean_t[code] = {
+                    "target_op": op if op in ("<", "<=", ">", ">=", "==") else "<",
+                    "target_value": float(v["target_value"]),
+                    "unit": str(v.get("unit") or ("%" if code == "HBA1C" else ""))[:20],
+                }
+        base["targets"] = clean_t
     if isinstance(raw.get("imaging_findings"), list):
         base["imaging_findings"] = [
             {"code": str(x.get("code") or "").strip().upper(), "done_on": str(x.get("done_on") or "")[:20]}
@@ -170,9 +191,14 @@ def get_profile(db: Session, patient_id: int) -> tuple[dict, bool, HealthProfile
 
 def save_profile(db: Session, patient_id: int, raw: dict, user_id: int | None) -> tuple[dict, HealthProfile]:
     root = rel.canonical_patient_id(db, patient_id)
-    cleaned = _clean_profile(raw)
+    cur_profile, has_cur, row = get_profile(db, root)
+    merged = dict(raw) if isinstance(raw, dict) else {}
+    if "conditions" not in merged and has_cur:
+        merged["conditions"] = cur_profile.get("conditions", [])
+    if "targets" not in merged and has_cur:
+        merged["targets"] = cur_profile.get("targets", {})
+    cleaned = _clean_profile(merged)
     enc = storage.encrypt_str(json.dumps(cleaned, ensure_ascii=False))
-    row = db.scalar(select(HealthProfile).where(HealthProfile.patient_id == root))
     if not row:
         row = HealthProfile(patient_id=root, payload_enc=enc, updated_by=user_id)
         db.add(row)

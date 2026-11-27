@@ -74,8 +74,12 @@ const RULE_METADATA: Record<string, { title: string; desc: string }> = {
     desc: "Starter Primary, Secondary, and Third recommendations and neutral caller labels for each diagnostic finding."
   },
   retest_protocols: {
-    title: "Retesting Schedule Protocols (10 Findings)",
-    desc: "Clinically grounded retest timeframes, repeat tests, clinical considerations, and AMI reminder schedules for all 10 findings."
+    title: "Retesting Schedule Protocols (Findings & Conditions)",
+    desc: "Clinically grounded retest timeframes, repeat tests, clinical considerations, AMI reminders, and condition-based protocols with clinical notes."
+  },
+  clinical_targets: {
+    title: "Clinical Targets (Page 10/11)",
+    desc: "Starter clinical target rules (e.g. HbA1c < 7.0%) used for parameter status and stable/uncontrolled diabetes classification."
   },
   retest_tiers: {
     title: "Retesting Protocol Urgency Tiers (5 Tiers)",
@@ -151,44 +155,80 @@ function Rule({ k, onChange }: { k: string; onChange: () => void }) {
 
       <div className="pt-3 border-t border-slate-100 space-y-3">
         {k === "retest_protocols" && Array.isArray(ruleData) && (
-          <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
             {ruleData.filter((p: any) => p.signoff_note).map((p: any) => (
-              <div key={p.finding_code} className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-950">
-                <b>Sign-off checklist ({p.finding_name}):</b> {p.signoff_note}
+              <div key={p.finding_code || p.condition_code} className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-950">
+                <b>Sign-off checklist ({p.finding_name || p.condition_name}):</b> {p.signoff_note}
               </div>
             ))}
-            <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table className="w-full text-left text-xs">
-                <thead className="border-b bg-slate-50 text-slate-600">
-                  <tr>
-                    <th className="p-2">Finding</th>
-                    <th className="p-2">Recommended retesting timeframe</th>
-                    <th className="p-2">Tests to repeat</th>
-                    <th className="p-2">Clinical considerations</th>
-                    <th className="p-2">AMI reminder</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(() => {
-                    let rows: any[] = ruleData;
-                    try { if (text !== null) rows = JSON.parse(text); } catch {}
-                    const updateRow = (idx: number, field: string, val: string) => {
-                      const next = rows.map((item: any, i: number) => (i === idx ? { ...item, [field]: val } : item));
-                      setText(JSON.stringify(next, null, 2));
-                    };
-                    return rows.map((p: any, idx: number) => (
-                      <tr key={p.finding_code} className="border-t align-top">
-                        <td className="p-2 font-semibold whitespace-nowrap">{p.finding_name}</td>
-                        <td className="p-2 min-w-[200px]"><input aria-label={`${p.finding_code} timeframe`} className="w-full rounded border px-1.5 py-1" value={p.timeframe_text || ""} onChange={(e) => updateRow(idx, "timeframe_text", e.target.value)} /></td>
-                        <td className="p-2 min-w-[160px]"><input aria-label={`${p.finding_code} tests`} className="w-full rounded border px-1.5 py-1" value={p.tests_text || ""} onChange={(e) => updateRow(idx, "tests_text", e.target.value)} /></td>
-                        <td className="p-2 min-w-[240px]"><input aria-label={`${p.finding_code} considerations`} className="w-full rounded border px-1.5 py-1" value={p.considerations_text || ""} onChange={(e) => updateRow(idx, "considerations_text", e.target.value)} /></td>
-                        <td className="p-2 min-w-[130px]"><input aria-label={`${p.finding_code} reminder`} className="w-full rounded border px-1.5 py-1" value={p.ami_reminder_text || ""} onChange={(e) => updateRow(idx, "ami_reminder_text", e.target.value)} /></td>
-                      </tr>
-                    ));
-                  })()}
-                </tbody>
-              </table>
-            </div>
+            {(() => {
+              let rows: any[] = ruleData;
+              try { if (text !== null) rows = JSON.parse(text); } catch {}
+              const updateRow = (idx: number, field: string, val: string) => {
+                const next = rows.map((item: any, i: number) => (i === idx ? { ...item, [field]: val } : item));
+                setText(JSON.stringify(next, null, 2));
+              };
+              const indexed = rows.map((p: any, idx: number) => ({ p, idx }));
+              const findingRows = indexed.filter(({ p }) => Boolean(p.finding_code));
+              const conditionRows = indexed.filter(({ p }) => Boolean(p.condition_code));
+              return (
+                <>
+                  <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                    <table className="w-full text-left text-xs">
+                      <thead className="border-b bg-slate-50 text-slate-600">
+                        <tr>
+                          <th className="p-2">Finding</th>
+                          <th className="p-2">Recommended retesting timeframe</th>
+                          <th className="p-2">Tests to repeat</th>
+                          <th className="p-2">Clinical considerations</th>
+                          <th className="p-2">AMI reminder</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {findingRows.map(({ p, idx }) => (
+                          <tr key={p.finding_code} className="border-t align-top">
+                            <td className="p-2 font-semibold whitespace-nowrap">{p.finding_name}</td>
+                            <td className="p-2 min-w-[200px]"><input aria-label={`${p.finding_code} timeframe`} className="w-full rounded border px-1.5 py-1" value={p.timeframe_text || ""} onChange={(e) => updateRow(idx, "timeframe_text", e.target.value)} /></td>
+                            <td className="p-2 min-w-[160px]"><input aria-label={`${p.finding_code} tests`} className="w-full rounded border px-1.5 py-1" value={p.tests_text || ""} onChange={(e) => updateRow(idx, "tests_text", e.target.value)} /></td>
+                            <td className="p-2 min-w-[240px]"><input aria-label={`${p.finding_code} considerations`} className="w-full rounded border px-1.5 py-1" value={p.considerations_text || ""} onChange={(e) => updateRow(idx, "considerations_text", e.target.value)} /></td>
+                            <td className="p-2 min-w-[130px]"><input aria-label={`${p.finding_code} reminder`} className="w-full rounded border px-1.5 py-1" value={p.ami_reminder_text || ""} onChange={(e) => updateRow(idx, "ami_reminder_text", e.target.value)} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {conditionRows.length > 0 && (
+                    <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                      <div className="border-b bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-800">
+                        Condition-based retesting protocols (Page 11)
+                      </div>
+                      <table className="w-full text-left text-xs">
+                        <thead className="border-b bg-slate-50 text-slate-600">
+                          <tr>
+                            <th className="p-2">Code</th>
+                            <th className="p-2">Condition</th>
+                            <th className="p-2">Typical monitoring timeframe</th>
+                            <th className="p-2">Tier</th>
+                            <th className="p-2">Note (if any)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {conditionRows.map(({ p, idx }) => (
+                            <tr key={p.condition_code} className="border-t align-top">
+                              <td className="p-2 font-mono whitespace-nowrap">{p.condition_code}</td>
+                              <td className="p-2 font-semibold whitespace-nowrap">{p.condition_name}</td>
+                              <td className="p-2 min-w-[240px]"><input aria-label={`${p.condition_code} timeframe`} className="w-full rounded border px-1.5 py-1" value={p.timeframe_text || ""} onChange={(e) => updateRow(idx, "timeframe_text", e.target.value)} /></td>
+                              <td className="p-2 whitespace-nowrap font-mono">{p.tier || "LONG_TERM"}</td>
+                              <td className="p-2 min-w-[200px]"><input aria-label={`${p.condition_code} note`} placeholder="Optional clinical team note" className="w-full rounded border px-1.5 py-1" value={p.note || ""} onChange={(e) => updateRow(idx, "note", e.target.value)} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         )}
         <label className="block text-xs font-semibold text-slate-700">

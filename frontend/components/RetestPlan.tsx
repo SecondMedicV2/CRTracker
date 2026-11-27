@@ -168,9 +168,14 @@ export default function RetestPlan({ followup, onUpdated }: { followup: any; onU
       {primary ? (
         <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm md:grid-cols-5">
           <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Finding</div>
-            <div className="mt-1 font-semibold text-slate-900">{primary.finding_name}</div>
-            <div className="mt-0.5 text-xs font-mono text-slate-500">{primary.finding_code} · {primary.variant_when}</div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              {primary.source === "CONDITION" ? "Condition protocol" : "Finding"}
+            </div>
+            <div className="mt-1 font-semibold text-slate-900">{primary.condition_name || primary.finding_name}</div>
+            <div className="mt-0.5 text-xs font-mono text-slate-500">{primary.condition_code || primary.finding_code} · {primary.variant_when}</div>
+            {Array.isArray(plan.overridden_findings) && plan.overridden_findings.length > 0 && (
+              <div className="mt-1 text-[11px] text-teal-800">Overrides: {plan.overridden_findings.join(", ")}</div>
+            )}
           </div>
           <div>
             <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Recommended timeframe</div>
@@ -238,7 +243,7 @@ export default function RetestPlan({ followup, onUpdated }: { followup: any; onU
               <tbody>
                 {findings.map((item: any) => (
                   <tr key={item.finding_code} className="border-b align-top last:border-0">
-                    <td className="py-1.5 pr-2 font-medium">{item.finding_name} <span className="text-slate-400">({item.variant_when})</span></td>
+                    <td className="py-1.5 pr-2 font-medium">{item.condition_name || item.finding_name} <span className="text-slate-400">({item.variant_when})</span></td>
                     <td className="py-1.5 pr-2 whitespace-nowrap">
                       {item.window_start ? `${fmtDate(item.window_start)}${item.window_end && item.window_end !== item.window_start ? ` \u2192 ${fmtDate(item.window_end)}` : ""}` : item.mode}
                     </td>

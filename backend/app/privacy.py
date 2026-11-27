@@ -16,10 +16,10 @@ from sqlalchemy.orm import Session
 from . import storage
 from .config import env
 from .db import SessionLocal
-from .models import (Appointment, CallCard, CallLog, CareTouchpoint, Comment, Consent, FamilyLink, Followup,
-                     HealthProfile, HomeReading, HomeVisit, IdentityReview, Notification, Order, Patient,
-                     PatientBucket, PatientMedication, ProgramRecommendation, Referral, RefillSchedule, Report,
-                     ReportParameter, RetestRecommendation)
+from .models import (Appointment, CallCard, CallLog, CareTouchpoint, ClinicalTask, Comment, Consent, FamilyLink,
+                     Followup, HealthProfile, HomeReading, HomeVisit, IdentityReview, MonitoringSchedule,
+                     Notification, Order, Patient, PatientBucket, PatientMedication, ProgramRecommendation, Referral,
+                     RefillSchedule, Report, ReportParameter, RetestRecommendation)
 from .security import audit
 
 
@@ -87,6 +87,8 @@ def export_patient(db: Session, pid: int) -> dict:
             "referrals": [plain(r) for r in rows(Referral, Referral.patient_id, x["patients"])],
             "home_readings": [plain(r) for r in rows(HomeReading, HomeReading.patient_id, x["patients"])],
             "home_visits": [plain(v) for v in rows(HomeVisit, HomeVisit.patient_id, x["patients"])],
+            "monitoring_schedules": [plain(s) for s in rows(MonitoringSchedule, MonitoringSchedule.patient_id, x["patients"])],
+            "clinical_tasks": [plain(t) for t in rows(ClinicalTask, ClinicalTask.patient_id, x["patients"])],
             "family_links": [plain(l) for l in flinks]}
 
 
@@ -114,6 +116,8 @@ def erase_patient(db: Session, pid: int) -> dict:
     wipe("referrals", delete(Referral).where(Referral.patient_id.in_(pids)))
     wipe("home_readings", delete(HomeReading).where(HomeReading.patient_id.in_(pids)))
     wipe("home_visits", delete(HomeVisit).where(HomeVisit.patient_id.in_(pids)))
+    wipe("monitoring_schedules", delete(MonitoringSchedule).where(MonitoringSchedule.patient_id.in_(pids)))
+    wipe("clinical_tasks", delete(ClinicalTask).where(ClinicalTask.patient_id.in_(pids)))
     wipe("program_recommendations", delete(ProgramRecommendation).where(ProgramRecommendation.patient_id.in_(pids)))
     wipe("health_profiles", delete(HealthProfile).where(HealthProfile.patient_id.in_(pids)))
     wipe("care_touchpoints", delete(CareTouchpoint).where(CareTouchpoint.patient_id.in_(pids)))

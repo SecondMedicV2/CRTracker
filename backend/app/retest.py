@@ -5,11 +5,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import assign, findings, programs as prog_svc
+from . import assign, conditions as cond_svc, findings, programs as prog_svc
 from .analysis import load_rules
-from .models import Followup, Order, Patient, Report, ReportParameter, RetestRecommendation, User
+from .models import Followup, MonitoringSchedule, Order, Patient, PatientMedication, Report, ReportParameter, RetestRecommendation, User
 from .security import audit
-from .seed_data import RETEST_PROTOCOLS, RETEST_TIERS, TEST_CATALOGUE
+from .seed_data import CONDITION_PROTOCOLS, RETEST_PROTOCOLS, RETEST_TIERS, TEST_CATALOGUE
 from .timeutil import IST, to_ist_date, today_ist
 
 NON_AUTO_MODES = {"REQUIRES_INDICATION", "RISK_BASED", "PERSONALIZED", "INDIVIDUALIZED", "DOCTOR_DECIDES"}
@@ -143,6 +143,134 @@ def _resolve_anchor_date(anchor_kind: str, report_date: date, cond: dict[str, An
     return report_date
 
 
+COND_DRUG_CLASSES: dict[str, set[str]] = {
+    "PREDIABETES": {"BIGUANIDE", "SULFONYLUREA", "INSULIN"},
+    "DIABETES_STABLE": {"BIGUANIDE", "SULFONYLUREA", "INSULIN"},
+    "DIABETES_UNCONTROLLED": {"BIGUANIDE", "SULFONYLUREA", "INSULIN"},
+    "DYSLIPIDEMIA_NEW_MED": {"STATIN", "FIBRATE", "EZETIMIBE", "LIPID_LOWERING"},
+    "DYSLIPIDEMIA_STABLE": {"STATIN", "FIBRATE", "EZETIMIBE", "LIPID_LOWERING"},
+    "HYPOTHYROID_STABLE_TREATED": {"THYROID_HORMONE"},
+    "IRON_DEFICIENCY": {"IRON_SUPPLEMENT"},
+    "B12_DEFICIENCY": {"B12_SUPPLEMENT"},
+}
+COND_MED_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "DYSLIPIDEMIA_NEW_MED": MED_KEYWORDS["HIGH_CHOLESTEROL"],
+    "DYSLIPIDEMIA_STABLE": MED_KEYWORDS["HIGH_CHOLESTEROL"],
+    "HYPOTHYROID_STABLE_TREATED": MED_KEYWORDS["HIGH_TSH"],
+    "IRON_DEFICIENCY": MED_KEYWORDS["LOW_HB"],
+    "B12_DEFICIENCY": ("b12", "methylcobalamin", "cyanocobalamin"),
+}
+
+
+def evaluate_condition_protocol(proto: dict, report_date: date, followup: Followup | None, ctx: dict[str, Any],
+                                med_cat: dict[str, dict], params: list, catalogue_names: dict[str, str],
+                                explicit_state: dict[str, Any] | None = None, *, c_stage: str = "") -> dict[str, Any]:
+    explicit_state = explicit_state or {}
+    cc = proto["condition_code"]
+    profile = ctx.get("profile") or {}
+    active_meds = ctx.get("active_meds") or []
+    dict_meds = explicit_state.get("medicines") if "medicines" in explicit_state else (profile.get("medicines") or profile.get("medications") or [])
+
+    # Reuse _medicine_anchor logic for condition drug classes & keywords
+    req_classes = COND_DRUG_CLASSES.get(cc, set())
+    kws = COND_MED_KEYWORDS.get(cc, ())
+    start_dates: list[date] = []
+    for m in active_meds:
+        if getattr(m, "stopped_on", None) is not None:
+            continue
+        meta = med_cat.get(getattr(m, "medicine_code", ""), {})
+        dclass = meta.get("drug_class", "")
+        hay = f"{getattr(m, 'medicine_code', '')} {meta.get('generic_name', '')} {dclass}".lower()
+        if (dclass and dclass in req_classes) or (kws and any(kw in hay for kw in kws)):
+            if (d := _parse_iso_date(getattr(m, "started_on", None)) or _parse_iso_date(getattr(m, "last_changed_on", None))):
+                start_dates.append(d)
+    for m in dict_meds or []:
+        if not isinstance(m, dict) or m.get("active") is False:
+            continue
+        hay = " ".join(str(m.get(k) or "") for k in ("name", "class", "category", "medicine_code")).lower()
+        if kws and any(kw in hay for kw in kws):
+            if (d := _parse_iso_date(m.get("started_on")) or _parse_iso_date(m.get("last_changed_on"))):
+                start_dates.append(d)
+    med_start_date = max(start_dates) if start_dates else None
+    manual_anchor = _parse_iso_date(explicit_state.get("treatment_anchor_on") or (getattr(followup, "treatment_anchor_on", None) if followup else None))
+
+    stage_u = (c_stage or "").strip().upper()
+    indicated = bool(
+        explicit_state.get("indicated")
+        or stage_u == "INDICATED"
+        or (cc == "B12_DEFICIENCY" and profile.get("b12_cbc_indicated"))
+        or (cc == "DYSLIPIDEMIA_STABLE" and profile.get("lipid_retest_indicated"))
+    )
+    egfr_very_low = any(getattr(p, "param_code", "") == "EGFR" and getattr(p, "value_num", None) is not None and p.value_num < 45 for p in params)
+    uacr_very_high = any(getattr(p, "param_code", "") == "UACR" and getattr(p, "value_num", None) is not None and p.value_num >= 300 for p in params)
+    higher_risk = bool(
+        explicit_state.get("higher_risk")
+        or stage_u == "HIGHER_RISK"
+        or (cc == "CKD" and (egfr_very_low or uacr_very_high))
+    )
+
+    cond = {
+        "explicit_anchor": _parse_iso_date(explicit_state.get("anchor_date")),
+        "med_change_date": med_start_date,
+        "med_start_date": med_start_date,
+        "manual_anchor": manual_anchor,
+        "indicated": indicated,
+        "higher_risk": higher_risk,
+    }
+    variant = _pick_variant(proto, cond)
+    mode = variant.get("mode") or ("AUTO" if variant.get("window_min_days") is not None else "DOCTOR_DECIDES")
+    if proto.get("requires_indication") and variant.get("when") == "default":
+        mode = "REQUIRES_INDICATION"
+
+    is_lab = proto.get("is_lab_protocol", True)
+    auto_scheduled = bool(is_lab and mode not in NON_AUTO_MODES and variant.get("window_min_days") is not None)
+    anchor_kind = variant.get("anchor", "REPORT_DATE")
+    anchor_date = _resolve_anchor_date(anchor_kind, report_date, cond)
+    min_days, max_days = variant.get("window_min_days"), variant.get("window_max_days")
+    win_start = anchor_date + timedelta(days=int(min_days)) if (auto_scheduled and min_days is not None) else None
+    win_end = anchor_date + timedelta(days=int(max_days if max_days is not None else min_days)) if (auto_scheduled and min_days is not None) else None
+    rem_cfg = proto.get("reminder") or {}
+    rem_mode = rem_cfg.get("mode", "FIXED")
+    reminder_on = anchor_date + timedelta(days=int(rem_cfg["day_min"])) if (auto_scheduled and rem_mode in ("FIXED", "IF_APPROPRIATE") and rem_cfg.get("day_min") is not None) else None
+    tests = [
+        {"code": t["code"], "name": catalogue_names.get(t["code"], t["code"]), "optional": bool(t.get("optional")),
+         **({"routine": t["routine"]} if "routine" in t else {}),
+         **({"doctor_decides": t["doctor_decides"]} if "doctor_decides" in t else {})}
+        for t in (proto.get("tests") or []) if isinstance(t, dict) and t.get("code")
+    ]
+    tier_code = variant.get("tier") or proto.get("tier") or "LONG_TERM"
+    return {
+        "source": "CONDITION",
+        "condition_code": cc,
+        "condition_name": proto.get("condition_name", cc),
+        "finding_code": cc,
+        "finding_name": proto.get("condition_name", cc),
+        "stage": c_stage,
+        "icon": proto.get("icon", ""),
+        "icon_label": proto.get("icon_label", ""),
+        "note": proto.get("note", ""),
+        "is_lab_protocol": is_lab,
+        "overrides_findings": list(proto.get("overrides_findings") or []),
+        "variant_when": variant.get("when", "default"),
+        "tier": tier_code,
+        "mode": mode,
+        "auto_scheduled": auto_scheduled,
+        "anchor": anchor_kind,
+        "anchor_date": anchor_date.isoformat(),
+        "window_min_days": min_days,
+        "window_max_days": max_days,
+        "window_start": win_start.isoformat() if win_start else None,
+        "window_end": win_end.isoformat() if win_end else None,
+        "reminder_mode": rem_mode,
+        "reminder_on": reminder_on.isoformat() if reminder_on else None,
+        "timeframe_text": proto.get("timeframe_text", ""),
+        "tests_text": ", ".join(t["name"] for t in tests) if tests else "Clinician-selected based on medicines & comorbidities",
+        "considerations_text": proto.get("note") or proto.get("timeframe_text", ""),
+        "ami_reminder_text": f"Day {rem_cfg['day_min']}" if rem_cfg.get("day_min") is not None else "Doctor-directed",
+        "tests": tests,
+    }
+
+
 def evaluate_finding(proto: dict, report_date: date, followup: Followup, ctx: dict[str, Any], med_cat: dict[str, dict], params: list, trends: dict[str, str], catalogue_names: dict[str, str], detected_codes: list[str], explicit_state: dict[str, Any]) -> dict[str, Any]:
     fc = proto["finding_code"]
     cond = _condition_state(fc, ctx, med_cat, followup, params, trends, detected_codes, explicit_state)
@@ -256,27 +384,59 @@ def plan_retest(db: Session, followup: Followup, *, state: dict[str, Any] | None
     )
     today = today_ist()
     protos = {p["finding_code"]: p for p in (rules.get("retest_protocols") or RETEST_PROTOCOLS) if isinstance(p, dict) and p.get("finding_code")}
+    cond_protos = cond_svc.condition_proto_map(rules)
     cat_names = {t["code"]: t["name"] for t in (rules.get("test_catalogue") or TEST_CATALOGUE) if isinstance(t, dict) and t.get("code")}
     med_cat = {m["code"]: m for m in rules.get("medicine_catalogue", []) if isinstance(m, dict) and m.get("code")}
 
-    schedules = [evaluate_finding(protos[fc], collected, followup, ctx, med_cat, params, trends, cat_names, detected, state) for fc in detected if fc in protos]
+    confirmed_conds = [c for c in (ctx.get("profile") or {}).get("conditions", []) if isinstance(c, dict) and c.get("status") == "CONFIRMED"]
+    cond_schedules_all = []
+    for c in confirmed_conds:
+        cc = c.get("code")
+        if cc not in cond_protos:
+            continue
+        if cc == "HYPOTHYROID_STABLE_TREATED" and str(c.get("stage") or "").upper() == "ABNORMAL_ON_TREATMENT":
+            continue
+        cond_schedules_all.append(
+            evaluate_condition_protocol(cond_protos[cc], collected, followup, ctx, med_cat, params, cat_names, state, c_stage=c.get("stage", ""))
+        )
+    cond_lab_schedules = [s for s in cond_schedules_all if s["is_lab_protocol"]]
+    non_lab_protocols = [s for s in cond_schedules_all if not s["is_lab_protocol"]]
+    overridden_findings = {fc for s in cond_lab_schedules for fc in s.get("overrides_findings", [])}
+
+    finding_schedules = [
+        evaluate_finding(protos[fc], collected, followup, ctx, med_cat, params, trends, cat_names, detected, state)
+        for fc in detected if fc in protos and fc not in overridden_findings
+    ]
+    schedules = cond_lab_schedules + finding_schedules
     if fallback_interval_days is None and not schedules:
         from .settings_store import get_setting
         buckets = fu_svc.assign_buckets(fu_svc.abnormal_params(params), rules.get("buckets", []))
         fallback_interval_days = fu_svc.interval_for(buckets, get_setting(db, "default_interval_days"))
 
-    protocol_tier = _resolve_protocol_tier(followup, params, rules, schedules, detected, fallback_interval_days)
+    active_detected = [fc for fc in detected if fc not in overridden_findings]
+    protocol_tier = _resolve_protocol_tier(followup, params, rules, schedules, active_detected, fallback_interval_days)
     tmeta = tier_meta(rules, protocol_tier)
     followup.protocol_tier = protocol_tier
     prev_manual = (followup.retest_plan or {}).get("manual_tier")
     prev_notified = bool((followup.retest_plan or {}).get("urgent_notified"))
 
     if not schedules:
-        due = today if (fallback_interval_days or 0) <= 0 else collected + timedelta(days=fallback_interval_days or 90)
-        followup.retest_window_start, followup.retest_window_end, followup.reminder_on = due, due, None
-        followup.due_on, followup.retest_status = due, "FALLBACK"
-        plan = {"status": "FALLBACK", "label": "Retest due", "primary_finding": None, "findings": [], "default_tests": [],
-                "protocol_tier": protocol_tier, "tier_meta": tmeta}
+        if non_lab_protocols:
+            followup.retest_window_start, followup.retest_window_end, followup.reminder_on = None, None, None
+            followup.due_on, followup.retest_status = today, "DOCTOR_TO_SET"
+            plan = {
+                "status": "DOCTOR_TO_SET", "label": "Doctor to set retest date", "source": "CONDITION",
+                "primary_finding": non_lab_protocols[0], "findings": [], "non_lab_protocols": non_lab_protocols,
+                "overridden_findings": sorted(overridden_findings), "default_tests": [],
+                "protocol_tier": protocol_tier, "tier_meta": tmeta,
+            }
+        else:
+            due = today if (fallback_interval_days or 0) <= 0 else collected + timedelta(days=fallback_interval_days or 90)
+            followup.retest_window_start, followup.retest_window_end, followup.reminder_on = due, due, None
+            followup.due_on, followup.retest_status = due, "FALLBACK"
+            plan = {"status": "FALLBACK", "label": "Retest due", "source": "FALLBACK", "primary_finding": None, "findings": [],
+                    "non_lab_protocols": [], "overridden_findings": [], "default_tests": [],
+                    "protocol_tier": protocol_tier, "tier_meta": tmeta}
         if prev_manual:
             plan["manual_tier"] = prev_manual
         if prev_notified:
@@ -288,8 +448,9 @@ def plan_retest(db: Session, followup: Followup, *, state: dict[str, Any] | None
         return plan
 
     auto_items = [s for s in schedules if s["auto_scheduled"] and s["window_start"]]
-    primary_top = schedules[0]
-    if primary_top["finding_code"] == "HIGH_CREATININE" or not auto_items:
+    aki_sched = next((s for s in schedules if s["finding_code"] == "HIGH_CREATININE"), None)
+    primary_top = aki_sched or schedules[0]
+    if aki_sched or not auto_items:
         followup.retest_window_start = None
         followup.retest_window_end = None
         followup.reminder_on = None
@@ -297,8 +458,13 @@ def plan_retest(db: Session, followup: Followup, *, state: dict[str, Any] | None
         followup.retest_status = "DOCTOR_TO_SET"
         default_codes = sorted({t["code"] for t in primary_top["tests"] if not t["optional"] and t["code"] in cat_names})
         _sync_default_recommendation(db, followup, default_codes)
-        plan = {"status": "DOCTOR_TO_SET", "label": "Doctor to set retest date", "primary_finding": primary_top,
-                "findings": schedules, "default_tests": default_codes, "protocol_tier": protocol_tier, "tier_meta": tmeta}
+        plan = {
+            "status": "DOCTOR_TO_SET", "label": "Doctor to set retest date",
+            "source": primary_top.get("source", "FINDING"),
+            "primary_finding": primary_top, "findings": schedules, "non_lab_protocols": non_lab_protocols,
+            "overridden_findings": sorted(overridden_findings), "default_tests": default_codes,
+            "protocol_tier": protocol_tier, "tier_meta": tmeta,
+        }
     else:
         chosen = min(auto_items, key=lambda s: s["window_start"])
         win_start, win_end = date.fromisoformat(chosen["window_start"]), date.fromisoformat(chosen["window_end"])
@@ -307,8 +473,13 @@ def plan_retest(db: Session, followup: Followup, *, state: dict[str, Any] | None
         followup.due_on, followup.retest_status = win_start, "AUTO_SCHEDULED"
         default_codes = sorted({t["code"] for s in auto_items for t in s["tests"] if not t["optional"] and t["code"] in cat_names}) or sorted({t["code"] for t in chosen["tests"] if not t["optional"] and t["code"] in cat_names})
         _sync_default_recommendation(db, followup, default_codes)
-        plan = {"status": "AUTO_SCHEDULED", "label": "Retest due", "primary_finding": chosen,
-                "findings": schedules, "default_tests": default_codes, "protocol_tier": protocol_tier, "tier_meta": tmeta}
+        plan = {
+            "status": "AUTO_SCHEDULED", "label": "Retest due",
+            "source": chosen.get("source", "FINDING"),
+            "primary_finding": chosen, "findings": schedules, "non_lab_protocols": non_lab_protocols,
+            "overridden_findings": sorted(overridden_findings), "default_tests": default_codes,
+            "protocol_tier": protocol_tier, "tier_meta": tmeta,
+        }
 
     if prev_manual:
         plan["manual_tier"] = prev_manual
@@ -361,7 +532,15 @@ def reminder_tick(db: Session, now: datetime | None = None) -> int:
             Followup.reminder_on.is_not(None), Followup.reminder_on <= today, Followup.reminder_sent_at.is_(None),
         )
     ))
-    if not due:
+    due_bp = list(db.scalars(
+        select(MonitoringSchedule).where(
+            MonitoringSchedule.status == "ACTIVE",
+            MonitoringSchedule.start_on <= today,
+            MonitoringSchedule.end_on >= today,
+            (MonitoringSchedule.last_reminded_on.is_(None)) | (MonitoringSchedule.last_reminded_on < today),
+        )
+    ))
+    if not due and not due_bp:
         return 0
     caller_ids = [u for (u,) in db.execute(select(User.id).where(User.role == "CALLER", User.active))]
     if not caller_ids:
@@ -371,6 +550,14 @@ def reminder_tick(db: Session, now: datetime | None = None) -> int:
         fu.reminder_sent_at = ts
         if caller_ids:
             assign.notify(db, caller_ids, "Retest reminder due", f"/caller-card/view?id={fu.id}")
+        sent += 1
+    doc_ids = assign.doctor_users(db)
+    for ms in due_bp:
+        ms.last_reminded_on = today
+        if caller_ids:
+            assign.notify(db, caller_ids, "Home check-in reminder due", "/followups")
+        if doc_ids:
+            assign.notify(db, doc_ids, "Home BP reading reminder due", f"/patients/view?id={ms.patient_id}")
         sent += 1
     db.commit()
     return sent

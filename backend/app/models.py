@@ -586,11 +586,44 @@ class Payment(Base, Stamped):
     __tablename__ = "payments"
     id: Mapped[int] = mapped_column(primary_key=True)
     patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    membership_id: Mapped[int | None] = mapped_column(ForeignKey("memberships.id"), nullable=True, index=True)
     amount_inr: Mapped[int] = mapped_column(Integer)
-    method: Mapped[str] = mapped_column(String(20), default="CASH")  # CASH | UPI | CARD | COUNTER
+    method: Mapped[str] = mapped_column(String(30), default="COUNTER_CASH")  # COUNTER_CASH | COUNTER_UPI | COUNTER_CARD | ONLINE | CORPORATE_INVOICE | CASH | UPI | CARD | COUNTER
     reference: Mapped[str] = mapped_column(String(60), default="")
     status: Mapped[str] = mapped_column(String(20), default="PAID", index=True)  # PAID | PENDING | REFUNDED
     health_hub_id: Mapped[int | None] = mapped_column(ForeignKey("health_hubs.id"), nullable=True, index=True)
+    received_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MembershipPlan(Base, Stamped):
+    __tablename__ = "membership_plans"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    target_text: Mapped[str] = mapped_column(Text, default="")
+    price_inr_monthly: Mapped[int] = mapped_column(Integer, default=0)
+    benefits_text: Mapped[str] = mapped_column(Text, default="")
+    includes_plan: Mapped[str] = mapped_column(String(60), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    entitlements: Mapped[list] = mapped_column(JSON, default=list)  # [{code, quantity, period, description}]
+
+
+class Membership(Base, Stamped):
+    __tablename__ = "memberships"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    plan_code: Mapped[str] = mapped_column(String(60), ForeignKey("membership_plans.code"), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="ACTIVE", index=True)  # ACTIVE | PENDING_PAYMENT | PAUSED | CANCELLED | EXPIRED
+    payer: Mapped[str] = mapped_column(String(20), default="SELF")  # SELF | CORPORATE
+    corporate_client_id: Mapped[int | None] = mapped_column(ForeignKey("corporate_clients.id"), nullable=True, index=True)
+    start_on: Mapped[date] = mapped_column(Date)
+    current_period_end: Mapped[date] = mapped_column(Date, index=True)
+    auto_renew: Mapped[bool] = mapped_column(Boolean, default=True)
+    enrolled_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    health_hub_id: Mapped[int | None] = mapped_column(ForeignKey("health_hubs.id"), nullable=True, index=True)
+    family_group_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    entitlements_used: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class CarePlan(Base, Stamped):

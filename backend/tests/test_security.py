@@ -30,6 +30,7 @@ CALLER_OK = {
     ("GET", "/api/v1/followups/{fid}/journey"), ("POST", "/api/v1/followups/{fid}/journey/checkin"),
     ("GET", "/api/v1/care-plans"), ("GET", "/api/v1/care-plans/{code}"), ("POST", "/api/v1/care-plans/enroll"),
     ("GET", "/api/v1/care-plans/enrollments"), ("POST", "/api/v1/care-plans/enrollments/{enrollment_id}/consume"),
+    ("GET", "/api/v1/membership-plans"), ("GET", "/api/v1/patients/{pid}/memberships"), ("POST", "/api/v1/memberships/enroll"),
 }
 # Routes a DOCTOR must be refused (admin-only or caller-only work).
 DOCTOR_FORBIDDEN = {
@@ -51,6 +52,7 @@ DOCTOR_FORBIDDEN = {
     ("GET", "/api/v1/relationship/scorecard"),
     ("GET", "/api/v1/express-nodes"), ("POST", "/api/v1/express-nodes"), ("PATCH", "/api/v1/express-nodes/{node_id}"),
     ("GET", "/api/v1/corporate-clients"), ("POST", "/api/v1/corporate-clients"), ("PATCH", "/api/v1/corporate-clients/{client_id}"),
+    ("GET", "/api/v1/corporate-billing/statements"),
 }
 # Only a doctor may approve a call card, manage conditions/tasks, confirm Day 90, or approve/accept retest plans/bundles; admin gets 403.
 ADMIN_FORBIDDEN = {
@@ -97,7 +99,7 @@ def test_admin_matrix(admin):
 
 def test_new_routes_must_be_classified():
     """Fails when someone adds a route without deciding who may call it (update the sets above)."""
-    assert len(list(routes())) == 138
+    assert len(list(routes())) == 142
 
 
 # ---- the two leaks the review found ----

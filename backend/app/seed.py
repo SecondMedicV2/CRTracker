@@ -8,6 +8,7 @@ from .models import HealthHub, RuleSet, User
 from .security import hash_password
 from .seed_data import HEALTH_HUBS_STARTER, RULE_SETS
 from .care_plans import seed_care_plans
+from .memberships import seed_memberships
 
 
 def seed(db):
@@ -21,6 +22,7 @@ def seed(db):
         db.add(User(name="Admin", email=env.admin_email.lower(), role="ADMIN",
                     password_hash=hash_password(env.admin_password)))
     seed_care_plans(db)
+    seed_memberships(db)
     db.commit()
 
 

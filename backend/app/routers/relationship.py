@@ -1,13 +1,14 @@
 """Relationship loop & care touchpoints router (Page 1)."""
 from datetime import date
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
-from .. import relationship as rel
+from .. import relationship as rel, storage
+from ..relationship_scorecard import compute_relationship_scorecard
 from ..db import get_db
-from ..models import CareTouchpoint, Patient, User
+from ..models import CareTouchpoint, Patient, User, ExpressNode, CorporateClient
 from ..security import audit, current_user, require
 from ..settings_store import get_setting
 from ..timeutil import today_ist
@@ -120,3 +121,115 @@ def delete_touchpoint(tid: int, request: Request, db: Session = Depends(get_db),
 @router.get("/relationship/summary")
 def get_summary(db: Session = Depends(get_db), _: User = Depends(admin_only)):
     return rel.relationship_summary(db)
+
+
+@router.get("/relationship/scorecard")
+def get_scorecard(from_date: date | None = None, to_date: date | None = None, hub_id: int | None = None,
+                  node_id: int | None = None, corporate_id: int | None = None,
+                  request: Request = None, db: Session = Depends(get_db), me: User = Depends(admin_only)):
+    audit(db, request, me.id, "view", "relationship_scorecard")
+    return compute_relationship_scorecard(db, from_date=from_date, to_date=to_date, hub_id=hub_id, node_id=node_id, corporate_id=corporate_id)
+
+
+class ExpressNodeIn(BaseModel):
+    name: str = Field(max_length=120)
+    code: str = Field(max_length=60)
+    node_type: str = Field("PHARMACY", max_length=30)
+    city: str = Field("", max_length=80)
+    health_hub_id: int | None = None
+    active: bool = True
+
+
+@router.get("/express-nodes")
+def list_express_nodes(db: Session = Depends(get_db), _: User = Depends(admin_only)):
+    return db.scalars(select(ExpressNode)).all()
+
+
+@router.post("/express-nodes", status_code=201)
+def create_express_node(body: ExpressNodeIn, request: Request, db: Session = Depends(get_db), me: User = Depends(admin_only)):
+    node = ExpressNode(
+        name=body.name, code=body.code, node_type=body.node_type, city=body.city,
+        health_hub_id=body.health_hub_id, active=body.active, created_by=me.id
+    )
+    db.add(node)
+    db.commit()
+    audit(db, request, me.id, "create", "express_node", node.id)
+    return node
+
+
+@router.patch("/express-nodes/{node_id}")
+def update_express_node(node_id: int, body: ExpressNodeIn, request: Request, db: Session = Depends(get_db), me: User = Depends(admin_only)):
+    node = db.get(ExpressNode, node_id)
+    if not node:
+        raise HTTPException(404, "Express node not found")
+    node.name = body.name
+    node.code = body.code
+    node.node_type = body.node_type
+    node.city = body.city
+    node.health_hub_id = body.health_hub_id
+    node.active = body.active
+    db.commit()
+    audit(db, request, me.id, "update", "express_node", node.id)
+    return node
+
+
+class CorporateClientIn(BaseModel):
+    name: str = Field(max_length=120)
+    code: str = Field(max_length=60)
+    contract_start: date | None = None
+    contract_end: date | None = None
+    pricing_model: str = Field("PEPM", max_length=20)
+    pepm_inr: int = 0
+    covered_members: int = 0
+    contact: str = Field("", max_length=200)
+    active: bool = True
+
+
+@router.get("/corporate-clients")
+def list_corporate_clients(db: Session = Depends(get_db), _: User = Depends(admin_only)):
+    clients = db.scalars(select(CorporateClient)).all()
+    out = []
+    for c in clients:
+        d = {
+            "id": c.id, "name": c.name, "code": c.code, "contract_start": c.contract_start,
+            "contract_end": c.contract_end, "pricing_model": c.pricing_model, "pepm_inr": c.pepm_inr,
+            "covered_members": c.covered_members, "active": c.active
+        }
+        try:
+            d["contact"] = storage.decrypt_str(c.contact_enc) if c.contact_enc else ""
+        except Exception:
+            d["contact"] = ""
+        out.append(d)
+    return out
+
+
+@router.post("/corporate-clients", status_code=201)
+def create_corporate_client(body: CorporateClientIn, request: Request, db: Session = Depends(get_db), me: User = Depends(admin_only)):
+    c = CorporateClient(
+        name=body.name, code=body.code, contract_start=body.contract_start, contract_end=body.contract_end,
+        pricing_model=body.pricing_model, pepm_inr=body.pepm_inr, covered_members=body.covered_members,
+        contact_enc=storage.encrypt_str(body.contact) if body.contact else "", active=body.active, created_by=me.id
+    )
+    db.add(c)
+    db.commit()
+    audit(db, request, me.id, "create", "corporate_client", c.id)
+    return c
+
+
+@router.patch("/corporate-clients/{client_id}")
+def update_corporate_client(client_id: int, body: CorporateClientIn, request: Request, db: Session = Depends(get_db), me: User = Depends(admin_only)):
+    c = db.get(CorporateClient, client_id)
+    if not c:
+        raise HTTPException(404, "Corporate client not found")
+    c.name = body.name
+    c.code = body.code
+    c.contract_start = body.contract_start
+    c.contract_end = body.contract_end
+    c.pricing_model = body.pricing_model
+    c.pepm_inr = body.pepm_inr
+    c.covered_members = body.covered_members
+    c.contact_enc = storage.encrypt_str(body.contact) if body.contact else ""
+    c.active = body.active
+    db.commit()
+    audit(db, request, me.id, "update", "corporate_client", c.id)
+    return c

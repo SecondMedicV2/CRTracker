@@ -48,6 +48,9 @@ DOCTOR_FORBIDDEN = {
     ("GET", "/api/v1/kpis/retesting"), ("GET", "/api/v1/kpis/retesting.csv"),
     ("GET", "/api/v1/outbound-messages"),
     ("GET", "/api/v1/care-plans/analytics/revenue"), ("GET", "/api/v1/care-plans/confirms"),
+    ("GET", "/api/v1/relationship/scorecard"),
+    ("GET", "/api/v1/express-nodes"), ("POST", "/api/v1/express-nodes"), ("PATCH", "/api/v1/express-nodes/{node_id}"),
+    ("GET", "/api/v1/corporate-clients"), ("POST", "/api/v1/corporate-clients"), ("PATCH", "/api/v1/corporate-clients/{client_id}"),
 }
 # Only a doctor may approve a call card, manage conditions/tasks, confirm Day 90, or approve/accept retest plans/bundles; admin gets 403.
 ADMIN_FORBIDDEN = {
@@ -94,7 +97,7 @@ def test_admin_matrix(admin):
 
 def test_new_routes_must_be_classified():
     """Fails when someone adds a route without deciding who may call it (update the sets above)."""
-    assert len(list(routes())) == 131
+    assert len(list(routes())) == 138
 
 
 # ---- the two leaks the review found ----

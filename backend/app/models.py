@@ -161,6 +161,9 @@ class Patient(Base, Stamped):
     household_tag: Mapped[str] = mapped_column(String(20), default="", index=True)
     do_not_call: Mapped[bool] = mapped_column(Boolean, default=False)
     merged_into_id: Mapped[int | None] = mapped_column(ForeignKey("patients.id"), nullable=True)
+    source_channel: Mapped[str] = mapped_column(String(30), default="DIRECT")  # LAB_IMPORT | HEALTH_HUB | EXPRESS_NODE | CORPORATE | DIRECT
+    source_ref_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    corporate_client_id: Mapped[int | None] = mapped_column(ForeignKey("corporate_clients.id"), nullable=True, index=True)
 
 
 class PatientBucket(Base):
@@ -403,8 +406,34 @@ class CareTouchpoint(Base):
     ref_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     amount_inr: Mapped[int | None] = mapped_column(Integer, nullable=True)  # admin-only
     health_hub_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    express_node_id: Mapped[int | None] = mapped_column(ForeignKey("express_nodes.id"), nullable=True, index=True)
     created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ExpressNode(Base, Stamped):
+    __tablename__ = "express_nodes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    code: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    node_type: Mapped[str] = mapped_column(String(30), default="PHARMACY")  # PHARMACY | CLINIC | PARTNER | KIOSK
+    city: Mapped[str] = mapped_column(String(80), default="")
+    health_hub_id: Mapped[int | None] = mapped_column(ForeignKey("health_hubs.id"), nullable=True, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class CorporateClient(Base, Stamped):
+    __tablename__ = "corporate_clients"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    code: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    contract_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    contract_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    pricing_model: Mapped[str] = mapped_column(String(20), default="PEPM")
+    pepm_inr: Mapped[int] = mapped_column(Integer, default=0)
+    covered_members: Mapped[int] = mapped_column(Integer, default=0)
+    contact_enc: Mapped[str] = mapped_column(Text, default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class HealthProfile(Base):

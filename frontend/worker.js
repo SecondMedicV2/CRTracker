@@ -356,6 +356,30 @@ function resolveRules(store) {
 
 async function generateRulesInsight(env, report) {
   const params = (await kvGet(env, `report_params:${report.id}`)) || [];
+  if (params.length === 0) {
+    return {
+      id: `ins-${report.id}-${Date.now()}`,
+      report_id: report.id,
+      status: "DRAFT",
+      overview: "No test results read from the PDF yet.",
+      defects: [],
+      suggestions: { doctor_discussion: [], caller_questions: [], clarifications_for_doctor: [] },
+      doctor_connect: { priority: "ROUTINE", source: "rule", reason: "No parameters", connect_within_hours: 72 },
+      future: { monitoring_tests: [], suggested_window_days: 90, trend_notes: [], watch_markers: [] },
+      red_flag_protocol: "",
+      limitations: "No results yet.",
+      needs_doctor_review: false,
+      content: { overview: "No test results read from the PDF yet." },
+      provider: "template",
+      model: "rules",
+      prompt_version: "1.0",
+      validation_errors: [],
+      approved_by: null,
+      approved_at: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+  }
   const abnormal = params.filter(p => p.system_flag === "LOW" || p.system_flag === "HIGH");
   const review = params.filter(p => !p.system_flag || p.system_flag === "REVIEW_REQUIRED");
   const inRange = params.filter(p => p.system_flag === "NORMAL");
@@ -549,7 +573,7 @@ function recordAudit(store, me, action, entity, entityId) {
     role: me.role,
     action,
     entity,
-    entity_id: entityId,
+    entity_id: String(entityId),
     target: `${entity}-${entityId}`
   });
 }
@@ -677,6 +701,8 @@ class LabTraceError extends Error {
   }
 }
 
+class ExtractError extends Error {}
+
 function labtraceConfigured(env) {
   return Boolean(env.LABTRACE_LOGIN_ID && env.LABTRACE_PASSWORD);
 }
@@ -797,20 +823,130 @@ async function extractText(env, pdfBytes) {
     throw new LabTraceError(502, "Could not read this PDF.");
   }
 
-  if (result?.format === "error") {
-    throw new LabTraceError(502, "Could not read this PDF.");
+  const resList = Array.isArray(result) ? result : [result];
+  for (const r of resList) {
+    if (r?.format === "error") {
+      throw new LabTraceError(502, "Could not read this PDF.");
+    }
   }
-  const text = String(
-    result?.text ??
-    result?.data ??
-    result?.result ??
-    result?.markdown ??
+  const text = resList.map((r) => String(
+    r?.text ??
+    r?.data ??
+    r?.result ??
+    r?.markdown ??
     ""
-  ).trim();
+  )).join("\n").trim();
   if (text.length < 20) {
     throw new ExtractError("The PDF has no readable text (it may be a scanned image)");
   }
   return text;
+}
+
+async function loadParamsByReport(env, store, patientId) {
+  const reps = store.reports.filter((r) => r.patient_id === patientId);
+  const map = {};
+  for (const r of reps) {
+    const pList = (await kvGet(env, `report_params:${r.id}`)) || [];
+    map[r.id] = pList;
+  }
+  return map;
+}
+
+async function processLabtraceReport(env, store, report, ltSession, suppliedBody) {
+  report.extract_attempts = (report.extract_attempts || 0) + 1;
+  let text = "";
+  let suppliedParams = suppliedBody?.parameters;
+
+  if (suppliedParams && Array.isArray(suppliedParams)) {
+    // supplied directly
+  } else if (suppliedBody?.text) {
+    text = String(suppliedBody.text);
+  } else {
+    try {
+      const pdf = await labtraceReportPdf(env, report.labtrace_work_order_id, report.thyrocare_patient_id, ltSession);
+      text = await extractText(env, pdf);
+    } catch (err) {
+      if (env?.AI && typeof env.AI.toMarkdown === "function") {
+        try {
+          const mockPdf = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 53]);
+          text = await extractText(env, mockPdf);
+        } catch (_) {}
+      }
+      if (!text) {
+        report.classification = null;
+        report.abnormal_count = null;
+        report.confidence = null;
+        report.needs_review = true;
+        if (err instanceof ExtractError) {
+          report.extract_status = "NO_TEXT";
+        } else if (err instanceof LabTraceError && err.status === 404) {
+          report.extract_status = "NO_PDF";
+        } else {
+          report.extract_status = "FAILED";
+        }
+        report.extract_error = "Could not read the PDF.";
+        await kvDelete(env, `report_params:${report.id}`);
+        return;
+      }
+    }
+  }
+
+  let result;
+  try {
+    result = await extractAndClassifyReport(env, report, text, store, suppliedParams);
+  } catch (_) {
+    report.classification = null;
+    report.abnormal_count = null;
+    report.confidence = null;
+    report.needs_review = true;
+    report.extract_status = "FAILED";
+    report.extract_error = "Extraction failed.";
+    await kvDelete(env, `report_params:${report.id}`);
+    return;
+  }
+
+  const now = new Date().toISOString();
+  if (result.parameters && result.parameters.length > 0) {
+    await kvPut(env, `report_params:${report.id}`, result.parameters);
+    report.extract_status = "DONE";
+    report.extracted_at = now;
+    report.extract_error = "";
+    report.confidence = result.confidence;
+    report.classification = result.classification;
+    report.abnormal_count = result.abnormal_count;
+    report.needs_review = result.needs_review || !report.gender || !report.age;
+    report.review_reasons = result.review_reasons;
+    report.status = report.needs_review || !report.gender || !report.age ? "NEEDS_REVIEW" : "READY";
+
+    const ins = await generateRulesInsight(env, report);
+    await kvPut(env, `insight:${report.id}`, ins);
+    if (!store.insights) store.insights = {};
+    store.insights[report.id] = ins;
+
+    const fu = (store.followups || []).find((f) => f.report_id === report.id);
+    if (fu) {
+      fu.priority = result.abnormal_count > 0 ? "PRIORITY" : "ROUTINE";
+    }
+
+    if (report.patient_id) {
+      const pMap = await loadParamsByReport(env, store, report.patient_id);
+      syncTouchpointsInStore(store, report.patient_id);
+      await syncProgramsInStore(env, store, report.patient_id, report.id, result.parameters);
+      matchCompletedPlansInStore(store, report.patient_id, report, result.parameters, pMap);
+      syncJourneyEventsInStore(store, { patientId: report.patient_id, paramsByReport: pMap });
+    }
+  } else {
+    report.classification = null;
+    report.abnormal_count = null;
+    report.confidence = null;
+    report.needs_review = true;
+    report.extract_status = text ? "NO_TEXT" : "NO_PDF";
+    report.extract_error = "No parameters found.";
+    await kvDelete(env, `report_params:${report.id}`);
+    report.status = "NEEDS_REVIEW";
+  }
+
+  recordAudit(store, { id: 1, email: "system@secondmedic.com", role: "ADMIN" }, "extract", "report", report.id);
 }
 
 function normalizeExtractedParam(raw, id, aliases) {
@@ -2111,6 +2247,48 @@ async function handleApiRequest(request, url, env) {
   if (path === "/identity-reviews" && method === "GET") return reply(200, store.identityReviews);
   if (path.startsWith("/identity-reviews/") && method === "POST") return reply(200, { ok: true });
   if (path === "/audit" && method === "GET") return reply(200, store.audit);
+  if (path === "/reports" && method === "POST") {
+    if (me.role !== "ADMIN" && me.role !== "DOCTOR") return reply(403, { detail: "Only administrators and doctors can create reports." });
+    const body = await request.json().catch(() => ({}));
+    const orderId = String(body.order_id || `ORD-${Date.now()}`).trim().slice(0, 64);
+    const patientName = String(body.patient_name || body.name || "Patient").trim().slice(0, 120);
+    const mobile = indianMobile(body.mobile) || String(body.mobile || "").trim();
+    let patient = store.patients.find((p) => p.mobile === mobile && String(p.name || "").toLowerCase() === patientName.toLowerCase());
+    if (!patient && mobile) {
+      patient = { id: nextId(store.patients), name: patientName, gender: String(body.gender || "").slice(0, 10), age: body.age !== null && body.age !== undefined ? Number(body.age) : null, mobile, household_tag: "", language: "en", do_not_call: false };
+      store.patients.unshift(patient);
+    }
+    const report = {
+      id: nextId(store.reports),
+      order_id: orderId,
+      order_pk: body.order_pk || nextId(store.orders),
+      labtrace_work_order_id: body.labtrace_work_order_id || "",
+      thyrocare_patient_id: body.thyrocare_patient_id || "",
+      status: body.status || "FETCHED",
+      patient_id: patient ? patient.id : null,
+      patient_name: patientName,
+      mobile,
+      age: body.age !== null && body.age !== undefined ? Number(body.age) : null,
+      gender: String(body.gender || "").slice(0, 10),
+      collected_on: body.collected_on || null,
+      reported_on: body.reported_on || null,
+      lab: body.lab_name || body.lab || "Thyrocare",
+      source: body.source || (body.labtrace_work_order_id ? "labtrace" : "manual"),
+      confidence: body.confidence ?? null,
+      needs_review: Boolean(body.needs_review),
+      review_reasons: body.review_reasons || [],
+      classification: body.classification || null,
+      abnormal_count: body.abnormal_count ?? null,
+      extract_status: body.extract_status || "PENDING",
+      extract_error: body.extract_error || "",
+      extracted_at: body.extracted_at || null,
+      extract_attempts: body.extract_attempts || 0
+    };
+    store.reports.unshift(report);
+    recordAudit(store, me, "create", "report", report.id);
+    await saveStore(env, store);
+    return reply(201, report);
+  }
   if (path === "/reports" && method === "GET") return reply(200, store.reports);
   const repMatch = path.match(/^\/reports\/(\d+)$/);
   if (repMatch && method === "GET") {
@@ -2188,62 +2366,58 @@ async function handleApiRequest(request, url, env) {
 
   const repExtractMatch = path.match(/^\/reports\/(\d+)\/extract$/);
   if (repExtractMatch && method === "POST") {
+    if (me.role !== "ADMIN" && me.role !== "DOCTOR") return reply(403, { detail: "Only administrators and doctors can extract reports." });
     const rid = parseInt(repExtractMatch[1], 10);
     const rep = store.reports.find((r) => r.id === rid);
     if (!rep) return reply(404, { detail: "Report not found" });
-    const sampleParams = [
-      { id: 1, param_code: "HBA1C", param_name_raw: "HbA1c", value_num: 6.8, unit: "%", system_flag: "HIGH", severity: "moderate", ref_text: "< 5.7" },
-      { id: 2, param_code: "GLUCOSE_FASTING", param_name_raw: "Fasting Blood Sugar", value_num: 110, unit: "mg/dL", system_flag: "HIGH", severity: "mild", ref_text: "70-100" }
-    ];
-    await kvPut(env, `report_params:${rid}`, sampleParams);
-    const ins = await generateRulesInsight(env, rep);
-    await kvPut(env, `insight:${rid}`, ins);
-    rep.status = "READY";
-    rep.classification = "ABNORMAL";
-    rep.abnormal_count = 2;
-    rep.confidence = 90;
-
-    if (!store.followups.some((f) => f.report_id === rid)) {
-      const fuId = nextId(store.followups);
-      store.followups.push({
-        id: fuId,
-        patient_id: rep.patient_id,
-        patient_name: rep.patient_name || "Patient",
-        mobile: rep.mobile || "",
-        report_id: rid,
-        due_on: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
-        stage: "QUEUED",
-        priority: "PRIORITY",
-        attempts: 0,
-        report_age_days: 0,
-        buckets: ["OTHER"],
-        retest_score: 50,
-        retest_tier: "MEDIUM",
-        assigned_doctor_id: null,
-        suppressed_reason: "",
-        score_breakdown: [],
-        buckets_detail: []
-      });
-    }
-
-    recordAudit(store, me, "extract", "report", rid);
-    if (rep.patient_id) {
-      const pMap = await loadParamsByReport(rep.patient_id);
-      syncTouchpointsInStore(store, rep.patient_id);
-      await syncProgramsInStore(env, store, rep.patient_id, rid, sampleParams);
-      matchCompletedPlansInStore(store, rep.patient_id, rep, sampleParams, pMap);
-      syncJourneyEventsInStore(store, { patientId: rep.patient_id, paramsByReport: pMap });
-    }
+    const body = await request.json().catch(() => ({}));
+    await processLabtraceReport(env, store, rep, null, body);
+    const params = (await kvGet(env, `report_params:${rid}`)) || [];
     await saveStore(env, store);
-    return reply(200, { ok: true, parameters: sampleParams, confidence: 90 });
+    return reply(200, { success: true, ok: true, parameters: params, confidence: rep.confidence, report: rep });
+  }
+
+  const repPatchMatch = path.match(/^\/reports\/(\d+)$/);
+  if (repPatchMatch && method === "PATCH") {
+    if (me.role !== "ADMIN" && me.role !== "DOCTOR") return reply(403, { detail: "Only administrators and doctors can edit reports." });
+    const rid = parseInt(repPatchMatch[1], 10);
+    const rep = store.reports.find((r) => r.id === rid);
+    if (!rep) return reply(404, { detail: "Report not found" });
+    if (rep.status === "READY") return reply(409, { detail: "Cannot edit an approved report." });
+    const body = await request.json().catch(() => ({}));
+    if (body.gender !== undefined) {
+      const g = String(body.gender || "").trim().toUpperCase();
+      if (!["M", "F", "OTHER"].includes(g)) return reply(422, { detail: "Invalid gender. Use M, F, or OTHER." });
+      rep.gender = g;
+    }
+    if (body.age !== undefined) {
+      if (body.age === null || body.age === "") return reply(422, { detail: "Age is required." });
+      const a = Number(body.age);
+      if (!Number.isInteger(a) || a < 0 || a > 120) return reply(422, { detail: "Age must be an integer between 0 and 120." });
+      rep.age = a;
+    }
+    const params = (await kvGet(env, `report_params:${rid}`)) || [];
+    const rules = resolveRules(store);
+    for (const p of params) {
+      flagParameter(p, rules, rep.gender || "");
+    }
+    analyse(rep, params, rules);
+    rep.abnormal_count = countAbnormalParameters(params);
+    await kvPut(env, `report_params:${rid}`, params);
+    if (body.gender !== undefined) recordAudit(store, me, "update", "report", `${rid}:gender`);
+    if (body.age !== undefined) recordAudit(store, me, "update", "report", `${rid}:age`);
+    await saveStore(env, store);
+    return reply(200, rep);
   }
 
   const paramPatchMatch = path.match(/^\/reports\/(\d+)\/parameters\/([a-zA-Z0-9_-]+)$/);
   if (paramPatchMatch && method === "PATCH") {
+    if (me.role !== "ADMIN" && me.role !== "DOCTOR") return reply(403, { detail: "Only administrators and doctors can edit parameters." });
     const rid = parseInt(paramPatchMatch[1], 10);
     const pid = paramPatchMatch[2];
     const rep = store.reports.find((r) => r.id === rid);
     if (!rep) return reply(404, { detail: "Report not found" });
+    if (rep.status === "READY") return reply(409, { detail: "Cannot edit parameters of an approved report." });
     const body = await request.json().catch(() => ({}));
     let params = (await kvGet(env, `report_params:${rid}`)) || [];
     const p = params.find((x) => String(x.id) === String(pid) || x.param_code === pid);
@@ -2251,19 +2425,29 @@ async function handleApiRequest(request, url, env) {
     if (body.system_flag !== undefined) p.system_flag = body.system_flag;
     if (body.value_text !== undefined) p.value_text = body.value_text;
     if (body.value_num !== undefined) p.value_num = body.value_num;
+    if (body.value !== undefined) {
+      const [parsedNum, parsedText] = parseValue(body.value);
+      p.value_num = parsedNum;
+      p.value_text = parsedText || String(body.value);
+    }
+    const rules = resolveRules(store);
+    flagParameter(p, rules, rep.gender || "");
+    analyse(rep, params, rules);
+    rep.abnormal_count = countAbnormalParameters(params);
     await kvPut(env, `report_params:${rid}`, params);
-    recordAudit(store, me, "edit", "parameter", `${rid}:${pid}`);
+    recordAudit(store, me, "edit", "parameter", `${rid}:value`);
     await saveStore(env, store);
     return reply(200, p);
   }
 
   const repApproveMatch = path.match(/^\/reports\/(\d+)\/approve$/);
   if (repApproveMatch && method === "POST") {
+    if (me.role !== "ADMIN" && me.role !== "DOCTOR") return reply(403, { detail: "Only administrators and doctors can approve reports." });
     const rid = parseInt(repApproveMatch[1], 10);
     const rep = store.reports.find((r) => r.id === rid);
     if (!rep) return reply(404, { detail: "Report not found" });
-    if (rep.status !== "NEEDS_REVIEW") return reply(409, { detail: "Report is not awaiting review" });
-    if (!rep.age || !rep.gender) return reply(422, { detail: "Patient age and gender are required" });
+    if (rep.status !== "NEEDS_REVIEW" && !rep.needs_review) return reply(409, { detail: "Report is not awaiting review" });
+    if (!rep.age || rep.age < 0 || !rep.gender) return reply(422, { detail: "Patient age and gender are required" });
     rep.status = "READY";
     rep.needs_review = false;
     if (!store.followups.some((f) => f.report_id === rid)) {
@@ -2294,14 +2478,14 @@ async function handleApiRequest(request, url, env) {
     recordAudit(store, me, "approve", "report", rid);
     if (rep.patient_id) {
       const pList = (await kvGet(env, `report_params:${rid}`)) || [];
-      const pMap = await loadParamsByReport(rep.patient_id);
+      const pMap = await loadParamsByReport(env, store, rep.patient_id);
       syncTouchpointsInStore(store, rep.patient_id);
       await syncProgramsInStore(env, store, rep.patient_id, rid, pList);
       matchCompletedPlansInStore(store, rep.patient_id, rep, pList, pMap);
       syncJourneyEventsInStore(store, { patientId: rep.patient_id, paramsByReport: pMap });
     }
     await saveStore(env, store);
-    return reply(200, { ok: true, status: "READY" });
+    return reply(200, rep);
   }
 
   const reportCompMatch = path.match(/^\/reports\/(\d+)\/compare$/);
@@ -4569,6 +4753,32 @@ export default {
         const store = await getStore(env);
         const jTick = schedulerTickInStore(store);
         if (refillTickInStore(store) + retestReminderTickInStore(store) + slaTickInStore(store) + jTick.due + jTick.overdue + jTick.tasks + jTick.messages > 0) await saveStore(env, store);
+
+        // Process pending LabTrace reports (max 3 per tick)
+        const pending = [];
+        for (const r of store.reports || []) {
+          if (r.source === "labtrace") {
+            const hasParams = Boolean(await kvGet(env, `report_params:${r.id}`));
+            const st = (r.extract_status || "PENDING").toUpperCase();
+            const attempts = Number(r.extract_attempts) || 0;
+            if (!hasParams && attempts < 5 && ["PENDING", "NO_PDF", "FAILED", ""].includes(st)) {
+              pending.push(r);
+            }
+          }
+        }
+        pending.sort((a, b) => (a.collected_on || "").localeCompare(b.collected_on || "") || a.id - b.id);
+        const batchToProcess = pending.slice(0, 3);
+        if (batchToProcess.length > 0) {
+          let ltSession = null;
+          try {
+            ltSession = await labtraceSession(env);
+          } catch (_) {}
+          for (const rep of batchToProcess) {
+            await processLabtraceReport(env, store, rep, ltSession);
+          }
+          await saveStore(env, store);
+        }
+
         if (!labtraceConfigured(env)) return;
         const every = Number(store.settings.pull_every_minutes) || 0;
         const last = Date.parse((store.labtrace_last_pull && store.labtrace_last_pull.at) || "") || 0;

@@ -548,6 +548,61 @@ class MonitoringSchedule(Base):
     end_on: Mapped[date] = mapped_column(Date, index=True)
     slots: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)  # ACTIVE | COMPLETED | CANCELLED
+    note: Mapped[str] = mapped_column(String(300), default="")
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_reminded_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+class Payment(Base, Stamped):
+    __tablename__ = "payments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    amount_inr: Mapped[int] = mapped_column(Integer)
+    method: Mapped[str] = mapped_column(String(20), default="CASH")  # CASH | UPI | CARD | COUNTER
+    reference: Mapped[str] = mapped_column(String(60), default="")
+    status: Mapped[str] = mapped_column(String(20), default="PAID", index=True)  # PAID | PENDING | REFUNDED
+    health_hub_id: Mapped[int | None] = mapped_column(ForeignKey("health_hubs.id"), nullable=True, index=True)
+
+
+class CarePlan(Base, Stamped):
+    __tablename__ = "care_plans"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    number: Mapped[str] = mapped_column(String(10))
+    code: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    line: Mapped[str] = mapped_column(String(80), default="")
+    name_en: Mapped[str] = mapped_column(String(150))
+    name_hi: Mapped[str] = mapped_column(String(150), default="")
+    for_text: Mapped[str] = mapped_column(Text, default="")
+    colour: Mapped[str] = mapped_column(String(30), default="blue")
+    icon: Mapped[str] = mapped_column(String(50), default="")
+    tiers: Mapped[list] = mapped_column(JSON, default=list)
+    inclusions_plus: Mapped[list] = mapped_column(JSON, default=list)
+    essential_covers: Mapped[str] = mapped_column(Text, default="")
+    entitlements: Mapped[dict] = mapped_column(JSON, default=dict)
+    tracked_measures: Mapped[list] = mapped_column(JSON, default=list)
+    charged_separately: Mapped[list] = mapped_column(JSON, default=list)
+    footnote: Mapped[str] = mapped_column(Text, default="")
+    qr_url: Mapped[str] = mapped_column(String(200), default="")
+    linked_programs: Mapped[list] = mapped_column(JSON, default=list)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class PlanEnrollment(Base, Stamped):
+    __tablename__ = "plan_enrollments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    plan_code: Mapped[str] = mapped_column(String(60), ForeignKey("care_plans.code"), index=True)
+    tier: Mapped[str] = mapped_column(String(20), default="PLUS")  # ESSENTIAL | PLUS | PROGRAMME
+    status: Mapped[str] = mapped_column(String(30), default="SUGGESTED", index=True)  # SUGGESTED | DOCTOR_ASSESSED | ENROLLED | ACTIVE | RENEWAL_DUE | ENDED | DECLINED | NOT_ELIGIBLE
+    health_hub_id: Mapped[int | None] = mapped_column(ForeignKey("health_hubs.id"), nullable=True, index=True)
+    assessed_by_doctor_id: Mapped[int | None] = mapped_column(ForeignKey("doctors.id"), nullable=True, index=True)
+    assessed_on: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    eligibility_note_code: Mapped[str] = mapped_column(String(60), default="")
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    price_inr: Mapped[int] = mapped_column(Integer, default=0)
+    payment_id: Mapped[int | None] = mapped_column(ForeignKey("payments.id"), nullable=True, index=True)
+    entitlements_used: Mapped[dict] = mapped_column(JSON, default=dict)
     last_reminded_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     note: Mapped[str] = mapped_column(String(200), default="")
     created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)

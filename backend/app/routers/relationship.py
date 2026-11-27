@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from .. import relationship as rel, storage
 from ..relationship_scorecard import compute_relationship_scorecard
+from ..relationship_loop import compute_health_loop
 from ..db import get_db
 from ..models import CareTouchpoint, Patient, User, ExpressNode, CorporateClient
 from ..security import audit, current_user, require
@@ -233,3 +234,10 @@ def update_corporate_client(client_id: int, body: CorporateClientIn, request: Re
     db.commit()
     audit(db, request, me.id, "update", "corporate_client", c.id)
     return c
+
+
+@router.get("/relationship/loop")
+def get_health_loop(from_date: date | None = None, to_date: date | None = None, hub_id: int | None = None,
+                    corporate_id: int | None = None, request: Request = None, db: Session = Depends(get_db), me: User = Depends(admin_only)):
+    audit(db, request, me.id, "view", "relationship_loop")
+    return compute_health_loop(db, from_date=from_date, to_date=to_date, hub_id=hub_id, corporate_id=corporate_id)

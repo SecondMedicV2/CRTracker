@@ -3,24 +3,41 @@ import Link from "next/link";
 import { RequestState } from "@/components/RequestState";
 import { TableFrame } from "@/components/TableFrame";
 import { useSearchParams } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, useContext } from "react";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
+import { RoleContext } from "@/lib/navigation";
 import ComparisonPanel from "@/components/ComparisonPanel";
 import ReportInsights from "@/components/ReportInsights";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 function ReportViewInner({ id }: { id: string }) {
+  const role = useContext(RoleContext);
+  const isClinician = role === "ADMIN" || role === "DOCTOR";
   const { data: r, error, reload } = useApi<any>(`/reports/${id}`);
   const [msg, setMsg] = useState("");
+  const [extracting, setExtracting] = useState(false);
   const [calling, setCalling] = useState(false);
   const [callMsg, setCallMsg] = useState("");
   const [filterMode, setFilterMode] = useState<"invalid_only" | "all">("invalid_only");
 
   if (error || !r) return <RequestState loading={!r} error={error} retry={reload} />;
-  const review = r.status === "NEEDS_REVIEW";
+  const review = r.status === "NEEDS_REVIEW" || r.needs_review;
   const run = (p: Promise<any>) => p.then(() => { setMsg(""); reload(); }).catch((e) => setMsg(e.message));
+
+  async function handleExtract() {
+    setExtracting(true);
+    setMsg("");
+    try {
+      await api(`/reports/${id}/extract`, { method: "POST" });
+      reload();
+    } catch (err: any) {
+      setMsg(err.message || "Failed to read values from PDF.");
+    } finally {
+      setExtracting(false);
+    }
+  }
 
   async function callCustomer() {
     const mobile = r.mobile || "9876543210";
@@ -51,6 +68,22 @@ function ReportViewInner({ id }: { id: string }) {
   const invalidParams = parameters.filter(isInvalid);
   const displayedParams = filterMode === "invalid_only" ? invalidParams : parameters;
 
+  const badgeClass = !r.classification
+    ? "bg-slate-100 text-slate-700 border border-slate-200"
+    : r.needs_review
+    ? "bg-amber-100 text-amber-800 border border-amber-200"
+    : r.classification === "ABNORMAL"
+    ? "bg-rose-100 text-rose-800 border border-rose-200"
+    : "bg-emerald-100 text-emerald-800 border border-emerald-200";
+
+  const badgeText = !r.classification
+    ? "NOT READ YET"
+    : r.needs_review
+    ? "NEEDS REVIEW"
+    : r.classification === "ABNORMAL"
+    ? "ABNORMAL FINDINGS"
+    : "NORMAL";
+
   return (
     <div className="space-y-6">
       {/* Customer Details Card */}
@@ -62,6 +95,27 @@ function ReportViewInner({ id }: { id: string }) {
             <p className="mt-1 font-mono text-sm text-slate-500">Order ID: <span className="font-semibold text-slate-800">{r.order_id}</span></p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {r.pdf_url && (
+              <a
+                href={r.pdf_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded-xl border border-teal-300 bg-teal-50 px-3 py-1.5 text-xs font-bold text-teal-900 hover:bg-teal-100 transition"
+              >
+                <span>📄</span> View PDF
+              </a>
+            )}
+            {parameters.length === 0 && (
+              <button
+                type="button"
+                disabled={extracting}
+                onClick={handleExtract}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-teal-800 px-3.5 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-teal-900 transition disabled:opacity-50"
+              >
+                <span>⚡</span>
+                <span>{extracting ? "Reading PDF…" : "Read values from PDF"}</span>
+              </button>
+            )}
             <button
               type="button"
               disabled={calling}
@@ -78,10 +132,8 @@ function ReportViewInner({ id }: { id: string }) {
             >
               <span>📱</span> Dial
             </a>
-            <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${
-              r.classification === "ABNORMAL" ? "bg-rose-100 text-rose-800 border border-rose-200" : "bg-emerald-100 text-emerald-800 border border-emerald-200"
-            }`}>
-              {r.classification === "ABNORMAL" ? "ABNORMAL FINDINGS" : "NORMAL"}
+            <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${badgeClass}`}>
+              {badgeText}
             </span>
             <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
               {r.status}
@@ -120,16 +172,16 @@ function ReportViewInner({ id }: { id: string }) {
           </div>
           <div className="rounded-lg bg-slate-50 p-3 border border-slate-100 col-span-2 sm:col-span-1">
             <dt className="text-xs font-medium text-slate-500">AI Confidence</dt>
-            <dd className="mt-1 font-semibold text-teal-700">{r.confidence}%</dd>
+            <dd className="mt-1 font-semibold text-teal-700">{r.confidence != null ? `${r.confidence}%` : "—"}</dd>
           </div>
         </dl>
       </section>
 
       {review && (
         <div role="alert" className="space-y-2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
-          <div className="font-semibold">Needs review ({r.confidence}% confidence): {r.review_reasons?.join("; ")}</div>
+          <div className="font-semibold">Needs review ({r.confidence != null ? `${r.confidence}%` : "—"} confidence): {r.review_reasons?.join("; ") || "Awaiting clinical review"}</div>
           <div className="flex flex-wrap items-center gap-2 pt-2">
-            <select aria-label="Gender" className="rounded border bg-white p-1 text-sm" value={r.gender} onChange={(e) => run(api(`/reports/${id}`, { method: "PATCH", body: { gender: e.target.value } }))}>
+            <select aria-label="Gender" className="rounded border bg-white p-1 text-sm" value={r.gender || ""} onChange={(e) => run(api(`/reports/${id}`, { method: "PATCH", body: { gender: e.target.value } }))}>
               <option value="">Gender?</option><option value="M">Male</option><option value="F">Female</option>
             </select>
             <input aria-label="Age" className="w-20 rounded border bg-white p-1 text-sm" type="number" placeholder="Age" defaultValue={r.age ?? ""}
@@ -148,7 +200,19 @@ function ReportViewInner({ id }: { id: string }) {
           <div>
             <h2 className="text-lg font-bold text-slate-900">Blood Report Results</h2>
             <p className="text-xs text-slate-500">
-              {invalidParams.length > 0 ? (
+              {parameters.length === 0 ? (
+                <span className="font-semibold text-amber-700">
+                  {r.extract_status === "PENDING"
+                    ? "Reading the PDF…"
+                    : r.extract_status === "NO_TEXT"
+                    ? "PDF has no readable text (scanned). Open the PDF and enter values."
+                    : r.extract_status === "NO_PDF"
+                    ? "PDF not in LabTrace yet — will retry automatically."
+                    : r.extract_status === "FAILED"
+                    ? "Could not read the PDF — retry."
+                    : "No test results read from the PDF yet."}
+                </span>
+              ) : invalidParams.length > 0 ? (
                 <span><span className="font-semibold text-rose-700">{invalidParams.length} parameter{invalidParams.length > 1 ? "s" : ""}</span> identified with invalid, out-of-range, or mismatched results.</span>
               ) : (
                 <span>All parameters are within normal reference ranges.</span>
@@ -194,7 +258,9 @@ function ReportViewInner({ id }: { id: string }) {
               {displayedParams.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="p-6 text-center text-sm text-slate-500">
-                    No invalid or mismatched parameters found in this report.
+                    {parameters.length === 0
+                      ? "No test parameters have been read from the PDF yet. Click 'Read values from PDF' above."
+                      : "No invalid or mismatched parameters found in this report."}
                   </td>
                 </tr>
               ) : (

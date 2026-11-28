@@ -34,6 +34,9 @@ agent opened on this repository (Claude Code, Cursor, etc.).
 | 16 | page-16-ai-training-programmes.md | **Separate project**: SecondMedic Academy | — |
 | 17 | page-17-health-hub-care-plans.md | Care-plan catalogue, doctor-assessed enrolment, bilingual flyers | 2–5, 13 |
 
+Pages 1–15 and 17 are built. For the next stage (the "from report to outcome" video), see
+`../smart-diagnostics-video/README.md`.
+
 ## Recommended build order
 1 → 2 → 3 → 6 → 7 → 9 → 11 → 10 → 12 → 8 → 5 → 4 → 17 → 13 → 15 → 14, and 16 separately.
 

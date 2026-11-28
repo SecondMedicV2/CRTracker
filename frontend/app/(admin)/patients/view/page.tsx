@@ -12,6 +12,7 @@ import ExtendedCareTabs from "@/components/ExtendedCareTabs";
 import HealthProfileCard from "@/components/HealthProfileCard";
 import JourneyTimeline from "@/components/JourneyTimeline";
 import ProgramsPanel from "@/components/ProgramsPanel";
+import MembershipCard from "@/components/MembershipCard";
 import TierBadge from "@/components/TierBadge";
 import Trends from "@/components/Trends";
 import { useApi } from "@/lib/useApi";
@@ -89,6 +90,7 @@ function PatientInner({ id }: { id: string }) {
       <ConditionsMonitoringCard patientId={id} role={role} refreshKey={refreshKey} onChanged={() => setRefreshKey((n) => n + 1)} />
       <HealthProfileCard patientId={id} onSaved={() => setRefreshKey((n) => n + 1)} />
       <ExtendedCareTabs patientId={id} role={role} onChanged={() => setRefreshKey((n) => n + 1)} />
+      <MembershipCard patientId={id} role={role} />
       <ProgramsPanel patientId={id} mode="patient" refreshKey={refreshKey} onChanged={() => setRefreshKey((n) => n + 1)} />
     </div>
   );

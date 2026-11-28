@@ -13,6 +13,7 @@ import JourneyTimeline from "@/components/JourneyTimeline";
 import ProgramsPanel from "@/components/ProgramsPanel";
 import RetestPlan from "@/components/RetestPlan";
 import TierBadge from "@/components/TierBadge";
+import TriageBadge from "@/components/TriageBadge";
 import Trends from "@/components/Trends";
 import CallCard from "./CallCard";
 import DoctorActions from "./DoctorActions";
@@ -39,6 +40,7 @@ function FollowupViewInner({ id }: { id: string }) {
       {f.parked && <div className="rounded border border-slate-300 bg-slate-100 p-2 text-sm">Parked: low retest potential. Not in the callers' queue.</div>}
       {f.suppressed_reason && <div className="rounded border border-amber-400 bg-amber-50 p-2 text-sm">Not needed: {f.suppressed_reason}</div>}
       {msg && <p role="alert" className="text-sm text-red-600">{msg}</p>}
+      {me.data && me.data.role !== "CALLER" && <TriageBadge key={`${id}-${f.priority}`} followupId={id} role={me.data.role} />}
       <div className="flex flex-wrap items-center gap-4 text-sm">
         <label>Priority{" "}
           <select className="rounded border p-1" value={f.priority} onChange={(e) => patch({ priority: e.target.value })}>

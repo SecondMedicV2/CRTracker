@@ -1,5 +1,5 @@
 """Condition-specific patient journeys, starting with HBA1C_90 (Page 10)."""
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import delete, select

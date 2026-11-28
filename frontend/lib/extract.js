@@ -228,6 +228,13 @@ export function canonicalCode(name, aliases = DEFAULT_ALIASES) {
     if (aliases[stripped]) return aliases[stripped];
   }
 
+  // Thyrocare style "TSH - ULTRASENSITIVE", "HDL CHOLESTEROL - DIRECT": try the part before " - ".
+  const dash = key.indexOf(" - ");
+  if (dash > 0) {
+    const base = key.slice(0, dash).trim();
+    if (base !== key) return canonicalCode(base, aliases);
+  }
+
   return "";
 }
 
@@ -368,58 +375,81 @@ export function flagParameter(param, arg2, arg3) {
 /**
  * Extracts test parameters from text or markdown tables.
  */
+function cleanLine(rawLine) {
+  let line = String(rawLine || "").trim();
+  if (!line) return "";
+  // Markdown table rows: | col1 | col2 |
+  if (line.includes("|")) {
+    const cleanedPipes = line.replace(/\|/g, " ").trim();
+    if (/^[\s\-:|]+$/.test(cleanedPipes)) return "";
+    line = cleanedPipes;
+  }
+  return line.replace(/\s+/g, " ");
+}
+
+// Reads one candidate row "NAME [TECHNOLOGY] VALUE UNIT RANGE". Returns null when it is not a test result.
+function matchRow(line) {
+  const m = line.match(ROW);
+  if (!m) return null;
+  const name = m[1].trim();
+  if (NOT_A_TEST.test(name)) return null;
+  if ((name.match(/[A-Za-z]/g) || []).length < 2) return null;
+  const unit = (m[3] || "").trim();
+  const rng = (m[4] || "").trim();
+  const hasKnownUnit = KNOWN_UNITS.has(unit.toLowerCase());
+  const parsedRng = parseRange(rng);
+  if (!hasKnownUnit && !parsedRng) return null; // a sentence that merely contains a number
+  return { name, value: m[2], unit, rng, parsedRng };
+}
+
+const MAX_ROW_LINES = 5;
+
+// Thyrocare PDFs (iTextSharp) come out of text conversion with each result row glued together in
+// reverse column order and no spaces:  RANGE UNIT VALUE TECHNOLOGY NAME
+//   e.g. "...Bio. Ref. Interval.0.54-5.30μIU/mL4.61E.C.L.I.ATSH - ULTRASENSITIVEComments :"
+const G_RANGE = `(?:[<>]=?\\s*\\d+(?:\\.\\d+)?|\\d+(?:\\.\\d+)?\\s*-\\s*\\d+(?:\\.\\d+)?)`;
+const G_UNIT = `(?:%|[^\\d\\s:|][^\\d\\n:|]{0,15}?)`;
+const G_VALUE = `[<>]?\\d+(?:\\.\\d+)?`;
+const G_TECH = `${METHODS}\\.?`;
+const G_ROW_START = `${G_RANGE}\\s*${G_UNIT}\\s*${G_VALUE}\\s*${G_TECH}`;
+const GLUED_ROW = new RegExp(
+  `(${G_RANGE})\\s*(${G_UNIT})\\s*(${G_VALUE})\\s*${G_TECH}\\s*([A-Za-z(][^\\n]*?)` +
+    `(?=\\s*(?:Comments?|Method|Note|Notes|Interpretation|Remarks?|Clinical|Disclaimer)\\b|${G_ROW_START}|\\n|$)`,
+  "gi"
+);
+
+export function extractGluedRows(text) {
+  const rows = [];
+  if (!text || typeof text !== "string") return rows;
+  for (const m of text.matchAll(GLUED_ROW)) {
+    const name = m[4].replace(/\s+/g, " ").trim();
+    if (!name || NOT_A_TEST.test(name) || (name.match(/[A-Za-z]/g) || []).length < 2) continue;
+    rows.push({ name, value: m[3], unit: m[2].trim(), rng: m[1].trim(), parsedRng: parseRange(m[1].trim()) });
+  }
+  return rows;
+}
+
 export function extractParameters(text, aliases = DEFAULT_ALIASES) {
   if (!text || typeof text !== "string") return [];
   const params = [];
   const seen = new Set();
-  const lines = text.split(/\r?\n/);
+  const lines = text.split(/\r?\n/).map(cleanLine).filter(Boolean);
   let idCounter = 1;
 
-  for (let rawLine of lines) {
-    let line = rawLine.trim();
-    if (!line) continue;
-
-    // Handle markdown table format | col1 | col2 |
-    if (line.includes("|")) {
-      const cleanedPipes = line.replace(/\|/g, " ").trim();
-      if (/^[\s\-:|]+$/.test(cleanedPipes)) continue;
-      line = cleanedPipes;
-    }
-    line = line.replace(/\s+/g, " ");
-
-    const m = line.match(ROW);
-    if (!m) continue;
-
-    const name = m[1].trim();
-    if (NOT_A_TEST.test(name)) continue;
-    const letterCount = (name.match(/[A-Za-z]/g) || []).length;
-    if (letterCount < 2) continue;
-
-    const unit = (m[3] || "").trim();
-    const rng = (m[4] || "").trim();
-    const hasKnownUnit = KNOWN_UNITS.has(unit.toLowerCase());
-    const parsedRng = parseRange(rng);
-    if (!hasKnownUnit && !parsedRng) continue;
-
-    if (seen.has(name.toLowerCase())) continue;
+  const pushRow = (row) => {
+    const { name, unit, rng, parsedRng } = row;
+    if (seen.has(name.toLowerCase())) return;
     seen.add(name.toLowerCase());
-
-    const valueStr = m[2].replace(/\s+/g, "");
-    const [num, strVal] = parseValue(valueStr);
-    const code = canonicalCode(name, aliases);
-    const normalizedUnit = normalizeUnit(unit);
-    const refLow = parsedRng ? parsedRng[0] : null;
-    const refHigh = parsedRng ? parsedRng[1] : null;
-
+    const [num, strVal] = parseValue(row.value.replace(/\s+/g, ""));
     params.push({
       id: idCounter++,
-      param_code: code,
+      param_code: canonicalCode(name, aliases),
       param_name_raw: name,
       value_num: num,
       value_text: strVal,
-      unit: normalizedUnit,
-      ref_low: refLow,
-      ref_high: refHigh,
+      unit: normalizeUnit(unit),
+      ref_low: parsedRng ? parsedRng[0] : null,
+      ref_high: parsedRng ? parsedRng[1] : null,
       ref_text: rng.slice(0, 60),
       system_flag: "",
       severity: "",
@@ -427,6 +457,34 @@ export function extractParameters(text, aliases = DEFAULT_ALIASES) {
       ref_source: "",
       lab_flag: "",
     });
+  };
+
+  // Glued Thyrocare rows first: the line reader would mis-split them.
+  for (const row of extractGluedRows(text)) pushRow(row);
+
+  for (let i = 0; i < lines.length; i++) {
+    if (extractGluedRows(lines[i]).length) continue; // already read above
+    let row = matchRow(lines[i]);
+    let used = 1;
+    if (!row) {
+      // PDF-to-text converters often put each table cell on its own line
+      // (name / technology / value / unit / range). Re-join a few lines and try again,
+      // preferring the shortest join that also carries a readable reference range.
+      let fallback = null;
+      for (let n = 2; n <= MAX_ROW_LINES && i + n <= lines.length; n++) {
+        // Never swallow a line that is a complete result row by itself.
+        if (n > 1 && matchRow(lines[i + n - 1])) break;
+        const cand = matchRow(lines.slice(i, i + n).join(" "));
+        if (!cand) continue;
+        if (cand.parsedRng) { row = cand; used = n; break; }
+        if (!fallback) fallback = { cand, n };
+      }
+      if (!row && fallback) { row = fallback.cand; used = fallback.n; }
+    }
+    if (!row) continue;
+    i += used - 1;
+
+    pushRow(row);
   }
 
   return params;
@@ -540,7 +598,13 @@ export function analyse(report, parameters = [], rules = {}) {
 export function redactPII(text, patient = {}) {
   if (!text || typeof text !== "string") return "";
 
-  const lines = text.split(/\r?\n/).filter((ln) => !PRIVATE_LINE.test(ln));
+  // Drop lines that identify the person. A line that also carries a test result (PDF converters can glue
+  // the "TEST NAME" header and the results onto one line) is kept; names/phones/e-mails are masked below.
+  const isPrivate = (ln) =>
+    PRIVATE_LINE.test(ln.replace(/\btest\s*name\b/gi, "")) &&
+    !extractGluedRows(ln).length &&
+    !matchRow(cleanLine(ln));
+  const lines = text.split(/\r?\n/).filter((ln) => !isPrivate(ln));
   let out = lines.join("\n");
 
   const nameParts = String(patient?.name || "").trim().split(/\s+/);

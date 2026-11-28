@@ -209,6 +209,9 @@ class Followup(Base, Stamped):
     protocol_tier: Mapped[str] = mapped_column(String(24), default="LONG_TERM", index=True)
     sla_escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retest_plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Safety gate: a RED (critical) result blocks any plan sale until a doctor clears the patient.
+    doctor_cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    doctor_cleared_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Consent(Base):
@@ -580,6 +583,7 @@ class MonitoringSchedule(Base):
     note: Mapped[str] = mapped_column(String(300), default="")
     created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_reminded_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)  # migration 0017 has it NOT NULL
 
 
 class Payment(Base, Stamped):
@@ -614,8 +618,13 @@ class Membership(Base, Stamped):
     id: Mapped[int] = mapped_column(primary_key=True)
     patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
     plan_code: Mapped[str] = mapped_column(String(60), ForeignKey("membership_plans.code"), index=True)
-    status: Mapped[str] = mapped_column(String(30), default="ACTIVE", index=True)  # ACTIVE | PENDING_PAYMENT | PAUSED | CANCELLED | EXPIRED
+    status: Mapped[str] = mapped_column(String(30), default="ACTIVE", index=True)  # ACTIVE | PENDING_SIGNOFF | PENDING_PAYMENT | PAUSED | CANCELLED | EXPIRED
     payer: Mapped[str] = mapped_column(String(20), default="SELF")  # SELF | CORPORATE
+    member_ref: Mapped[str] = mapped_column(String(60), default="")  # employee id from a corporate roster
+    signed_off_by: Mapped[int | None] = mapped_column(Integer, nullable=True)  # doctor user id (H360_CHRONIC)
+    signed_off_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_reminded_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    renewal_count: Mapped[int] = mapped_column(Integer, default=0)
     corporate_client_id: Mapped[int | None] = mapped_column(ForeignKey("corporate_clients.id"), nullable=True, index=True)
     start_on: Mapped[date] = mapped_column(Date)
     current_period_end: Mapped[date] = mapped_column(Date, index=True)
@@ -666,6 +675,8 @@ class PlanEnrollment(Base, Stamped):
     payment_id: Mapped[int | None] = mapped_column(ForeignKey("payments.id"), nullable=True, index=True)
     entitlements_used: Mapped[dict] = mapped_column(JSON, default=dict)
     last_reminded_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    renewal_count: Mapped[int] = mapped_column(Integer, default=0)
     note: Mapped[str] = mapped_column(String(200), default="")
     created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

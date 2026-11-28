@@ -20,66 +20,33 @@ def test_caller_privacy_masking():
     assert mask_plan_name("DOCTOR", "02", "Prediabetes Care") == "Prediabetes Care"
     assert mask_plan_name("ADMIN", "03", "Blood Pressure Care") == "Blood Pressure Care"
 
-def test_enrollment_and_state_machine(doctor):
+def test_enrollment_and_state_machine(doctor, caller):
     with dbmod.SessionLocal() as db:
         seed_care_plans(db)
-        hub = db.scalar(select(HealthHub))
-        if not hub:
-            hub = HealthHub(name="Main Hub", city="Delhi")
-            db.add(hub)
-            db.flush()
-        patient = db.scalar(select(Patient))
-        if not patient:
-            patient = Patient(name="Test User", name_norm="test user", gender="M", age=40)
-            db.add(patient)
-            db.flush()
+        hub = HealthHub(name="Main Hub", city="Delhi")
+        patient = Patient(name="Test User", name_norm="test user", gender="M", age=40)
+        db.add_all([hub, patient])
         db.commit()
-        pat_id = patient.id
-        hub_id = hub.id
+        pat_id, hub_id = patient.id, hub.id
 
-    # Enroll in Sugar Care (CP02)
-    res = doctor.post("/api/v1/care-plans/enroll", json={
-        "patient_id": pat_id,
-        "plan_code": "CP02_PREDIABETES",
-        "tier": "PLUS",
-        "health_hub_id": hub_id,
-        "payment_method": "COUNTER",
-        "payment_reference": "CASH123"
-    })
+    # suggested -> doctor assessed -> paid at the counter -> active
+    res = doctor.post("/api/v1/care-plans/enroll", json={"patient_id": pat_id, "plan_code": "CP02_PREDIABETES", "tier": "PLUS",
+                                                         "health_hub_id": hub_id})
     assert res.status_code == 200, res.text
-    data = res.json()
-    enr_id = data["id"]
-    assert data["status"] == "ACTIVE"
+    enr_id = res.json()["id"]
+    assert res.json()["status"] == "SUGGESTED"
+    assert doctor.post(f"/api/v1/care-plans/enrollments/{enr_id}/assess", json={"eligible": True}).json()["status"] == "DOCTOR_ASSESSED"
+    paid = caller.post(f"/api/v1/care-plans/enrollments/{enr_id}/pay", json={"method": "COUNTER_CASH", "reference": "CASH123"})
+    assert paid.status_code == 200 and paid.json()["status"] == "ACTIVE" and paid.json()["price_inr"] == 2499
 
-    # Assess Medical Weight Management (CP06) for eligibility failure
-    with dbmod.SessionLocal() as db:
-        doc = db.scalar(select(User).where(User.role == "DOCTOR"))
-        doc_id = doc.id if doc else 1
-
-    # Enroll in CP06
-    res2 = doctor.post("/api/v1/care-plans/enroll", json={
-        "patient_id": pat_id,
-        "plan_code": "CP06_MEDICAL_WEIGHT",
-        "tier": "PROGRAMME",
-        "health_hub_id": hub_id,
-        "payment_method": "UPI",
-        "payment_reference": "UPI456"
-    })
-    assert res2.status_code == 200
-    enr06_id = res2.json()["id"]
-
-    # Assess as not eligible
-    assess_res = doctor.post(f"/api/v1/care-plans/enrollments/{enr06_id}/assess", json={
-        "eligible": False,
-        "note_code": "CONTRAINDICATION_PRESENT"
-    })
+    # Medical Weight Management (CP06) can be refused after assessment
+    enr06_id = doctor.post("/api/v1/care-plans/enroll", json={"patient_id": pat_id, "plan_code": "CP06_MEDICAL_WEIGHT",
+                                                              "tier": "PROGRAMME", "health_hub_id": hub_id}).json()["id"]
+    assess_res = doctor.post(f"/api/v1/care-plans/enrollments/{enr06_id}/assess", json={"eligible": False, "note_code": "CONTRAINDICATION_PRESENT"})
     assert assess_res.status_code == 200
     assert assess_res.json()["status"] == "NOT_ELIGIBLE"
+    assert caller.post(f"/api/v1/care-plans/enrollments/{enr06_id}/pay", json={}).status_code == 422
 
-    # Consume entitlement
-    consume_res = doctor.post(f"/api/v1/care-plans/enrollments/{enr_id}/consume", json={
-        "entitlement_key": "DIETITIAN_SESSION",
-        "units": 1
-    })
+    consume_res = doctor.post(f"/api/v1/care-plans/enrollments/{enr_id}/consume", json={"entitlement_key": "DIETITIAN_SESSION", "units": 1})
     assert consume_res.status_code == 200
     assert consume_res.json()["entitlements_used"]["DIETITIAN_SESSION"] == 1

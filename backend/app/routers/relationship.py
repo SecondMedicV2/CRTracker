@@ -1,11 +1,12 @@
 """Relationship loop & care touchpoints router (Page 1)."""
 from datetime import date
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from .. import relationship as rel, storage
+from ..care_plans import consume_for_touchpoint
 from ..relationship_scorecard import compute_relationship_scorecard
 from ..relationship_loop import compute_health_loop
 from ..db import get_db
@@ -101,9 +102,14 @@ def add_touchpoint(pid: int, body: TouchpointIn, request: Request, db: Session =
         created_by=me.id,
     )
     db.add(tp)
+    db.flush()
+    used = consume_for_touchpoint(db, p.id, svc["code"])
     db.commit()
     audit(db, request, me.id, "create", "touchpoint", tp.id)
-    return _tp_out(tp, me.role)
+    out = _tp_out(tp, me.role)
+    if used and me.role != "CALLER":  # entitlement names can reveal the care programme
+        out["entitlement_used"] = used
+    return out
 
 
 @router.delete("/touchpoints/{tid}")
@@ -127,9 +133,11 @@ def get_summary(db: Session = Depends(get_db), _: User = Depends(admin_only)):
 @router.get("/relationship/scorecard")
 def get_scorecard(from_date: date | None = None, to_date: date | None = None, hub_id: int | None = None,
                   node_id: int | None = None, corporate_id: int | None = None,
+                  from_: date | None = Query(None, alias="from"), to: date | None = None,  # the admin pages send from/to
                   request: Request = None, db: Session = Depends(get_db), me: User = Depends(admin_only)):
     audit(db, request, me.id, "view", "relationship_scorecard")
-    return compute_relationship_scorecard(db, from_date=from_date, to_date=to_date, hub_id=hub_id, node_id=node_id, corporate_id=corporate_id)
+    return compute_relationship_scorecard(db, from_date=from_date or from_, to_date=to_date or to, hub_id=hub_id, node_id=node_id,
+                                          corporate_id=corporate_id)
 
 
 class ExpressNodeIn(BaseModel):
@@ -238,6 +246,7 @@ def update_corporate_client(client_id: int, body: CorporateClientIn, request: Re
 
 @router.get("/relationship/loop")
 def get_health_loop(from_date: date | None = None, to_date: date | None = None, hub_id: int | None = None,
-                    corporate_id: int | None = None, request: Request = None, db: Session = Depends(get_db), me: User = Depends(admin_only)):
+                    corporate_id: int | None = None, from_: date | None = Query(None, alias="from"), to: date | None = None,
+                    request: Request = None, db: Session = Depends(get_db), me: User = Depends(admin_only)):
     audit(db, request, me.id, "view", "relationship_loop")
-    return compute_health_loop(db, from_date=from_date, to_date=to_date, hub_id=hub_id, corporate_id=corporate_id)
+    return compute_health_loop(db, from_date=from_date or from_, to_date=to_date or to, hub_id=hub_id, corporate_id=corporate_id)

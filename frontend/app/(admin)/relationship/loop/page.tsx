@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useApi } from "@/lib/useApi";
 import { RequestState } from "@/components/RequestState";
+import { saveCanvasPng } from "@/lib/files";
 
 const istDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" });
 
@@ -20,6 +21,44 @@ export default function HealthLoopDashboardPage() {
 
   const { data: loop, error, reload } = useApi<any>(`/relationship/loop?${queryParams}`);
 
+  // Draws the loop summary onto a canvas and saves it as a PNG (no extra library; aggregates only, no patient data).
+  const exportPng = () => {
+    if (!loop) return;
+    const stages: any[] = loop.stages || [];
+    const c = document.createElement("canvas");
+    c.width = 1200;
+    c.height = 260 + stages.length * 44;
+    const g = c.getContext("2d");
+    if (!g) return;
+    g.fillStyle = "#ffffff";
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = "#0f172a";
+    g.font = "bold 28px sans-serif";
+    g.fillText("Holistic Health Loop", 40, 50);
+    g.font = "16px sans-serif";
+    g.fillStyle = "#475569";
+    g.fillText(`${from} to ${to}${hubId ? ` · hub ${hubId}` : ""}${corpId ? ` · corporate ${corpId}` : ""}`, 40, 78);
+    const max = Math.max(1, ...stages.map((s) => s.patient_count || 0));
+    stages.forEach((s, i) => {
+      const y = 110 + i * 44;
+      g.fillStyle = "#0f172a";
+      g.font = "15px sans-serif";
+      g.fillText(String(s.stage).replace(/_/g, " "), 40, y + 20);
+      g.fillStyle = "#14b8a6";
+      g.fillRect(300, y + 4, Math.round(((s.patient_count || 0) / max) * 560), 22);
+      g.fillStyle = "#0f172a";
+      g.fillText(`${s.patient_count} (${s.patient_pct}) · ₹${s.revenue_inr}`, 880, y + 20);
+    });
+    const y = 130 + stages.length * 44;
+    g.font = "bold 16px sans-serif";
+    g.fillText(`Retention ${loop.retention_rate} · AMI steps on time ${loop.ami_coordination?.steps_on_time_pct}`, 40, y);
+    const r = loop.revenue_ring || {};
+    g.font = "15px sans-serif";
+    g.fillText(`Revenue: transactions ₹${r.transactions_inr} · subscriptions ₹${r.subscriptions_inr} · corporate ₹${r.corporate_inr} · total ₹${r.total_holistic_revenue_inr}`, 40, y + 34);
+    g.fillText(`One-time patients ${loop.transaction_cohort?.one_time_patients} · reactivated ${loop.transaction_cohort?.reactivated_patients}`, 40, y + 64);
+    saveCanvasPng(c, `health-loop-${from}-to-${to}.png`);
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -27,6 +66,9 @@ export default function HealthLoopDashboardPage() {
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">Holistic Health Loop vs Transaction Cycle (Page 14)</h1>
           <p className="mt-1 text-sm text-slate-500">Live operational dashboard comparing the legacy transaction model with the recurring relationship loop.</p>
         </div>
+        <button onClick={exportPng} disabled={!loop} className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-teal-700 disabled:opacity-50">
+          Export PNG
+        </button>
       </div>
 
       <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm text-sm">

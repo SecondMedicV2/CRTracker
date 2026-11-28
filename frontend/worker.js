@@ -54,12 +54,10 @@ import {
   nextBestStep,
 } from "./lib/programs.js";
 import {
-  STARTER_CARE_PLANS,
-  STARTER_MEMBERSHIP_PLANS,
-  maskPlanName,
   computeScorecard,
   computeLoop,
 } from "./lib/backendParity.js";
+import { handlePlansRoute, renewalTickInStore } from "./lib/plansParity.js";
 import {
   CONDITION_FAMILIES,
   CONDITION_STAGE_OPTIONS,
@@ -2850,245 +2848,22 @@ async function handleApiRequest(request, url, env) {
     return reply(200, data);
   }
 
-  // --- CARE PLANS (Page 17) & MEMBERSHIPS (Page 15) & RELATIONSHIP (Pages 13/14) ---
-  if (path === "/care-plans" && method === "GET") {
-    if (!store.care_plans) store.care_plans = STARTER_CARE_PLANS;
-    const out = store.care_plans.map((p) => ({
-      ...p,
-      name_en: maskPlanName(me.role, p.number, p.name_en),
-      name_hi: maskPlanName(me.role, p.number, p.name_hi),
-      for_text: me.role === "CALLER" ? "Health Hub care plan" : p.for_text,
-      inclusions_plus: me.role === "CALLER" ? [] : p.inclusions_plus,
-      entitlements: me.role === "CALLER" ? {} : p.entitlements,
-      charged_separately: me.role === "CALLER" ? [] : p.charged_separately,
-    }));
-    recordAudit(store, me, "view", "care_plans_list", "all");
-    await saveStore(env, store);
-    return reply(200, out);
-  }
-
-  const carePlanMatch = path.match(/^\/care-plans\/([^/]+)$/);
-  if (carePlanMatch && method === "GET") {
-    const code = carePlanMatch[1];
-    if (!store.care_plans) store.care_plans = STARTER_CARE_PLANS;
-    const p = store.care_plans.find((x) => x.code === code);
-    if (!p) return reply(404, { detail: "Care plan not found" });
-    recordAudit(store, me, "view", "care_plan", p.id);
-    await saveStore(env, store);
-    return reply(200, {
-      ...p,
-      name_en: maskPlanName(me.role, p.number, p.name_en),
-      name_hi: maskPlanName(me.role, p.number, p.name_hi),
-      for_text: me.role === "CALLER" ? "Health Hub care plan" : p.for_text,
-      inclusions_plus: me.role === "CALLER" ? [] : p.inclusions_plus,
-      entitlements: me.role === "CALLER" ? {} : p.entitlements,
-      charged_separately: me.role === "CALLER" ? [] : p.charged_separately,
-    });
-  }
-
-  if (path === "/care-plans/enroll" && method === "POST") {
-    const b = await request.json().catch(() => ({}));
-    const pat = (store.patients || []).find((p) => p.id === Number(b.patient_id));
-    if (!pat) return reply(404, { detail: "Patient not found" });
-    if (!store.care_plans) store.care_plans = STARTER_CARE_PLANS;
-    const plan = store.care_plans.find((x) => x.code === b.plan_code);
-    if (!plan) return reply(422, { detail: "Plan not found" });
-    const tierInfo = (plan.tiers || []).find((t) => t.tier === (b.tier || "PLUS"));
-    const price = tierInfo ? tierInfo.price_inr : 1999;
-
-    if (!store.plan_enrollments) store.plan_enrollments = [];
-    const enr = {
-      id: nextId(store.plan_enrollments),
-      patient_id: pat.id,
-      plan_code: b.plan_code,
-      tier: b.tier || "PLUS",
-      status: "ACTIVE",
-      health_hub_id: b.health_hub_id || null,
-      period_start: todayIstStr(),
-      period_end: addDaysIso(90),
-      price_inr: price,
-      entitlements_used: {}
-    };
-    store.plan_enrollments.push(enr);
-    recordAudit(store, me, "enroll", "plan_enrollment", enr.id);
-    await saveStore(env, store);
-    return reply(201, enr);
-  }
-
-  if (path === "/care-plans/enrollments" && method === "GET") {
-    if (!store.plan_enrollments) store.plan_enrollments = [];
-    if (!store.care_plans) store.care_plans = STARTER_CARE_PLANS;
-    const rows = store.plan_enrollments.map((e) => {
-      const plan = store.care_plans.find((p) => p.code === e.plan_code);
-      return {
-        ...e,
-        plan_name: maskPlanName(me.role, plan?.number || "00", plan?.name_en || e.plan_code)
-      };
-    });
-    recordAudit(store, me, "view", "plan_enrollments_list", "all");
-    await saveStore(env, store);
-    return reply(200, rows);
-  }
-
-  const enrAssessMatch = path.match(/^\/care-plans\/enrollments\/(\d+)\/assess$/);
-  if (enrAssessMatch && method === "POST") {
-    if (me.role !== "ADMIN" && me.role !== "DOCTOR") return reply(403, { detail: "Only doctors and admins can assess enrollments" });
-    const eid = parseInt(enrAssessMatch[1], 10);
-    const b = await request.json().catch(() => ({}));
-    if (!store.plan_enrollments) store.plan_enrollments = [];
-    const enr = store.plan_enrollments.find((e) => e.id === eid);
-    if (!enr) return reply(404, { detail: "Enrollment not found" });
-    if (enr.plan_code === "CP06_MEDICAL_WEIGHT" && b.eligible === false) {
-      enr.status = "NOT_ELIGIBLE";
-      enr.eligibility_note_code = b.note_code || "NOT_ELIGIBLE_FOR_MEDICAL_TREATMENT";
-    } else {
-      enr.status = "DOCTOR_ASSESSED";
-      enr.eligibility_note_code = b.note_code || "";
-    }
-    enr.assessed_by = me.id;
-    recordAudit(store, me, "assess", "plan_enrollment", enr.id);
-    await saveStore(env, store);
-    return reply(200, enr);
-  }
-
-  const enrConsumeMatch = path.match(/^\/care-plans\/enrollments\/(\d+)\/consume$/);
-  if (enrConsumeMatch && method === "POST") {
-    const eid = parseInt(enrConsumeMatch[1], 10);
-    const b = await request.json().catch(() => ({}));
-    if (!store.plan_enrollments) store.plan_enrollments = [];
-    const enr = store.plan_enrollments.find((e) => e.id === eid);
-    if (!enr) return reply(404, { detail: "Enrollment not found" });
-    const key = b.entitlement_key || "DOCTOR_REVIEW";
-    const units = Number(b.units) || 1;
-    if (!enr.entitlements_used) enr.entitlements_used = {};
-    enr.entitlements_used[key] = (enr.entitlements_used[key] || 0) + units;
-    recordAudit(store, me, "consume", "plan_enrollment", enr.id);
-    await saveStore(env, store);
-    return reply(200, enr);
-  }
-
-  if (path === "/care-plans/analytics/revenue" && method === "GET") {
-    if (me.role !== "ADMIN") return reply(403, { detail: "Admin only" });
-    if (!store.plan_enrollments) store.plan_enrollments = [];
-    const byPlan = {};
-    const byHub = {};
-    for (const e of store.plan_enrollments) {
-      byPlan[e.plan_code] = (byPlan[e.plan_code] || { total_revenue: 0, enrollments: 0 });
-      byPlan[e.plan_code].total_revenue += (e.price_inr || 0);
-      byPlan[e.plan_code].enrollments += 1;
-      if (e.health_hub_id) {
-        byHub[e.health_hub_id] = (byHub[e.health_hub_id] || { total_revenue: 0, enrollments: 0 });
-        byHub[e.health_hub_id].total_revenue += (e.price_inr || 0);
-        byHub[e.health_hub_id].enrollments += 1;
-      }
-    }
-    return reply(200, {
-      by_plan: Object.entries(byPlan).map(([plan_code, d]) => ({ plan_code, ...d })),
-      by_hub: Object.entries(byHub).map(([health_hub_id, d]) => ({ health_hub_id: Number(health_hub_id), ...d }))
-    });
-  }
-
-  if (path === "/care-plans/confirms" && method === "GET") {
-    if (me.role !== "ADMIN") return reply(403, { detail: "Admin only" });
-    return reply(200, { missing_confirms: [] });
-  }
-
-  if (path === "/membership-plans" && method === "GET") {
-    if (!store.membership_plans) store.membership_plans = STARTER_MEMBERSHIP_PLANS;
-    const out = store.membership_plans.map((p) => ({
-      ...p,
-      name: maskPlanName(me.role, p.code, p.name),
-      entitlements: me.role === "CALLER" ? [] : p.entitlements
-    }));
-    return reply(200, out);
-  }
-
-  const patientMembershipsMatch = path.match(/^\/patients\/(\d+)\/memberships$/);
-  if (patientMembershipsMatch && method === "GET") {
-    const pid = parseInt(patientMembershipsMatch[1], 10);
-    const pat = (store.patients || []).find((p) => p.id === pid);
-    if (!pat) return reply(404, { detail: "Patient not found" });
-    if (!store.memberships) store.memberships = [];
-    let pMembers = store.memberships.filter((m) => m.patient_id === pid);
-    if (pMembers.length === 0) {
-      const freeM = {
-        id: nextId(store.memberships),
-        patient_id: pid,
-        plan_code: "H360_FREE",
-        status: "ACTIVE",
-        payer: "SELF",
-        start_on: todayIstStr(),
-        current_period_end: addDaysIso(365),
-        entitlements_used: {}
-      };
-      store.memberships.push(freeM);
-      pMembers = [freeM];
-      await saveStore(env, store);
-    }
-    const out = pMembers.map((m) => {
-      const pl = (store.membership_plans || STARTER_MEMBERSHIP_PLANS).find((x) => x.code === m.plan_code);
-      return {
-        ...m,
-        plan_name: maskPlanName(me.role, m.plan_code, pl?.name || m.plan_code)
-      };
-    });
-    const suggestions = me.role === "CALLER" ? [] : [{ plan_code: "H360_CHRONIC", reason: "Condition management recommendation" }];
-    return reply(200, { memberships: out, suggestions });
-  }
-
-  if (path === "/memberships/enroll" && method === "POST") {
-    const b = await request.json().catch(() => ({}));
-    const pat = (store.patients || []).find((p) => p.id === Number(b.patient_id));
-    if (!pat) return reply(404, { detail: "Patient not found" });
-    if (!store.memberships) store.memberships = [];
-    const m = {
-      id: nextId(store.memberships),
-      patient_id: pat.id,
-      plan_code: b.plan_code || "H360_CHRONIC",
-      status: "ACTIVE",
-      payer: b.payer || "SELF",
-      corporate_client_id: b.corporate_client_id || null,
-      health_hub_id: b.health_hub_id || null,
-      start_on: todayIstStr(),
-      current_period_end: addDaysIso(30),
-      entitlements_used: {}
-    };
-    store.memberships.push(m);
-    recordAudit(store, me, "enroll", "membership", m.id);
-    await saveStore(env, store);
-    return reply(201, m);
-  }
-
-  if (path === "/corporate-billing/statements" && method === "GET") {
-    if (me.role !== "ADMIN") return reply(403, { detail: "Admin only" });
-    if (!store.corporate_clients) {
-      store.corporate_clients = [
-        { id: 1, name: "Acme Corp", code: "ACME", pepm_inr: 499, active: true },
-        { id: 2, name: "Globex Pharma", code: "GLOBEX", pepm_inr: 599, active: true }
-      ];
-    }
-    const statements = store.corporate_clients.map((c) => {
-      const activeMembers = (store.memberships || []).filter((m) => m.corporate_client_id === c.id && m.status === "ACTIVE").length;
-      return {
-        client_id: c.id,
-        client_name: c.name,
-        code: c.code,
-        pepm_inr: c.pepm_inr,
-        active_members: activeMembers,
-        monthly_total_inr: activeMembers * c.pepm_inr
-      };
-    });
-    return reply(200, { statements });
+  // --- CARE PLANS (Page 17), MEMBERSHIPS (Page 15) and the RED/AMBER/GREEN safety gate: see lib/plansParity.js ---
+  {
+    const plansReply = await handlePlansRoute({ path, method, request, url, env, store, me, reply, recordAudit, saveStore, sanitizeCsvCell, indianMobile });
+    if (plansReply) return plansReply;
   }
 
   if (path === "/relationship/scorecard" && method === "GET") {
     if (me.role !== "ADMIN") return reply(403, { detail: "Admin only" });
-    return reply(200, computeScorecard(store));
+    const q = url.searchParams;
+    return reply(200, computeScorecard(store, { from: q.get("from_date") || q.get("from") || "", to: q.get("to_date") || q.get("to") || "", hub_id: q.get("hub_id"), node_id: q.get("node_id"), corporate_id: q.get("corporate_id") }));
   }
 
   if (path === "/relationship/loop" && method === "GET") {
     if (me.role !== "ADMIN") return reply(403, { detail: "Admin only" });
-    return reply(200, computeLoop(store));
+    const q = url.searchParams;
+    return reply(200, computeLoop(store, { from: q.get("from") || "", to: q.get("to") || "", hub_id: q.get("hub_id"), corporate_id: q.get("corporate_id") }));
   }
 
   if (path === "/express-nodes") {
@@ -5038,7 +4813,7 @@ export default {
       ctx.waitUntil((async () => {
         const store = await getStore(env);
         const jTick = schedulerTickInStore(store);
-        if (refillTickInStore(store) + retestReminderTickInStore(store) + slaTickInStore(store) + jTick.due + jTick.overdue + jTick.tasks + jTick.messages > 0) await saveStore(env, store);
+        if (refillTickInStore(store) + retestReminderTickInStore(store) + slaTickInStore(store) + renewalTickInStore(store) + jTick.due + jTick.overdue + jTick.tasks + jTick.messages > 0) await saveStore(env, store);
 
         // Process pending LabTrace reports (max 3 per tick)
         const pending = [];

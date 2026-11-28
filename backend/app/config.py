@@ -33,6 +33,10 @@ class Env(BaseSettings):
     storage_backend: str = "disk"
     # browsers allowed to make state-changing requests; add the real site origin when hosting
     allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    # Razorpay TEST keys for Health360 online payments (live keys are refused). Used only when the admin setting
+    # online_payments_enabled is on.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
 
     @model_validator(mode="after")
     def production_needs_a_strong_key(self):
@@ -77,4 +81,6 @@ SETTING_DEFAULTS = {
     "relationship_thresholds": {"new_days": 30, "active_days": 90, "at_risk_days": 180},
     "whatsapp_enabled": False,
     "callback_number": "",
+    # Health360 online payments (Razorpay TEST mode only). Off = counter payments only; no gateway call is ever made.
+    "online_payments_enabled": False,
 }

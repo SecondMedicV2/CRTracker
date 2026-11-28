@@ -7,11 +7,11 @@ from fastapi.responses import JSONResponse
 
 from . import worker
 from .config import env
-from .routers import admin, auth, callcards, care_plans, extended, followups, imports, insights, journeys, memberships, patients, programs, relationship, reports, retest_model, workflow
+from .routers import admin, auth, callcards, care_plans, extended, followups, imports, insights, journeys, memberships, outcomes, patients, programs, relationship, reports, retest_model, workflow
 
 log = logging.getLogger("api")
 app = FastAPI(title="CRTracker", docs_url="/api/docs", openapi_url="/api/openapi.json")
-for r in (auth, admin, imports, reports, patients, followups, callcards, workflow, insights, relationship, programs, extended, retest_model, journeys, care_plans, memberships):
+for r in (auth, admin, imports, reports, patients, followups, callcards, workflow, insights, relationship, programs, extended, retest_model, journeys, care_plans, memberships, outcomes):
     app.include_router(r.router, prefix="/api/v1")
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}

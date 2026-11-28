@@ -2,11 +2,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 
-export function useApi<T = any>(path: string) {
+export function useApi<T = any>(path: string | null) {
   const [result, setResult] = useState<{ path: string; data: T | null; error: string } | null>(null);
   const sequence = useRef(0);
   const reload = useCallback(() => {
     const request = ++sequence.current;
+    if (path === null) return; // nothing to load (e.g. a role that may not call this route)
     setResult((previous) => previous?.path === path ? { ...previous, error: "" } : null);
     api<T>(path).then((data) => {
       if (request === sequence.current) setResult({ path, data, error: "" });

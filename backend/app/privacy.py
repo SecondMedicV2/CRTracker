@@ -17,9 +17,9 @@ from . import storage
 from .config import env
 from .db import SessionLocal
 from .models import (Appointment, CallCard, CallLog, CareJourney, CareTouchpoint, ClinicalTask, Comment, Consent, FamilyLink,
-                     Followup, HealthProfile, HomeReading, HomeVisit, IdentityReview, JourneyStep, MonitoringSchedule,
-                     Notification, Order, OutboundMessage, Patient, PatientBucket, PatientMedication, ProgramRecommendation, Referral,
-                     RefillSchedule, Report, ReportParameter, RetestRecommendation)
+                     Followup, HealthProfile, HomeReading, HomeVisit, IdentityReview, JourneyStep, Membership, MonitoringSchedule,
+                     Notification, Order, OutboundMessage, Patient, PatientBucket, PatientMedication, Payment, PlanEnrollment,
+                     ProgramRecommendation, Referral, RefillSchedule, Report, ReportParameter, RetestRecommendation)
 from .security import audit
 
 
@@ -101,6 +101,9 @@ def export_patient(db: Session, pid: int) -> dict:
             "home_visits": [plain(v) for v in rows(HomeVisit, HomeVisit.patient_id, x["patients"])],
             "monitoring_schedules": [plain(s) for s in rows(MonitoringSchedule, MonitoringSchedule.patient_id, x["patients"])],
             "clinical_tasks": [plain(t) for t in rows(ClinicalTask, ClinicalTask.patient_id, x["patients"])],
+            "memberships": [plain(m) for m in rows(Membership, Membership.patient_id, x["patients"])],
+            "plan_enrollments": [plain(e) for e in rows(PlanEnrollment, PlanEnrollment.patient_id, x["patients"])],
+            "payments": [plain(p) for p in rows(Payment, Payment.patient_id, x["patients"])],
             "family_links": [plain(l) for l in flinks]}
 
 
@@ -138,6 +141,10 @@ def erase_patient(db: Session, pid: int) -> dict:
     wipe("program_recommendations", delete(ProgramRecommendation).where(ProgramRecommendation.patient_id.in_(pids)))
     wipe("health_profiles", delete(HealthProfile).where(HealthProfile.patient_id.in_(pids)))
     wipe("care_touchpoints", delete(CareTouchpoint).where(CareTouchpoint.patient_id.in_(pids)))
+    # enrolments point at payments, payments point at memberships: delete in that order
+    wipe("plan_enrollments", delete(PlanEnrollment).where(PlanEnrollment.patient_id.in_(pids)))
+    wipe("payments", delete(Payment).where(Payment.patient_id.in_(pids)))
+    wipe("memberships", delete(Membership).where(Membership.patient_id.in_(pids)))
     wipe("identity_reviews", delete(IdentityReview).where(or_(IdentityReview.patient_a_id.in_(pids), IdentityReview.patient_b_id.in_(pids),
                                                               IdentityReview.order_id.in_(oids or [0]))))
     wipe("buckets", delete(PatientBucket).where(PatientBucket.patient_id.in_(pids)))

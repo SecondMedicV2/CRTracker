@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from . import assign, callcard, extended, journeys, pipeline, retest, status, storage
+from . import assign, callcard, care_plans, extended, journeys, memberships, pipeline, retest, status, storage
 from .db import SessionLocal
 from .intake import pull_now
 from .labs import get_lab
@@ -127,6 +127,8 @@ def run_once(budget: float = 20.0) -> dict:
             retest.reminder_tick(db)
             retest.sla_tick(db)
             journeys.scheduler_tick(db)
+            memberships.membership_renewal_tick(db)
+            care_plans.care_plan_renewal_tick(db)
             n = (tick(db), extract_tick(db), callcard_tick(db), assign.cascade_tick(db))
         for key, v in zip(("fetched", "extracted", "cards", "reassigned"), n):
             total[key] += v
@@ -143,6 +145,8 @@ def main():
                 maybe_scheduled_pull(db)
                 extended.refill_tick(db)
                 journeys.scheduler_tick(db)
+                memberships.membership_renewal_tick(db)
+                care_plans.care_plan_renewal_tick(db)
                 if tick(db) + extract_tick(db) + callcard_tick(db) + assign.cascade_tick(db) == 0:
                     time.sleep(5)
             except Exception:

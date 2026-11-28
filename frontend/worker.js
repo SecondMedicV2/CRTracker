@@ -1559,10 +1559,16 @@ function getDefaultStore() {
 
 let memoryStore = null;
 
+// The exact JSON each loaded store came from, so saveStore can skip writes that change nothing.
+// (Workers KV free plan: 1,000 writes/day.)
+const loadedStoreText = new WeakMap();
+
 async function getStore(env) {
   if (env && env.CRTRACKER_DATA) {
     try {
-      const data = await env.CRTRACKER_DATA.get(STATE_KEY, "json");
+      const raw = await env.CRTRACKER_DATA.get(STATE_KEY, "text");
+      const data = raw ? JSON.parse(raw) : null;
+      if (data) loadedStoreText.set(data, raw);
       if (data) {
         if (!data[PURGE_KEY]) {
           const keptReports = (data.reports || []).filter((r) => r && r.source === "labtrace");
@@ -1667,7 +1673,10 @@ async function saveStore(env, store) {
   memoryStore = store;
   if (env && env.CRTRACKER_DATA) {
     try {
-      await env.CRTRACKER_DATA.put(STATE_KEY, JSON.stringify(store));
+      const text = JSON.stringify(store);
+      if (loadedStoreText.get(store) === text) return; // nothing changed: no KV write
+      await env.CRTRACKER_DATA.put(STATE_KEY, text);
+      loadedStoreText.set(store, text);
     } catch (_) {}
   }
 }
@@ -4840,18 +4849,17 @@ export default {
         const pending = [];
         for (const r of store.reports || []) {
           if (r.source === "labtrace") {
-            const hasParams = Boolean(await kvGet(env, `report_params:${r.id}`));
             const st = (r.extract_status || "PENDING").toUpperCase();
-            if (!hasParams && ["NO_TEXT", "NO_VALUES"].includes(st) && (Number(r.extract_version) || 1) < EXTRACTOR_VERSION) {
+            const reread = ["NO_TEXT", "NO_VALUES"].includes(st) && (Number(r.extract_version) || 1) < EXTRACTOR_VERSION;
+            const retry = (Number(r.extract_attempts) || 0) < 5 && ["PENDING", "NO_PDF", "FAILED", ""].includes(st);
+            // Only reports waiting to be read cost a KV read (was one read per report every 2 minutes).
+            if (!reread && !retry) continue;
+            if (await kvGet(env, `report_params:${r.id}`)) continue; // values entered by hand: keep them
+            if (reread) {
               r.extract_status = "PENDING";
               r.extract_attempts = 0;
-              pending.push(r);
-              continue;
             }
-            const attempts = Number(r.extract_attempts) || 0;
-            if (!hasParams && attempts < 5 && ["PENDING", "NO_PDF", "FAILED", ""].includes(st)) {
-              pending.push(r);
-            }
+            pending.push(r);
           }
         }
         pending.sort((a, b) => (a.collected_on || "").localeCompare(b.collected_on || "") || a.id - b.id);

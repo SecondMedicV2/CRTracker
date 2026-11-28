@@ -23,9 +23,16 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!me) return;
     const load = () => api<Notifications>("/notifications").then(setNotes).catch(() => {});
+    // Each poll costs KV reads, so tabs in the background don't poll; they refresh when shown again.
+    const tick = () => { if (!document.hidden) load(); };
+    const onVisible = () => { if (!document.hidden) load(); };
     load();
-    const timer = setInterval(load, 30000);
-    return () => clearInterval(timer);
+    const timer = setInterval(tick, 60000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [me]);
 
   async function markRead() {

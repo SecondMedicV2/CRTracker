@@ -1552,3 +1552,44 @@ mg/dL`;
     assert.match(body.report.extract_error, /retry/);
   });
 });
+
+describe("KV budget (free plan: 1,000 writes/day)", () => {
+  function countKv(env) {
+    const counts = { puts: [], gets: [] };
+    const kv = env.CRTRACKER_DATA;
+    const get = kv.get.bind(kv);
+    const put = kv.put.bind(kv);
+    kv.get = async (key, type) => { counts.gets.push(key); return get(key, type); };
+    kv.put = async (key, value, opts) => { counts.puts.push(key); return put(key, value, opts); };
+    return counts;
+  }
+  async function runCron(env) {
+    const jobs = [];
+    await worker.scheduled({ cron: "*/2 * * * *" }, env, { waitUntil: (p) => jobs.push(p) });
+    await Promise.all(jobs);
+  }
+
+  it("does not rewrite the app state when a save changes nothing", async () => {
+    const env = createMockEnv();
+    const { adminCookie } = await getAuthCookies(worker, env);
+    await fetchRoute(worker, env, "POST", "/api/v1/notifications/read-all", { cookie: adminCookie });
+    const counts = countKv(env);
+    const res = await fetchRoute(worker, env, "POST", "/api/v1/notifications/read-all", { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    assert.ok(!counts.puts.includes("app_state_v5"), "unchanged state must not be written again");
+  });
+
+  it("an idle background run reads no per-report keys and writes nothing", async () => {
+    const seed = createSeedStore();
+    for (const r of seed.reports) {
+      r.extract_status = "DONE";
+      r.extract_version = 3;
+    }
+    const env = createMockEnv(seed);
+    await runCron(env); // first run may tidy up the store once
+    const counts = countKv(env);
+    await runCron(env);
+    assert.deepEqual(counts.gets.filter((k) => k.startsWith("report_params:")), []);
+    assert.deepEqual(counts.puts, []);
+  });
+});
